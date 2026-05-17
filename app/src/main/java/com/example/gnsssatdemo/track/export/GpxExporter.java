@@ -9,8 +9,6 @@ import java.util.Locale;
 import java.util.TimeZone;
 
 public class GpxExporter {
-    private static final long GAP_LINE_BREAK_NANOS = 120_000_000_000L;
-
     private final SimpleDateFormat gpxTimeFormat =
             new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US);
 
@@ -54,7 +52,6 @@ public class GpxExporter {
         sb.append("  <trk>\n");
         sb.append("    <name>System GNSS Track</name>\n");
         boolean segmentOpen = false;
-        TrackPoint previousTrustedPoint = null;
         for (TrackPoint point : trackPoints) {
             if (isWeakPoint(point)) {
                 if (segmentOpen) {
@@ -64,18 +61,13 @@ public class GpxExporter {
                 sb.append("    <trkseg>\n");
                 appendTrackPoint(sb, sessionId, point, partial);
                 sb.append("    </trkseg>\n");
-                previousTrustedPoint = null;
                 continue;
             }
-            if (!segmentOpen || isGap(previousTrustedPoint, point)) {
-                if (segmentOpen) {
-                    sb.append("    </trkseg>\n");
-                }
+            if (!segmentOpen) {
                 sb.append("    <trkseg>\n");
                 segmentOpen = true;
             }
             appendTrackPoint(sb, sessionId, point, partial);
-            previousTrustedPoint = point;
         }
         if (segmentOpen) {
             sb.append("    </trkseg>\n");
@@ -87,13 +79,6 @@ public class GpxExporter {
 
     private boolean isWeakPoint(TrackPoint point) {
         return "weak".equals(point.decisionResult);
-    }
-
-    private boolean isGap(TrackPoint previous, TrackPoint next) {
-        return previous != null
-                && previous.elapsedRealtimeNanos > 0L
-                && next.elapsedRealtimeNanos > 0L
-                && next.elapsedRealtimeNanos - previous.elapsedRealtimeNanos > GAP_LINE_BREAK_NANOS;
     }
 
     private void appendTrackPoint(StringBuilder sb, String sessionId, TrackPoint point,

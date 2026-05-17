@@ -37,6 +37,7 @@ public class SessionManifest {
     public final double movingTimeSeconds;
     public final int stationaryKeepaliveCount;
     public final int stationaryJitterCount;
+    public final int gapCount;
     public final String lastKnownErrorCode;
     public final boolean diagnosticLogExists;
     public final boolean trustedGpxExists;
@@ -61,7 +62,7 @@ public class SessionManifest {
                            int rawPointCount, int segmentCount,
                            double totalDistanceMeters, double movingTimeSeconds,
                            int stationaryKeepaliveCount, int stationaryJitterCount,
-                           String lastKnownErrorCode,
+                           int gapCount, String lastKnownErrorCode,
                            boolean diagnosticLogExists, boolean trustedGpxExists,
                            boolean partialGpxExists,
                            long diagnosticLogBytes, long trustedGpxBytes,
@@ -91,6 +92,7 @@ public class SessionManifest {
         this.movingTimeSeconds = movingTimeSeconds;
         this.stationaryKeepaliveCount = stationaryKeepaliveCount;
         this.stationaryJitterCount = stationaryJitterCount;
+        this.gapCount = gapCount;
         this.lastKnownErrorCode = lastKnownErrorCode;
         this.diagnosticLogExists = diagnosticLogExists;
         this.trustedGpxExists = trustedGpxExists;

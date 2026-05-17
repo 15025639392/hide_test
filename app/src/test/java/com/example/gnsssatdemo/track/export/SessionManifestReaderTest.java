@@ -38,6 +38,7 @@ public class SessionManifestReaderTest {
         json.put("movingTimeSeconds", 6.25);
         json.put("stationaryKeepaliveCount", 3);
         json.put("stationaryJitterCount", 4);
+        json.put("gapCount", 2);
         json.put("lastKnownErrorCode", "");
         Files.write(store.sessionJson(dir).toPath(), json.toString().getBytes(StandardCharsets.UTF_8));
         Files.write(store.diagnosticJsonl(dir).toPath(),
@@ -65,6 +66,7 @@ public class SessionManifestReaderTest {
         assertEquals(6.25, manifest.movingTimeSeconds, 0.0);
         assertEquals(3, manifest.stationaryKeepaliveCount);
         assertEquals(4, manifest.stationaryJitterCount);
+        assertEquals(2, manifest.gapCount);
         assertTrue(manifest.diagnosticLogExists);
         assertTrue(manifest.trustedGpxExists);
         assertTrue(manifest.partialGpxExists);

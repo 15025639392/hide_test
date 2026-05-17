@@ -92,6 +92,7 @@ Segment       一段具有明确语义的轨迹片段
   蓝色实线。
   只连接 decisionResult = anchor / accept 的可信 TrackPoint。
   只累计可信距离和 movingTime。
+  当前真实徒步版本中，GAP 恢复点也连接到最终蓝色实线中，但该点的 distanceDelta/movingTimeDelta 为 0。
 
 弱信号轨迹:
   黄色点。
@@ -102,6 +103,7 @@ Segment       一段具有明确语义的轨迹片段
 断点:
   地图视觉上不留空白断口。
   所有可信 TrackPoint 按时间顺序用蓝色实线连续连接。
+  长时间 GAP 用 decisionReason = gap_recovery、gapCount 和 segmentId 表达，不用断线破坏最终轨迹连续性。
   弱信号点只显示为黄色诊断点，不打断可信实线，也不参与可信距离。
 
 当前位置:
@@ -164,6 +166,9 @@ DRIFT:
 
 GAP:
   与上一个点时间间隔过长，例如 > 2-5 分钟
+
+TRANSPORT:
+  有连续定位证据，但移动明显超过徒步范围，疑似坐车、骑行或景区摆渡车
 ```
 
 徒步场景中，普通平路速度通常远低于骑行和驾车。第一版可先把异常速度阈值设得保守一些，例如：
@@ -172,7 +177,31 @@ GAP:
 impliedSpeed > 12m/s
 ```
 
-这约等于 43.2km/h，在真实徒步中基本可以视为跳点或异常。
+这约等于 43.2km/h，在真实徒步中基本可以视为跳点或异常；如果系统上报速度和两点速度都落在合理车辆速度范围内，则归入交通工具混入诊断，而不是普通跳点。
+
+但坐车混入不能只靠 `impliedSpeed > 12m/s` 判断。当前实现额外引入 `transport_suspected`：
+
+```text
+明显超过徒步范围，或系统上报速度显示为合理车辆速度:
+  reject transport_suspected
+  进入 transport mode
+
+transport mode:
+  reject transport_confirmed
+  RawPoint 继续进入诊断
+  ReplayRunner 必须重放 transport mode 状态
+  不生成可信徒步 TrackPoint
+  不累计徒步距离
+  地图使用红色轨迹线显示交通工具混入段
+
+恢复稳定徒步速度:
+  accept transport_recovery
+  distanceDeltaMeters = 0
+  movingTimeDeltaSeconds = 0
+  新内部 segment
+```
+
+`transport_recovery` 不是 GAP；它表示系统看到了移动证据，但这段移动不属于可信徒步。
 
 ### 3.3 轨迹状态
 
@@ -387,41 +416,43 @@ enum class DesiredAccuracy {
 
 ```text
 STARTING:
-  intervalMillis = 2-3 秒
-  distanceFilterMeters = 3-5 米
+  intervalMillis = 1 秒
+  distanceFilterMeters = 0 米
   desiredAccuracy = HIGH
 
 MOVING:
-  intervalMillis = 5-10 秒
-  distanceFilterMeters = 8-15 米
-  desiredAccuracy = HIGH 或 BALANCED
+  intervalMillis = 3 秒
+  distanceFilterMeters = 0 米
+  desiredAccuracy = HIGH
 
 MAYBE_PAUSED:
-  intervalMillis = 15-30 秒
-  distanceFilterMeters = 10-20 米
+  intervalMillis = 10 秒
+  distanceFilterMeters = 0 米
   desiredAccuracy = BALANCED
 
 PAUSED:
-  intervalMillis = 30-60 秒
-  distanceFilterMeters = 30-50 米
-  desiredAccuracy = LOW_POWER 或 BALANCED
+  intervalMillis = 10 秒
+  distanceFilterMeters = 0 米
+  desiredAccuracy = BALANCED
 
 SIGNAL_WEAK:
-  intervalMillis = 5-15 秒
-  distanceFilterMeters = 0-10 米
+  intervalMillis = 2 秒
+  distanceFilterMeters = 0 米
   desiredAccuracy = HIGH
   注意：提高采集尝试，不等于提高点的信任度
 
 RECOVERING:
-  intervalMillis = 5-10 秒
-  distanceFilterMeters = 5-10 米
+  intervalMillis = 2-3 秒
+  distanceFilterMeters = 0 米
   desiredAccuracy = HIGH
 
 BATTERY_SAVING:
   intervalMillis = 30-90 秒
-  distanceFilterMeters = 30-80 米
+  distanceFilterMeters = 0 米
   desiredAccuracy = LOW_POWER
 ```
+
+真实徒步记录优先保留路线形状，因此第一阶段不把距离过滤交给 Android 系统。功耗主要通过时间间隔调节；距离、静止、弱信号和 GAP 由 App 层解释。
 
 ### 6.3 决策伪代码
 
@@ -430,20 +461,20 @@ fun chooseSamplingPolicy(context: TrackingContext): SamplingPolicy {
     if (context.batteryLevel != null && context.batteryLevel < 0.15f) {
         return SamplingPolicy(
             intervalMillis = 60_000,
-            distanceFilterMeters = 50f,
+            distanceFilterMeters = 0f,
             desiredAccuracy = DesiredAccuracy.LOW_POWER
         )
     }
 
     return when (context.state) {
-        TrackingState.STARTING -> SamplingPolicy(3_000, 5f, DesiredAccuracy.HIGH)
-        TrackingState.MOVING -> SamplingPolicy(8_000, 10f, DesiredAccuracy.HIGH)
-        TrackingState.MAYBE_PAUSED -> SamplingPolicy(20_000, 15f, DesiredAccuracy.BALANCED)
-        TrackingState.PAUSED -> SamplingPolicy(60_000, 40f, DesiredAccuracy.LOW_POWER)
-        TrackingState.SIGNAL_WEAK -> SamplingPolicy(10_000, 5f, DesiredAccuracy.HIGH)
-        TrackingState.RECOVERING -> SamplingPolicy(8_000, 8f, DesiredAccuracy.HIGH)
-        TrackingState.BATTERY_SAVING -> SamplingPolicy(60_000, 50f, DesiredAccuracy.LOW_POWER)
-        TrackingState.ENDED -> SamplingPolicy(60_000, 100f, DesiredAccuracy.LOW_POWER)
+        TrackingState.STARTING -> SamplingPolicy(1_000, 0f, DesiredAccuracy.HIGH)
+        TrackingState.MOVING -> SamplingPolicy(3_000, 0f, DesiredAccuracy.HIGH)
+        TrackingState.MAYBE_PAUSED -> SamplingPolicy(10_000, 0f, DesiredAccuracy.BALANCED)
+        TrackingState.PAUSED -> SamplingPolicy(10_000, 0f, DesiredAccuracy.BALANCED)
+        TrackingState.SIGNAL_WEAK -> SamplingPolicy(2_000, 0f, DesiredAccuracy.HIGH)
+        TrackingState.RECOVERING -> SamplingPolicy(2_000, 0f, DesiredAccuracy.HIGH)
+        TrackingState.BATTERY_SAVING -> SamplingPolicy(60_000, 0f, DesiredAccuracy.LOW_POWER)
+        TrackingState.ENDED -> SamplingPolicy(60_000, 0f, DesiredAccuracy.LOW_POWER)
     }
 }
 ```
@@ -475,10 +506,17 @@ DRIFT:
   不进入主轨迹
 
 GAP:
-  结束上一段 Segment
+  标记内部 Segment / gapCount
   创建 GAP 或 WEAK_SIGNAL 事件
-  后续恢复后新开 Segment
-  展示时用虚线或缺口表达
+  后续恢复点使用 gap_recovery
+  最终轨迹线保持连续展示
+  GAP 两端直线不计入可信距离
+
+TRANSPORT:
+  记录 RawPoint 和 decision
+  不进入可信徒步距离
+  后续恢复点使用 transport_recovery
+  最终轨迹线可连续展示，其中交通工具混入段用红色线表达，extension 必须保留 transport 语义
 ```
 
 距离统计规则：
@@ -575,7 +613,7 @@ OFF_ROUTE:
 10:20 B 点
 ```
 
-中间 19 分钟没有定位时，展示应使用虚线、缺口或弱信号区间，而不是一条普通实线。
+中间 19 分钟没有定位时，最终轨迹可以连续显示，但系统必须把恢复点标记为 `gap_recovery`，并且这段连接不计入可信距离。UI/诊断应能显示它是 GAP 连接，而不是用户被连续定位证明走过的真实路径。
 
 ### 9.3 网络与定位解耦
 

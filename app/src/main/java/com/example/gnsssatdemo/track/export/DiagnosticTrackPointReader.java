@@ -18,7 +18,19 @@ import java.util.List;
 import java.util.Map;
 
 public class DiagnosticTrackPointReader {
+    private static final long TRANSPORT_DISPLAY_POINT_ID_OFFSET = 2_000_000_000L;
+
     public List<TrackPoint> readTrackPoints(File diagnosticJsonl) throws IOException, JSONException {
+        return readTrackPoints(diagnosticJsonl, false);
+    }
+
+    public List<TrackPoint> readDisplayTrackPoints(File diagnosticJsonl)
+            throws IOException, JSONException {
+        return readTrackPoints(diagnosticJsonl, true);
+    }
+
+    private List<TrackPoint> readTrackPoints(File diagnosticJsonl, boolean includeTransportDisplay)
+            throws IOException, JSONException {
         Map<Long, RawPoint> rawPoints = new HashMap<>();
         List<TrackPoint> trackPoints = new ArrayList<>();
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(
@@ -38,6 +50,12 @@ public class DiagnosticTrackPointReader {
                     RawPoint rawPoint = rawPoints.get(event.optLong("rawPointId", -1L));
                     if (rawPoint != null) {
                         trackPoints.add(trackPointFromEvent(event, rawPoint));
+                    }
+                } else if (includeTransportDisplay && "decision".equals(eventName)
+                        && isTransportDisplayDecision(event)) {
+                    RawPoint rawPoint = rawPoints.get(event.optLong("rawPointId", -1L));
+                    if (rawPoint != null) {
+                        trackPoints.add(transportDisplayPointFromEvent(event, rawPoint));
                     }
                 }
             }
@@ -75,5 +93,35 @@ public class DiagnosticTrackPointReader {
                 event.optString("reason"),
                 event.optDouble("distanceDeltaMeters", 0.0),
                 event.optDouble("movingTimeDeltaSeconds", 0.0));
+    }
+
+    private TrackPoint transportDisplayPointFromEvent(JSONObject event, RawPoint rawPoint) {
+        long decisionId = event.optLong("decisionId");
+        return new TrackPoint(TRANSPORT_DISPLAY_POINT_ID_OFFSET + decisionId,
+                rawPoint.rawPointId,
+                decisionId,
+                event.optLong("segmentId", 1L),
+                rawPoint.latitude,
+                rawPoint.longitude,
+                rawPoint.hasAltitude,
+                rawPoint.altitude,
+                rawPoint.accuracyMeters,
+                rawPoint.hasSpeed,
+                rawPoint.speedMetersPerSecond,
+                rawPoint.hasBearing,
+                rawPoint.bearingDegrees,
+                rawPoint.timeMillis,
+                rawPoint.elapsedRealtimeNanos,
+                "transport",
+                event.optString("reason", "transport_display"),
+                0.0,
+                0.0,
+                rawPoint.sourceGnssSnapshotId);
+    }
+
+    private boolean isTransportDisplayDecision(JSONObject event) {
+        String reason = event.optString("reason", "");
+        return "transport_suspected".equals(reason)
+                || "transport_confirmed".equals(reason);
     }
 }

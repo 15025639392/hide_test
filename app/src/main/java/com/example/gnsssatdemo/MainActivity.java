@@ -56,8 +56,11 @@ import com.example.gnsssatdemo.track.export.DiagnosticLogSummary;
 import com.example.gnsssatdemo.track.export.DiagnosticTrackPointReader;
 import com.example.gnsssatdemo.track.export.GpxReferenceParser;
 import com.example.gnsssatdemo.track.export.GpxExporter;
+import com.example.gnsssatdemo.track.export.HikingSampleReport;
+import com.example.gnsssatdemo.track.export.HikingSampleReportGenerator;
 import com.example.gnsssatdemo.track.export.SessionFileStore;
 import com.example.gnsssatdemo.track.export.SessionManifest;
+import com.example.gnsssatdemo.track.export.SessionManifestReader;
 import com.example.gnsssatdemo.track.export.SessionScanResult;
 import com.example.gnsssatdemo.track.export.SessionScanner;
 import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
@@ -100,6 +103,7 @@ public class MainActivity extends Activity {
     private static final int REQ_CREATE_DIAGNOSTIC = 1003;
     private static final int REQ_NOTIFICATIONS = 1004;
     private static final int REQ_IMPORT_REFERENCE_GPX = 1005;
+    private static final int REQ_CREATE_SAMPLE_REPORT = 1006;
     private static final long NO_LOCATION_TIMEOUT_MILLIS = 30_000L;
     private static final float MIN_HEADING_RENDER_DELTA_DEGREES = 3f;
     private static final double DEFAULT_MAP_CENTER_LATITUDE = 29.53903137d;
@@ -146,6 +150,7 @@ public class MainActivity extends Activity {
     private BasicTrackSession trackSession;
     private String pendingGpxText;
     private String pendingDiagnosticText;
+    private String pendingSampleReportText;
     private long lastLocationReceivedElapsedRealtimeMillis;
     private boolean noLocationTimeoutLogged;
     private boolean foregroundServiceRecording;
@@ -378,6 +383,12 @@ public class MainActivity extends Activity {
             } else {
                 setStatus("已取消导入参考 GPX");
             }
+        } else if (requestCode == REQ_CREATE_SAMPLE_REPORT) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                writePendingSampleReport(data.getData());
+            } else {
+                setStatus("已取消导出样本报告");
+            }
         }
     }
 
@@ -463,11 +474,12 @@ public class MainActivity extends Activity {
                 long elapsedRealtimeNanos = parts.length >= 6 ? Long.parseLong(parts[5]) : 0L;
                 String decisionResult = parts.length >= 7 ? parts[6] : "accept";
                 double altitude = parts.length >= 8 ? Double.parseDouble(parts[7]) : Double.NaN;
+                String decisionReason = parts.length >= 9 ? parts[8] : "foreground_live";
                 boolean hasAltitude = !Double.isNaN(altitude);
                 foregroundServiceTrackPoints.add(new TrackPoint(id, id, id, 1L,
                         lat, lng, hasAltitude, hasAltitude ? altitude : 0.0, accuracy,
                         false, 0f, bearing >= 0f, bearing,
-                        timeMillis, elapsedRealtimeNanos, decisionResult, "foreground_live",
+                        timeMillis, elapsedRealtimeNanos, decisionResult, decisionReason,
                         0.0, 0.0, null));
                 id++;
             } catch (NumberFormatException ignored) {
@@ -1038,10 +1050,11 @@ public class MainActivity extends Activity {
 
     private void appendMapDisplayExplanation(StringBuilder sb) {
         sb.append("地图说明: 底图=高德卫星瓦片，地图缩放范围 2~22，瓦片数据源最大 z18，超过后放大 z18 瓦片；蓝色实线=可信 TrackPoint；")
+                .append("红色线=疑似交通工具混入轨迹，只用于诊断，不累计徒步距离；")
                 .append("黄色点=弱信号 TrackPoint，只用于诊断和 partial GPX；")
                 .append("紫色线=导入的三方 GPX 参考线路，只用于对比；")
                 .append("蓝色圆点=当前位置，浅蓝圆=系统水平精度；橙色箭头=系统 bearing。")
-                .append("可靠点之间始终用蓝色实线连接，地图视觉上不留断口。")
+                .append("最终轨迹保持连续展示；GAP 和交通工具混入会保留诊断语义，不累计可信距离。")
                 .append("轨迹原始/导出坐标仍为 WGS-84，地图上仅为对齐国内瓦片做 GCJ-02 显示转换。\n");
         if (!referenceTrackPoints.isEmpty()) {
             sb.append("参考 GPX=").append(referenceTrackPoints.size()).append(" 点");
@@ -1099,6 +1112,7 @@ public class MainActivity extends Activity {
                     .append("s\n");
             sb.append("静止保活=").append(manifest.stationaryKeepaliveCount)
                     .append(" 静止抖动=").append(manifest.stationaryJitterCount)
+                    .append(" GAP=").append(manifest.gapCount)
                     .append('\n');
             sb.append("诊断日志=").append(manifest.diagnosticLogExists ? "存在" : "缺失")
                     .append("(").append(manifest.diagnosticLogBytes).append("B)")
@@ -1392,6 +1406,12 @@ public class MainActivity extends Activity {
         diagnosticButton.setOnClickListener(v -> exportCurrentDiagnosticLog());
         row.addView(diagnosticButton, weightedButtonParams(hasAction));
         hasAction = true;
+        if (canExportCurrentSampleReport()) {
+            Button reportButton = historyButton("导出报告");
+            reportButton.setOnClickListener(v -> exportCurrentSampleReport());
+            row.addView(reportButton, weightedButtonParams(hasAction));
+            hasAction = true;
+        }
         if (hasAction) {
             historyActionsContainer.addView(row, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
@@ -1423,6 +1443,12 @@ public class MainActivity extends Activity {
             Button diagnosticButton = historyButton("导出诊断");
             diagnosticButton.setOnClickListener(v -> exportHistoricalDiagnosticLog(manifest));
             row.addView(diagnosticButton, weightedButtonParams(hasAction));
+            hasAction = true;
+        }
+        if (canExportHistoricalSampleReport(manifest)) {
+            Button reportButton = historyButton("导出报告");
+            reportButton.setOnClickListener(v -> exportHistoricalSampleReport(manifest));
+            row.addView(reportButton, weightedButtonParams(hasAction));
             hasAction = true;
         }
         if (hasAction) {
@@ -1639,6 +1665,16 @@ public class MainActivity extends Activity {
         return manifest != null && manifest.diagnosticLogExists;
     }
 
+    private boolean canExportCurrentSampleReport() {
+        return trackSession != null
+                && trackSession.getSessionDirPath() != null
+                && !trackSession.getSessionDirPath().isEmpty();
+    }
+
+    private boolean canExportHistoricalSampleReport(SessionManifest manifest) {
+        return manifest != null && manifest.diagnosticLogExists;
+    }
+
     private void requestGpxDocument(String fileName) {
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
@@ -1759,12 +1795,54 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void exportCurrentSampleReport() {
+        if (!canExportCurrentSampleReport()) {
+            setStatus("当前记录还没有可分析的 session 目录");
+            return;
+        }
+        try {
+            SessionFileStore fileStore = new SessionFileStore(this);
+            SessionManifest manifest = new SessionManifestReader(fileStore).read(
+                    new File(trackSession.getSessionDirPath()));
+            exportSampleReport(manifest);
+        } catch (IOException | JSONException e) {
+            setStatus("生成当前样本报告失败: " + e.getMessage());
+        }
+    }
+
+    private void exportHistoricalSampleReport(SessionManifest manifest) {
+        if (!canExportHistoricalSampleReport(manifest)) {
+            setStatus("这条历史记录没有诊断日志，无法生成样本报告");
+            return;
+        }
+        try {
+            exportSampleReport(manifest);
+        } catch (IOException | JSONException e) {
+            setStatus("生成历史样本报告失败: " + e.getMessage());
+        }
+    }
+
+    private void exportSampleReport(SessionManifest manifest) throws IOException, JSONException {
+        HikingSampleReport report = new HikingSampleReportGenerator().generate(manifest);
+        pendingSampleReportText = report.toText();
+        setStatus("准备导出样本报告: " + manifest.sessionId + " / " + report.verdict);
+        requestSampleReportDocument("sample_report_" + manifest.sessionId + ".txt");
+    }
+
     private void requestDiagnosticDocument(String fileName) {
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("application/json");
         intent.putExtra(Intent.EXTRA_TITLE, fileName);
         startActivityForResult(intent, REQ_CREATE_DIAGNOSTIC);
+    }
+
+    private void requestSampleReportDocument(String fileName) {
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("text/plain");
+        intent.putExtra(Intent.EXTRA_TITLE, fileName);
+        startActivityForResult(intent, REQ_CREATE_SAMPLE_REPORT);
     }
 
     private String readText(File file) throws IOException {
@@ -1799,6 +1877,26 @@ public class MainActivity extends Activity {
             setStatus("诊断日志导出失败: " + e.getMessage());
         } finally {
             pendingDiagnosticText = null;
+        }
+    }
+
+    private void writePendingSampleReport(Uri uri) {
+        if (pendingSampleReportText == null) {
+            setStatus("没有待导出的样本报告");
+            return;
+        }
+        try (OutputStream outputStream = getContentResolver().openOutputStream(uri)) {
+            if (outputStream == null) {
+                setStatus("无法打开样本报告导出文件");
+                return;
+            }
+            outputStream.write(pendingSampleReportText.getBytes(StandardCharsets.UTF_8));
+            outputStream.flush();
+            setStatus("样本报告已导出: " + uri);
+        } catch (IOException e) {
+            setStatus("样本报告导出失败: " + e.getMessage());
+        } finally {
+            pendingSampleReportText = null;
         }
     }
 
@@ -1907,7 +2005,7 @@ public class MainActivity extends Activity {
         }
         double total = 0.0;
         for (TrackPoint point : points) {
-            if (!"weak".equals(point.decisionResult)) {
+            if (!isWeakMapPoint(point) && !isTransportMapPoint(point)) {
                 total += point.distanceDeltaMeters;
             }
         }
@@ -1924,8 +2022,21 @@ public class MainActivity extends Activity {
     private double totalAscentMeters(List<TrackPoint> points) {
         double total = 0.0;
         Double previousAltitude = null;
+        boolean sawTrustedAltitude = false;
         for (TrackPoint point : points) {
-            if ("weak".equals(point.decisionResult) || !point.hasAltitude) {
+            if (isWeakMapPoint(point)) {
+                continue;
+            }
+            if (isTransportMapPoint(point)) {
+                previousAltitude = null;
+                continue;
+            }
+            if (isAscentAnchorPoint(point)) {
+                previousAltitude = point.hasAltitude ? point.altitude : null;
+                sawTrustedAltitude = sawTrustedAltitude || point.hasAltitude;
+                continue;
+            }
+            if (!point.hasAltitude) {
                 continue;
             }
             if (previousAltitude != null) {
@@ -1934,9 +2045,25 @@ public class MainActivity extends Activity {
                     total += delta;
                 }
             }
+            sawTrustedAltitude = true;
             previousAltitude = point.altitude;
         }
-        return previousAltitude == null ? -1.0 : total;
+        return sawTrustedAltitude ? total : -1.0;
+    }
+
+    private boolean isWeakMapPoint(TrackPoint point) {
+        return "weak".equals(point.decisionResult);
+    }
+
+    private boolean isTransportMapPoint(TrackPoint point) {
+        return "transport".equals(point.decisionResult)
+                || "transport_suspected".equals(point.decisionReason)
+                || "transport_confirmed".equals(point.decisionReason);
+    }
+
+    private boolean isAscentAnchorPoint(TrackPoint point) {
+        return "gap_recovery".equals(point.decisionReason)
+                || "transport_recovery".equals(point.decisionReason);
     }
 
     private void scheduleSatelliteMapViewsInvalidate() {
@@ -1971,20 +2098,36 @@ public class MainActivity extends Activity {
         if (trackSession != null && trackSession.getSessionId() != null) {
             List<TrackPoint> points = trackSession.getTrackPoints();
             points.addAll(trackSession.getWeakTrackPoints());
-            Collections.sort(points, Comparator.comparingLong(point -> point.elapsedRealtimeNanos));
+            points.addAll(trackSession.getTransportTrackPoints());
+            sortMapTrackPoints(points);
             return points;
         }
         if (latestManifest != null && latestManifest.diagnosticLogExists
                 && (latestManifest.trackPointCount > 0 || latestManifest.weakTrackPointCount > 0)) {
             try {
-                return new DiagnosticTrackPointReader().readTrackPoints(
+                List<TrackPoint> points = new DiagnosticTrackPointReader().readDisplayTrackPoints(
                         new File(latestManifest.sessionDir,
                                 latestManifest.diagnosticLogFileName));
+                sortMapTrackPoints(points);
+                return points;
             } catch (IOException | JSONException ignored) {
                 return new ArrayList<>();
             }
         }
         return new ArrayList<>();
+    }
+
+    private void sortMapTrackPoints(List<TrackPoint> points) {
+        Collections.sort(points, new Comparator<TrackPoint>() {
+            @Override
+            public int compare(TrackPoint left, TrackPoint right) {
+                int byTime = Long.compare(left.elapsedRealtimeNanos, right.elapsedRealtimeNanos);
+                if (byTime != 0) {
+                    return byTime;
+                }
+                return Long.compare(left.sourceRawPointId, right.sourceRawPointId);
+            }
+        });
     }
 
     private MapPoint currentMapPoint() {
@@ -2034,7 +2177,6 @@ public class MainActivity extends Activity {
         private static final int MAX_FLING_VELOCITY_PIXELS_PER_SECOND = 6_000;
         private static final double MIN_FRAME_WORLD_RANGE = 0.000006d;
         private static final int FRAME_PADDING_DP = 2;
-        private static final long GAP_LINE_BREAK_NANOS = 120_000_000_000L;
         private static final long FAILED_TILE_RETRY_DELAY_MILLIS = 30_000L;
         private static final String SATELLITE_TILE_URL =
                 "https://webst%02d.is.autonavi.com/appmaptile?style=6&x=%d&y=%d&z=%d";
@@ -2582,36 +2724,52 @@ public class MainActivity extends Activity {
         }
 
         private void drawTrack(Canvas canvas) {
-            if (trustedPointCount() < 2) {
+            if (drawableTrackPointCount() < 2) {
                 drawWeakTrackPoints(canvas);
+                drawTransportTrackPoints(canvas);
                 return;
             }
+            drawTrackSegments(canvas, false);
+            drawTrackSegments(canvas, true);
+            drawWeakTrackPoints(canvas);
+            drawTransportTrackPoints(canvas);
+        }
+
+        private void drawTrackSegments(Canvas canvas, boolean transport) {
             trackPath.reset();
-            boolean hasTrustedPoint = false;
+            boolean hasSegment = false;
+            TrackPoint previous = null;
             for (int i = 0; i < points.size(); i++) {
                 TrackPoint point = points.get(i);
                 if (isWeakTrackPoint(point)) {
                     continue;
                 }
-                PointF screen = toScreen(point.latitude, point.longitude);
-                if (!hasTrustedPoint) {
-                    trackPath.moveTo(screen.x, screen.y);
-                    hasTrustedPoint = true;
-                } else {
-                    trackPath.lineTo(screen.x, screen.y);
+                if (previous != null && isTransportSegment(previous, point) == transport) {
+                    PointF from = toScreen(previous.latitude, previous.longitude);
+                    PointF to = toScreen(point.latitude, point.longitude);
+                    trackPath.moveTo(from.x, from.y);
+                    trackPath.lineTo(to.x, to.y);
+                    hasSegment = true;
                 }
+                previous = point;
+            }
+            if (!hasSegment) {
+                return;
             }
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeCap(Paint.Cap.ROUND);
             paint.setStrokeJoin(Paint.Join.ROUND);
-            paint.setStrokeWidth(dp(8));
-            paint.setColor(Color.argb(95, 14, 165, 233));
+            paint.setStrokeWidth(dp(transport ? 9 : 8));
+            paint.setColor(transport
+                    ? Color.argb(115, 127, 29, 29)
+                    : Color.argb(95, 14, 165, 233));
             canvas.drawPath(trackPath, paint);
-            paint.setStrokeWidth(dp(4));
-            paint.setColor(Color.rgb(56, 189, 248));
+            paint.setStrokeWidth(dp(transport ? 5 : 4));
+            paint.setColor(transport
+                    ? Color.rgb(239, 68, 68)
+                    : Color.rgb(56, 189, 248));
             canvas.drawPath(trackPath, paint);
             paint.setStrokeCap(Paint.Cap.BUTT);
-            drawWeakTrackPoints(canvas);
         }
 
         private void drawWeakTrackPoints(Canvas canvas) {
@@ -2626,7 +2784,29 @@ public class MainActivity extends Activity {
             }
         }
 
+        private void drawTransportTrackPoints(Canvas canvas) {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.rgb(239, 68, 68));
+            for (TrackPoint point : points) {
+                if (!isTransportTravelPoint(point)) {
+                    continue;
+                }
+                PointF screen = toScreen(point.latitude, point.longitude);
+                canvas.drawCircle(screen.x, screen.y, dp(3), paint);
+            }
+        }
+
         private int trustedPointCount() {
+            int count = 0;
+            for (TrackPoint point : points) {
+                if (!isWeakTrackPoint(point) && !isTransportTravelPoint(point)) {
+                    count++;
+                }
+            }
+            return count;
+        }
+
+        private int drawableTrackPointCount() {
             int count = 0;
             for (TrackPoint point : points) {
                 if (!isWeakTrackPoint(point)) {
@@ -2640,10 +2820,20 @@ public class MainActivity extends Activity {
             return "weak".equals(point.decisionResult);
         }
 
-        private boolean isGap(TrackPoint previous, TrackPoint next) {
-            return previous.elapsedRealtimeNanos > 0L && next.elapsedRealtimeNanos > 0L
-                    && next.elapsedRealtimeNanos - previous.elapsedRealtimeNanos
-                    > GAP_LINE_BREAK_NANOS;
+        private boolean isTransportSegment(TrackPoint from, TrackPoint to) {
+            return isTransportTravelPoint(from)
+                    || isTransportTravelPoint(to)
+                    || isTransportRecoveryPoint(to);
+        }
+
+        private boolean isTransportTravelPoint(TrackPoint point) {
+            return "transport".equals(point.decisionResult)
+                    || "transport_suspected".equals(point.decisionReason)
+                    || "transport_confirmed".equals(point.decisionReason);
+        }
+
+        private boolean isTransportRecoveryPoint(TrackPoint point) {
+            return "transport_recovery".equals(point.decisionReason);
         }
 
         private void drawCurrentLocation(Canvas canvas) {
@@ -2721,8 +2911,9 @@ public class MainActivity extends Activity {
                     : "高德卫星 " + zoomLabel + "  总里程 " + formatDistance(totalDistanceMeters)
                     + " / 爬升 " + formatAscent(totalAscentMeters)
                     + " / " + trustedPointCount() + " 可信点 / "
-                    + weakPointCount() + " 弱点 / 参考 " + referencePoints.size() + " 点";
-            String legend = "蓝线=可信  紫线=参考GPX  黄点=弱信号  蓝点=当前位置";
+                    + weakPointCount() + " 弱点 / "
+                    + transportPointCount() + " 交通点 / 参考 " + referencePoints.size() + " 点";
+            String legend = "蓝线=可信  红线=交通工具  紫线=参考GPX  黄点=弱信号";
             canvas.drawText(fitHudText(label, width - padding * 2), left + padding,
                     bottom - lineHeight - padding, paint);
             canvas.drawText(fitHudText(legend, width - padding * 2), left + padding,
@@ -2733,6 +2924,16 @@ public class MainActivity extends Activity {
             int count = 0;
             for (TrackPoint point : points) {
                 if (isWeakTrackPoint(point)) {
+                    count++;
+                }
+            }
+            return count;
+        }
+
+        private int transportPointCount() {
+            int count = 0;
+            for (TrackPoint point : points) {
+                if (isTransportTravelPoint(point)) {
                     count++;
                 }
             }
@@ -3020,6 +3221,11 @@ public class MainActivity extends Activity {
                 return "精度不足，暂不进 GPX";
             case "impossible_speed":
                 return "疑似跳点";
+            case "transport_suspected":
+            case "transport_confirmed":
+                return "疑似交通工具，不累计";
+            case "transport_recovery":
+                return "恢复徒步，重新锚定";
             default:
                 return reason;
         }
@@ -3058,6 +3264,12 @@ public class MainActivity extends Activity {
                 return "静止时的定位抖动，避免把漂移算成行走距离。";
             case "impossible_speed":
                 return "两点之间需要的速度不合理，疑似跳点。";
+            case "transport_suspected":
+                return "检测到明显超过徒步范围的移动，疑似坐车或骑行，暂不进入可信徒步距离。";
+            case "transport_confirmed":
+                return "仍处于疑似交通工具移动状态，继续记录诊断但不累计徒步距离。";
+            case "transport_recovery":
+                return "疑似交通工具移动后恢复到徒步速度，重新锚定轨迹；这段连接不累计距离。";
             case "non_positive_delta_time":
                 return "定位时间没有前进，不能用于轨迹连续性。";
             case "provider_not_gps":

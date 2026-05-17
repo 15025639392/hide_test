@@ -130,6 +130,21 @@ public class GpxExporterTest {
         assertTrue(gpx.contains("<hike:decisionResult>weak</hike:decisionResult>"));
     }
 
+    @Test
+    public void buildTrustedGpx_keepsContinuousSegmentAcrossGapRecovery() {
+        TrackPoint trustedBefore = point(1L, 1L, 1L, 100L,
+                "anchor", "first_fix_good");
+        TrackPoint gapRecovery = point(2L, 2L, 2L, 130_000_000_000L,
+                "accept", "gap_recovery");
+
+        String gpx = new GpxExporter().buildTrustedGpx("session",
+                Arrays.asList(trustedBefore, gapRecovery), 0.0, 0.0);
+
+        assertTrue(countOccurrences(gpx, "<trkseg>") == 1);
+        assertTrue(gpx.contains("<hike:decisionReason>gap_recovery</hike:decisionReason>"));
+        assertTrue(gpx.contains("<hike:distanceDeltaMeters>0.0</hike:distanceDeltaMeters>"));
+    }
+
     private TrackPoint point(long trackPointId, long sourceRawPointId, long sourceDecisionId,
                              long elapsedRealtimeNanos, String result, String reason) {
         return new TrackPoint(trackPointId,

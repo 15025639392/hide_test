@@ -1,0 +1,264 @@
+package com.example.gnsssatdemo.track.export;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+
+public class HikingSampleReport {
+    public static final String VERDICT_PASS = "PASS";
+    public static final String VERDICT_REVIEW = "REVIEW";
+    public static final String VERDICT_FAIL = "FAIL";
+
+    public final String sessionId;
+    public final String verdict;
+    public final double diagnosticDurationSeconds;
+    public final double rawDurationSeconds;
+    public final double maxRawIntervalSeconds;
+    public final double averageRawIntervalSeconds;
+    public final int longRawIntervalCount;
+    public final double totalDistanceMeters;
+    public final double movingTimeSeconds;
+    public final int manifestRawPointCount;
+    public final int manifestTrackPointCount;
+    public final int manifestWeakTrackPointCount;
+    public final int manifestGapCount;
+    public final int rawLocationCount;
+    public final int decisionCount;
+    public final int trustedDecisionCount;
+    public final int weakDecisionCount;
+    public final int rejectDecisionCount;
+    public final int gapRecoveryCount;
+    public final int gapRecoveryZeroDeltaCount;
+    public final int noLocationTimeoutCount;
+    public final double maxNoLocationTimeoutSeconds;
+    public final int gnssSnapshotCount;
+    public final int staleGnssRawCount;
+    public final Map<String, Integer> samplingRequestCounts;
+    public final Map<String, Double> samplingDurationSeconds;
+    public final Map<String, Integer> decisionReasonCounts;
+    public final List<String> gapSummaries;
+    public final List<String> blockingFindings;
+    public final List<String> reviewFindings;
+    public final List<String> excludedMetrics;
+
+    public HikingSampleReport(String sessionId, String verdict,
+                              double diagnosticDurationSeconds, double rawDurationSeconds,
+                              double maxRawIntervalSeconds, double averageRawIntervalSeconds,
+                              int longRawIntervalCount,
+                              double totalDistanceMeters, double movingTimeSeconds,
+                              int manifestRawPointCount, int manifestTrackPointCount,
+                              int manifestWeakTrackPointCount, int manifestGapCount,
+                              int rawLocationCount, int decisionCount, int trustedDecisionCount,
+                              int weakDecisionCount, int rejectDecisionCount,
+                              int gapRecoveryCount, int gapRecoveryZeroDeltaCount,
+                              int noLocationTimeoutCount, double maxNoLocationTimeoutSeconds,
+                              int gnssSnapshotCount, int staleGnssRawCount,
+                              Map<String, Integer> samplingRequestCounts,
+                              Map<String, Double> samplingDurationSeconds,
+                              Map<String, Integer> decisionReasonCounts,
+                              List<String> gapSummaries,
+                              List<String> blockingFindings,
+                              List<String> reviewFindings,
+                              List<String> excludedMetrics) {
+        this.sessionId = sessionId;
+        this.verdict = verdict;
+        this.diagnosticDurationSeconds = diagnosticDurationSeconds;
+        this.rawDurationSeconds = rawDurationSeconds;
+        this.maxRawIntervalSeconds = maxRawIntervalSeconds;
+        this.averageRawIntervalSeconds = averageRawIntervalSeconds;
+        this.longRawIntervalCount = longRawIntervalCount;
+        this.totalDistanceMeters = totalDistanceMeters;
+        this.movingTimeSeconds = movingTimeSeconds;
+        this.manifestRawPointCount = manifestRawPointCount;
+        this.manifestTrackPointCount = manifestTrackPointCount;
+        this.manifestWeakTrackPointCount = manifestWeakTrackPointCount;
+        this.manifestGapCount = manifestGapCount;
+        this.rawLocationCount = rawLocationCount;
+        this.decisionCount = decisionCount;
+        this.trustedDecisionCount = trustedDecisionCount;
+        this.weakDecisionCount = weakDecisionCount;
+        this.rejectDecisionCount = rejectDecisionCount;
+        this.gapRecoveryCount = gapRecoveryCount;
+        this.gapRecoveryZeroDeltaCount = gapRecoveryZeroDeltaCount;
+        this.noLocationTimeoutCount = noLocationTimeoutCount;
+        this.maxNoLocationTimeoutSeconds = maxNoLocationTimeoutSeconds;
+        this.gnssSnapshotCount = gnssSnapshotCount;
+        this.staleGnssRawCount = staleGnssRawCount;
+        this.samplingRequestCounts = Collections.unmodifiableMap(samplingRequestCounts);
+        this.samplingDurationSeconds = Collections.unmodifiableMap(samplingDurationSeconds);
+        this.decisionReasonCounts = Collections.unmodifiableMap(decisionReasonCounts);
+        this.gapSummaries = Collections.unmodifiableList(new ArrayList<>(gapSummaries));
+        this.blockingFindings = Collections.unmodifiableList(new ArrayList<>(blockingFindings));
+        this.reviewFindings = Collections.unmodifiableList(new ArrayList<>(reviewFindings));
+        this.excludedMetrics = Collections.unmodifiableList(new ArrayList<>(excludedMetrics));
+    }
+
+    public JSONObject toJson() throws JSONException {
+        JSONObject json = new JSONObject();
+        json.put("sessionId", sessionId);
+        json.put("verdict", verdict);
+        json.put("diagnosticDurationSeconds", diagnosticDurationSeconds);
+        json.put("rawDurationSeconds", rawDurationSeconds);
+        json.put("maxRawIntervalSeconds", maxRawIntervalSeconds);
+        json.put("averageRawIntervalSeconds", averageRawIntervalSeconds);
+        json.put("longRawIntervalCount", longRawIntervalCount);
+        json.put("totalDistanceMeters", totalDistanceMeters);
+        json.put("movingTimeSeconds", movingTimeSeconds);
+        json.put("manifestRawPointCount", manifestRawPointCount);
+        json.put("manifestTrackPointCount", manifestTrackPointCount);
+        json.put("manifestWeakTrackPointCount", manifestWeakTrackPointCount);
+        json.put("manifestGapCount", manifestGapCount);
+        json.put("rawLocationCount", rawLocationCount);
+        json.put("decisionCount", decisionCount);
+        json.put("trustedDecisionCount", trustedDecisionCount);
+        json.put("weakDecisionCount", weakDecisionCount);
+        json.put("rejectDecisionCount", rejectDecisionCount);
+        json.put("gapRecoveryCount", gapRecoveryCount);
+        json.put("gapRecoveryZeroDeltaCount", gapRecoveryZeroDeltaCount);
+        json.put("noLocationTimeoutCount", noLocationTimeoutCount);
+        json.put("maxNoLocationTimeoutSeconds", maxNoLocationTimeoutSeconds);
+        json.put("gnssSnapshotCount", gnssSnapshotCount);
+        json.put("staleGnssRawCount", staleGnssRawCount);
+        json.put("samplingRequestCounts", integerMapToJson(samplingRequestCounts));
+        json.put("samplingDurationSeconds", doubleMapToJson(samplingDurationSeconds));
+        json.put("decisionReasonCounts", integerMapToJson(decisionReasonCounts));
+        json.put("gapSummaries", stringListToJson(gapSummaries));
+        json.put("blockingFindings", stringListToJson(blockingFindings));
+        json.put("reviewFindings", stringListToJson(reviewFindings));
+        json.put("excludedMetrics", stringListToJson(excludedMetrics));
+        return json;
+    }
+
+    public String toText() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("# 真实徒步样本报告\n\n");
+        sb.append("sessionId=").append(sessionId).append('\n');
+        sb.append("结论=").append(verdictText()).append('\n');
+        sb.append("说明=本报告只统计真实样本验证所需的采样、距离、GAP、reject/weak 解释；")
+                .append("电量/省电证据和多地图 GPX 兼容性自动回归不纳入当前统计。\n\n");
+
+        sb.append("## 核心指标\n");
+        sb.append("- 诊断时长=").append(secondsText(diagnosticDurationSeconds))
+                .append(" RawPoint 时长=").append(secondsText(rawDurationSeconds)).append('\n');
+        sb.append("- RawPoint 最大间隔=").append(secondsText(maxRawIntervalSeconds))
+                .append(" 平均间隔=").append(secondsText(averageRawIntervalSeconds))
+                .append(" 长间隔次数=").append(longRawIntervalCount).append('\n');
+        sb.append("- 距离=").append(oneDecimal(totalDistanceMeters)).append("m")
+                .append(" 运动时间=").append(secondsText(movingTimeSeconds)).append('\n');
+        sb.append("- Manifest RawPoint=").append(manifestRawPointCount)
+                .append(" TrackPoint=").append(manifestTrackPointCount)
+                .append(" WeakPoint=").append(manifestWeakTrackPointCount)
+                .append(" GAP=").append(manifestGapCount).append('\n');
+        sb.append("- 诊断 RawLocation=").append(rawLocationCount)
+                .append(" Decision=").append(decisionCount)
+                .append(" 可信决策=").append(trustedDecisionCount)
+                .append(" weak=").append(weakDecisionCount)
+                .append(" reject=").append(rejectDecisionCount).append('\n');
+        sb.append("- GAP 恢复=").append(gapRecoveryCount)
+                .append(" zero-delta=").append(gapRecoveryZeroDeltaCount)
+                .append(" no-location-timeout=").append(noLocationTimeoutCount)
+                .append(" 最大无回调=").append(secondsText(maxNoLocationTimeoutSeconds)).append('\n');
+        sb.append("- GNSS Snapshot=").append(gnssSnapshotCount)
+                .append(" staleRaw=").append(staleGnssRawCount).append("\n\n");
+
+        appendIntegerMap(sb, "## 采样策略请求", samplingRequestCounts);
+        appendDoubleMap(sb, "## 采样策略估算时长", samplingDurationSeconds);
+        appendIntegerMap(sb, "## 决策原因分布", decisionReasonCounts);
+        appendList(sb, "## GAP 明细", gapSummaries);
+        appendList(sb, "## 阻塞问题", blockingFindings);
+        appendList(sb, "## 需要复核", reviewFindings);
+        appendList(sb, "## 本轮排除项", excludedMetrics);
+        return sb.toString();
+    }
+
+    private String verdictText() {
+        if (VERDICT_PASS.equals(verdict)) {
+            return "PASS（可作为阈值复核样本）";
+        }
+        if (VERDICT_REVIEW.equals(verdict)) {
+            return "REVIEW（可看，但调整阈值前需要人工复核）";
+        }
+        return "FAIL（不建议作为阈值调整依据）";
+    }
+
+    private void appendIntegerMap(StringBuilder sb, String title, Map<String, Integer> values) {
+        sb.append(title).append('\n');
+        if (values.isEmpty()) {
+            sb.append("- 无\n\n");
+            return;
+        }
+        for (Map.Entry<String, Integer> entry : values.entrySet()) {
+            sb.append("- ").append(entry.getKey()).append("=").append(entry.getValue()).append('\n');
+        }
+        sb.append('\n');
+    }
+
+    private void appendDoubleMap(StringBuilder sb, String title, Map<String, Double> values) {
+        sb.append(title).append('\n');
+        if (values.isEmpty()) {
+            sb.append("- 无\n\n");
+            return;
+        }
+        for (Map.Entry<String, Double> entry : values.entrySet()) {
+            sb.append("- ").append(entry.getKey()).append("=")
+                    .append(secondsText(entry.getValue())).append('\n');
+        }
+        sb.append('\n');
+    }
+
+    private void appendList(StringBuilder sb, String title, List<String> values) {
+        sb.append(title).append('\n');
+        if (values.isEmpty()) {
+            sb.append("- 无\n\n");
+            return;
+        }
+        for (String value : values) {
+            sb.append("- ").append(value).append('\n');
+        }
+        sb.append('\n');
+    }
+
+    private JSONObject integerMapToJson(Map<String, Integer> values) throws JSONException {
+        JSONObject json = new JSONObject();
+        for (Map.Entry<String, Integer> entry : values.entrySet()) {
+            json.put(entry.getKey(), entry.getValue());
+        }
+        return json;
+    }
+
+    private JSONObject doubleMapToJson(Map<String, Double> values) throws JSONException {
+        JSONObject json = new JSONObject();
+        for (Map.Entry<String, Double> entry : values.entrySet()) {
+            json.put(entry.getKey(), entry.getValue());
+        }
+        return json;
+    }
+
+    private JSONArray stringListToJson(List<String> values) {
+        JSONArray array = new JSONArray();
+        for (String value : values) {
+            array.put(value);
+        }
+        return array;
+    }
+
+    private String secondsText(double seconds) {
+        if (seconds <= 0.0) {
+            return "0.0s";
+        }
+        if (seconds >= 60.0) {
+            return String.format(Locale.US, "%.1fmin", seconds / 60.0);
+        }
+        return oneDecimal(seconds) + "s";
+    }
+
+    private String oneDecimal(double value) {
+        return String.format(Locale.US, "%.1f", value);
+    }
+}

@@ -56,6 +56,14 @@ public class LocationValidatorTest {
     }
 
     @Test
+    public void validate_rejectsPointFromFuture() {
+        RawPoint point = pointWithElapsedRealtime(NOW_NANOS
+                + LocationValidator.START_TOLERANCE_NANOS + 1L);
+
+        assertRejected(point, "location_from_future");
+    }
+
+    @Test
     public void validate_rejectsZeroCoordinate() {
         assertRejected(pointWithCoordinate(0.0, 0.0), "zero_coordinate");
     }

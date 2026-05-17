@@ -69,4 +69,33 @@ public class DiagnosticTrackPointReaderTest {
         assertEquals("weak", points.get(0).decisionResult);
         assertEquals("weak_first_fix", points.get(0).decisionReason);
     }
+
+    @Test
+    public void readDisplayTrackPoints_includesTransportRejectPointsForMapOnly() throws Exception {
+        File dir = Files.createTempDirectory("diagnostic-track-reader-transport").toFile();
+        File diagnostic = new File(dir, "diagnostic.jsonl");
+        String jsonl = ""
+                + "{\"event\":\"raw_location\",\"rawPointId\":1,\"provider\":\"gps\","
+                + "\"lat\":29.0,\"lng\":106.0,\"accuracy\":8.0,\"timeMillis\":1000,"
+                + "\"elapsedRealtimeNanos\":2000}\n"
+                + "{\"event\":\"decision\",\"decisionId\":1,\"rawPointId\":1,"
+                + "\"result\":\"anchor\",\"reason\":\"first_fix_good\",\"trackPointId\":1,"
+                + "\"segmentId\":1,\"distanceDeltaMeters\":0.0,"
+                + "\"movingTimeDeltaSeconds\":0.0}\n"
+                + "{\"event\":\"raw_location\",\"rawPointId\":2,\"provider\":\"gps\","
+                + "\"lat\":29.01,\"lng\":106.0,\"accuracy\":8.0,\"timeMillis\":2000,"
+                + "\"elapsedRealtimeNanos\":22000}\n"
+                + "{\"event\":\"decision\",\"decisionId\":2,\"rawPointId\":2,"
+                + "\"result\":\"reject\",\"reason\":\"transport_suspected\"}\n";
+        Files.write(diagnostic.toPath(), jsonl.getBytes(StandardCharsets.UTF_8));
+
+        List<TrackPoint> trustedPoints = new DiagnosticTrackPointReader().readTrackPoints(diagnostic);
+        List<TrackPoint> displayPoints = new DiagnosticTrackPointReader().readDisplayTrackPoints(diagnostic);
+
+        assertEquals(1, trustedPoints.size());
+        assertEquals(2, displayPoints.size());
+        assertEquals("transport", displayPoints.get(1).decisionResult);
+        assertEquals("transport_suspected", displayPoints.get(1).decisionReason);
+        assertEquals(2L, displayPoints.get(1).sourceRawPointId);
+    }
 }

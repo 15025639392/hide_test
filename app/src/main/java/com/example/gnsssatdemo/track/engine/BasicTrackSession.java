@@ -36,6 +36,10 @@ public class BasicTrackSession implements Closeable {
     private static final String STRATEGY_VERSION = "stage1-gnss-track-v1";
     private static final int RECENT_SUMMARY_LIMIT = 8;
     private static final long WEAK_TRACK_POINT_ID_OFFSET = 1_000_000_000L;
+    private static final long TRANSPORT_DISPLAY_POINT_ID_OFFSET = 2_000_000_000L;
+    private static final long GNSS_SNAPSHOT_MATCH_WINDOW_NANOS = 3_000_000_000L;
+    private static final long GNSS_SNAPSHOT_RETENTION_NANOS = 300_000_000_000L;
+    private static final int GNSS_SNAPSHOT_RETENTION_COUNT = 300;
 
     private final Context appContext;
     private final SessionFileStore fileStore;
@@ -56,7 +60,9 @@ public class BasicTrackSession implements Closeable {
     private long lastUpdatedWallTimeMillis;
     private long trackPointSeq;
     private long weakTrackPointSeq;
+    private long transportDisplayPointSeq;
     private long gnssSnapshotSeq;
+    private long samplingPolicySeq;
     private long segmentId = 1L;
     private boolean active;
     private boolean finished;
@@ -70,11 +76,19 @@ public class BasicTrackSession implements Closeable {
     private long lastStationaryKeepaliveElapsedRealtimeNanos;
     private int stationaryKeepaliveCount;
     private int stationaryJitterCount;
+    private int gapCount;
+    private int transportCount;
     private double totalDistanceMeters;
     private double movingTimeSeconds;
     private GnssQualitySnapshot lastGnssSnapshot;
+    private boolean transportMode;
+    private RawPoint lastTransportRawPoint;
+    private RawPoint transportRecoveryCandidateRawPoint;
+    private long transportRecoveryCandidateStartElapsedRealtimeNanos;
     private final List<TrackPoint> trackPoints = new ArrayList<>();
     private final List<TrackPoint> weakTrackPoints = new ArrayList<>();
+    private final List<TrackPoint> transportTrackPoints = new ArrayList<>();
+    private final List<GnssQualitySnapshot> recentGnssSnapshots = new ArrayList<>();
     private final List<String> recentSummaries = new ArrayList<>();
 
     public BasicTrackSession(Context context) {
@@ -102,7 +116,9 @@ public class BasicTrackSession implements Closeable {
         lastUpdatedWallTimeMillis = createdWallTimeMillis;
         trackPointSeq = 0L;
         weakTrackPointSeq = 0L;
+        transportDisplayPointSeq = 0L;
         gnssSnapshotSeq = 0L;
+        samplingPolicySeq = 0L;
         segmentId = 1L;
         active = false;
         finished = false;
@@ -116,11 +132,19 @@ public class BasicTrackSession implements Closeable {
         lastStationaryKeepaliveElapsedRealtimeNanos = 0L;
         stationaryKeepaliveCount = 0;
         stationaryJitterCount = 0;
+        gapCount = 0;
+        transportCount = 0;
         totalDistanceMeters = 0.0;
         movingTimeSeconds = 0.0;
         lastGnssSnapshot = null;
+        transportMode = false;
+        lastTransportRawPoint = null;
+        transportRecoveryCandidateRawPoint = null;
+        transportRecoveryCandidateStartElapsedRealtimeNanos = 0L;
         trackPoints.clear();
         weakTrackPoints.clear();
+        transportTrackPoints.clear();
+        recentGnssSnapshots.clear();
         recentSummaries.clear();
 
         sessionDir = fileStore.createSessionDir(sessionId);
@@ -158,6 +182,7 @@ public class BasicTrackSession implements Closeable {
 
     public void onGnssSnapshot(GnssQualitySnapshot snapshot) {
         lastGnssSnapshot = snapshot;
+        rememberGnssSnapshot(snapshot);
         if (!active || logger == null) {
             return;
         }
@@ -186,11 +211,11 @@ public class BasicTrackSession implements Closeable {
             return;
         }
 
-        RawPoint rawPoint = new RawPoint(++rawPointSeq, location,
-                lastGnssSnapshot == null ? null : lastGnssSnapshot.snapshotId);
+        GnssSnapshotMatch snapshotMatch = matchGnssSnapshot(location.getElapsedRealtimeNanos());
+        RawPoint rawPoint = new RawPoint(++rawPointSeq, location, snapshotMatch.snapshotId);
         lastRawAccuracyMeters = rawPoint.hasAccuracy ? rawPoint.accuracyMeters : -1f;
         try {
-            appendRawLocation(rawPoint);
+            appendRawLocation(rawPoint, snapshotMatch);
             ValidationResult validationResult = validator.validate(rawPoint, recordStartElapsedRealtimeNanos);
             if (!validationResult.valid) {
                 appendDecision(rawPoint, null, "reject", validationResult.rejectReason, 0.0, 0.0);
@@ -200,11 +225,23 @@ public class BasicTrackSession implements Closeable {
 
             TrackPoint previousTrackPoint = trackPoints.isEmpty()
                     ? null : trackPoints.get(trackPoints.size() - 1);
-            TrackDecisionResult outcome = decisionEngine.decide(rawPoint, previousTrackPoint,
+            TrackDecisionResult outcome = transportMode
+                    ? decideWhileInTransportMode(rawPoint)
+                    : decisionEngine.decide(rawPoint, previousTrackPoint,
                     lastStationaryKeepaliveElapsedRealtimeNanos, forcedWeakFirstFixEnabled);
             TrackPoint trackPoint = null;
-            String decisionState = trackPoints.isEmpty() ? "WAITING_FIRST_FIX" : "TRACKING";
+            String decisionState = transportMode ? "TRANSPORT"
+                    : (trackPoints.isEmpty() ? "WAITING_FIRST_FIX" : "TRACKING");
             if ("accept".equals(outcome.result) || "anchor".equals(outcome.result)) {
+                if (outcome.startsNewSegment && previousTrackPoint != null) {
+                    segmentId++;
+                    if ("gap_recovery".equals(outcome.reason)) {
+                        gapCount++;
+                        addRecentSummary("定位恢复，新开 Segment#" + segmentId);
+                    } else if ("transport_recovery".equals(outcome.reason)) {
+                        addRecentSummary("交通工具移动后恢复徒步，新开 Segment#" + segmentId);
+                    }
+                }
                 long decisionId = decisionSeq + 1L;
                 trackPoint = new TrackPoint(++trackPointSeq, decisionId, segmentId, rawPoint,
                         outcome.result, outcome.reason,
@@ -218,6 +255,15 @@ public class BasicTrackSession implements Closeable {
                         decisionId, segmentId, rawPoint,
                         outcome.result, outcome.reason, 0.0, 0.0);
                 weakTrackPoints.add(trackPoint);
+            }
+            if ("transport_suspected".equals(outcome.reason)) {
+                addTransportDisplayPoint(rawPoint, outcome.reason);
+                enterTransportMode(rawPoint);
+            } else if ("transport_recovery".equals(outcome.reason)) {
+                leaveTransportMode();
+            } else if (transportMode && "transport_confirmed".equals(outcome.reason)) {
+                addTransportDisplayPoint(rawPoint, outcome.reason);
+                lastTransportRawPoint = rawPoint;
             }
             lastStationaryKeepaliveElapsedRealtimeNanos =
                     outcome.nextStationaryKeepaliveElapsedRealtimeNanos;
@@ -239,6 +285,99 @@ public class BasicTrackSession implements Closeable {
             appendSessionEvent("no_location_timeout", "RECORDING", "RECORDING",
                     trackPoints.isEmpty() ? "WAITING_FIRST_FIX" : "FIX_READY",
                     elapsedSinceLastLocationMillis);
+            writeSessionJson();
+        } catch (IOException | JSONException e) {
+            markIntegrityError("diagnostic_log_append_failed", e);
+        }
+    }
+
+    private TrackDecisionResult decideWhileInTransportMode(RawPoint rawPoint) {
+        if (lastTransportRawPoint == null) {
+            lastTransportRawPoint = rawPoint;
+            resetTransportRecoveryCandidate();
+            return transportConfirmed();
+        }
+        if (!decisionEngine.isTransportRecoveryCandidate(lastTransportRawPoint, rawPoint)) {
+            resetTransportRecoveryCandidate();
+            return transportConfirmed();
+        }
+        if (transportRecoveryCandidateRawPoint == null) {
+            transportRecoveryCandidateRawPoint = lastTransportRawPoint;
+            transportRecoveryCandidateStartElapsedRealtimeNanos =
+                    lastTransportRawPoint.elapsedRealtimeNanos;
+        }
+        long stableNanos = rawPoint.elapsedRealtimeNanos
+                - transportRecoveryCandidateStartElapsedRealtimeNanos;
+        double stableDistanceMeters = decisionEngine.rawDistanceMeters(
+                transportRecoveryCandidateRawPoint, rawPoint);
+        if (stableNanos >= TrackDecisionEngine.TRANSPORT_RECOVERY_STABLE_NANOS
+                && stableDistanceMeters >= TrackDecisionEngine.TRANSPORT_RECOVERY_MIN_DISTANCE_METERS) {
+            return new TrackDecisionResult("accept", "transport_recovery",
+                    0.0, 0.0, lastStationaryKeepaliveElapsedRealtimeNanos,
+                    0, 0, true);
+        }
+        return transportConfirmed();
+    }
+
+    private TrackDecisionResult transportConfirmed() {
+        return new TrackDecisionResult("reject", "transport_confirmed",
+                0.0, 0.0, lastStationaryKeepaliveElapsedRealtimeNanos,
+                0, 0, false);
+    }
+
+    private void enterTransportMode(RawPoint rawPoint) {
+        if (!transportMode) {
+            transportCount++;
+            addRecentSummary("检测到疑似交通工具移动，暂停累计徒步距离");
+        }
+        transportMode = true;
+        lastTransportRawPoint = rawPoint;
+        resetTransportRecoveryCandidate();
+    }
+
+    private void leaveTransportMode() {
+        transportMode = false;
+        lastTransportRawPoint = null;
+        resetTransportRecoveryCandidate();
+    }
+
+    private void resetTransportRecoveryCandidate() {
+        transportRecoveryCandidateRawPoint = null;
+        transportRecoveryCandidateStartElapsedRealtimeNanos = 0L;
+    }
+
+    private void addTransportDisplayPoint(RawPoint rawPoint, String reason) {
+        long decisionId = decisionSeq + 1L;
+        TrackPoint point = new TrackPoint(
+                TRANSPORT_DISPLAY_POINT_ID_OFFSET + ++transportDisplayPointSeq,
+                decisionId,
+                segmentId,
+                rawPoint,
+                "transport",
+                reason,
+                0.0,
+                0.0);
+        transportTrackPoints.add(point);
+    }
+
+    public void onSamplingPolicyChanged(String state, long intervalMillis, float distanceMeters) {
+        if (!active || finished || logger == null) {
+            return;
+        }
+        try {
+            JSONObject event = new JSONObject();
+            event.put("event", "sampling_policy");
+            event.put("samplingPolicyId", ++samplingPolicySeq);
+            event.put("state", state);
+            event.put("locationRequestProvider", "gps");
+            event.put("locationRequestMinTimeMs", intervalMillis);
+            event.put("locationRequestMinDistanceMeters", distanceMeters);
+            event.put("locationRequestRegisteredElapsedRealtimeNanos",
+                    SystemClock.elapsedRealtimeNanos());
+            event.put("locationRequestThread", "main");
+            appendDiagnostic(event, SystemClock.elapsedRealtimeNanos());
+            addRecentSummary("采样 " + state + " " + (intervalMillis / 1000L)
+                    + "s/" + String.format(Locale.US, "%.1fm", distanceMeters));
             writeSessionJson();
         } catch (IOException | JSONException e) {
             markIntegrityError("diagnostic_log_append_failed", e);
@@ -289,8 +428,19 @@ public class BasicTrackSession implements Closeable {
         event.put("forcedWeakFirstFixEnabled", forcedWeakFirstFixEnabled);
         event.put("ordinaryGoodAccuracyMeters", 30);
         event.put("weakAccuracyMaxMeters", LocationValidator.MAX_ACCURACY_METERS);
+        event.put("dynamicSamplingEnabled", true);
+        event.put("dynamicSamplingKeepsDistanceFilterZero", true);
+        event.put("gapLineBreakNanos", TrackDecisionEngine.GAP_LINE_BREAK_NANOS);
         event.put("impossibleSpeedMetersPerSecond",
                 TrackDecisionEngine.IMPOSSIBLE_SPEED_METERS_PER_SECOND);
+        event.put("transportSuspectedSpeedMetersPerSecond",
+                TrackDecisionEngine.TRANSPORT_SUSPECTED_SPEED_METERS_PER_SECOND);
+        event.put("transportSuspectedMaxReasonableSpeedMetersPerSecond",
+                TrackDecisionEngine.TRANSPORT_SUSPECTED_MAX_REASONABLE_SPEED_METERS_PER_SECOND);
+        event.put("transportRecoveryMaxSpeedMetersPerSecond",
+                TrackDecisionEngine.TRANSPORT_RECOVERY_MAX_SPEED_METERS_PER_SECOND);
+        event.put("transportRecoveryStableNanos",
+                TrackDecisionEngine.TRANSPORT_RECOVERY_STABLE_NANOS);
         appendDiagnostic(event, recordStartElapsedRealtimeNanos);
     }
 
@@ -334,7 +484,8 @@ public class BasicTrackSession implements Closeable {
         }
     }
 
-    private void appendRawLocation(RawPoint rawPoint) throws IOException, JSONException {
+    private void appendRawLocation(RawPoint rawPoint, GnssSnapshotMatch snapshotMatch)
+            throws IOException, JSONException {
         JSONObject event = new JSONObject();
         event.put("event", "raw_location");
         event.put("rawPointId", rawPoint.rawPointId);
@@ -342,10 +493,20 @@ public class BasicTrackSession implements Closeable {
         event.put("lat", rawPoint.latitude);
         event.put("lng", rawPoint.longitude);
         event.put("accuracy", rawPoint.hasAccuracy ? rawPoint.accuracyMeters : JSONObject.NULL);
+        event.put("altitude", rawPoint.hasAltitude ? rawPoint.altitude : JSONObject.NULL);
+        event.put("speed", rawPoint.hasSpeed ? rawPoint.speedMetersPerSecond : JSONObject.NULL);
+        event.put("bearing", rawPoint.hasBearing ? rawPoint.bearingDegrees : JSONObject.NULL);
         event.put("timeMillis", rawPoint.timeMillis);
+        event.put("hasElapsedRealtimeNanos", rawPoint.hasElapsedRealtimeNanos);
         event.put("elapsedRealtimeNanos", rawPoint.elapsedRealtimeNanos);
+        event.put("mock", rawPoint.mock);
         if (rawPoint.sourceGnssSnapshotId != null) {
             event.put("sourceGnssSnapshotId", rawPoint.sourceGnssSnapshotId);
+        }
+        event.put("gnssQualityStale", snapshotMatch.stale);
+        if (snapshotMatch.snapshotAgeNanos >= 0L) {
+            event.put("sourceGnssSnapshotAgeNanos", snapshotMatch.snapshotAgeNanos);
+            event.put("sourceGnssSnapshotMatchedFromFuture", snapshotMatch.matchedFromFuture);
         }
         appendDiagnostic(event, rawPoint.elapsedRealtimeNanos);
         addRecentSummary("Raw#" + rawPoint.rawPointId + " " + rawPoint.provider
@@ -380,6 +541,9 @@ public class BasicTrackSession implements Closeable {
             event.put("segmentId", trackPoint.segmentId);
             event.put("distanceDeltaMeters", distanceDeltaMeters);
             event.put("movingTimeDeltaSeconds", movingTimeDeltaSeconds);
+            if ("gap_recovery".equals(reason) || "transport_recovery".equals(reason)) {
+                event.put("startsNewSegment", true);
+            }
         }
         if (rawPoint.sourceGnssSnapshotId != null) {
             event.put("sourceGnssSnapshotId", rawPoint.sourceGnssSnapshotId);
@@ -410,9 +574,11 @@ public class BasicTrackSession implements Closeable {
         json.put("rawPointCount", rawPointSeq);
         json.put("stationaryKeepaliveCount", stationaryKeepaliveCount);
         json.put("stationaryJitterCount", stationaryJitterCount);
+        json.put("gapCount", gapCount);
+        json.put("transportCount", transportCount);
         json.put("totalDistanceMeters", totalDistanceMeters);
         json.put("movingTimeSeconds", movingTimeSeconds);
-        json.put("segmentCount", 1);
+        json.put("segmentCount", trackPoints.isEmpty() ? 0 : segmentId);
         json.put("lastKnownErrorCode", lastErrorCode);
         File finalFile = fileStore.sessionJson(sessionDir);
         File tmpFile = fileStore.sessionJsonTmp(sessionDir);
@@ -592,6 +758,10 @@ public class BasicTrackSession implements Closeable {
         return new ArrayList<>(weakTrackPoints);
     }
 
+    public List<TrackPoint> getTransportTrackPoints() {
+        return new ArrayList<>(transportTrackPoints);
+    }
+
     public long getRawPointCount() {
         return rawPointSeq;
     }
@@ -699,6 +869,67 @@ public class BasicTrackSession implements Closeable {
         recentSummaries.add(line);
         while (recentSummaries.size() > RECENT_SUMMARY_LIMIT) {
             recentSummaries.remove(0);
+        }
+    }
+
+    private void rememberGnssSnapshot(GnssQualitySnapshot snapshot) {
+        if (snapshot == null) {
+            return;
+        }
+        recentGnssSnapshots.add(snapshot);
+        long cutoff = snapshot.receivedElapsedRealtimeNanos - GNSS_SNAPSHOT_RETENTION_NANOS;
+        while (!recentGnssSnapshots.isEmpty()
+                && (recentGnssSnapshots.size() > GNSS_SNAPSHOT_RETENTION_COUNT
+                || recentGnssSnapshots.get(0).receivedElapsedRealtimeNanos < cutoff)) {
+            recentGnssSnapshots.remove(0);
+        }
+    }
+
+    private GnssSnapshotMatch matchGnssSnapshot(long locationElapsedRealtimeNanos) {
+        if (locationElapsedRealtimeNanos <= 0L || recentGnssSnapshots.isEmpty()) {
+            return GnssSnapshotMatch.stale();
+        }
+        GnssQualitySnapshot bestPast = null;
+        long bestPastAge = Long.MAX_VALUE;
+        GnssQualitySnapshot bestFuture = null;
+        long bestFutureAge = Long.MAX_VALUE;
+        for (GnssQualitySnapshot snapshot : recentGnssSnapshots) {
+            long delta = locationElapsedRealtimeNanos - snapshot.receivedElapsedRealtimeNanos;
+            if (delta >= 0L && delta <= GNSS_SNAPSHOT_MATCH_WINDOW_NANOS
+                    && delta < bestPastAge) {
+                bestPast = snapshot;
+                bestPastAge = delta;
+            } else if (delta < 0L && -delta <= GNSS_SNAPSHOT_MATCH_WINDOW_NANOS
+                    && -delta < bestFutureAge) {
+                bestFuture = snapshot;
+                bestFutureAge = -delta;
+            }
+        }
+        if (bestPast != null) {
+            return new GnssSnapshotMatch(bestPast.snapshotId, false, false, bestPastAge);
+        }
+        if (bestFuture != null) {
+            return new GnssSnapshotMatch(bestFuture.snapshotId, true, false, bestFutureAge);
+        }
+        return GnssSnapshotMatch.stale();
+    }
+
+    private static class GnssSnapshotMatch {
+        final Long snapshotId;
+        final boolean matchedFromFuture;
+        final boolean stale;
+        final long snapshotAgeNanos;
+
+        GnssSnapshotMatch(Long snapshotId, boolean matchedFromFuture,
+                          boolean stale, long snapshotAgeNanos) {
+            this.snapshotId = snapshotId;
+            this.matchedFromFuture = matchedFromFuture;
+            this.stale = stale;
+            this.snapshotAgeNanos = snapshotAgeNanos;
+        }
+
+        static GnssSnapshotMatch stale() {
+            return new GnssSnapshotMatch(null, false, true, -1L);
         }
     }
 

@@ -54,6 +54,7 @@ public class SessionManifestReader {
                     json.optDouble("movingTimeSeconds", 0.0),
                     json.optInt("stationaryKeepaliveCount", 0),
                     json.optInt("stationaryJitterCount", 0),
+                    json.optInt("gapCount", 0),
                     json.optString("lastKnownErrorCode", ""),
                     diagnosticFile.exists(),
                     trustedGpxFile.exists(),
@@ -76,7 +77,7 @@ public class SessionManifestReader {
         DiagnosticLogSummary diagnosticSummary = readDiagnosticLogSummary(diagnosticFile);
         return new SessionManifest(SessionManifest.READ_MISSING_SESSION_JSON, sessionDir, sessionDir.getName(),
                 0L, 0L, "", "", 0, "", "diagnostic.jsonl", "track.gpx", "partial.gpx",
-                0L, 0L, 0, 0, 0, 0, 0.0, 0.0, 0, 0, "", diagnosticFile.exists(),
+                0L, 0L, 0, 0, 0, 0, 0.0, 0.0, 0, 0, 0, "", diagnosticFile.exists(),
                 trustedGpxFile.exists(), partialGpxFile.exists(), fileLengthIfExists(diagnosticFile),
                 fileLengthIfExists(trustedGpxFile), fileLengthIfExists(partialGpxFile), diagnosticSummary.readStatus,
                 diagnosticSummary.lastCompleteEventSeq, diagnosticSummary.completeEventCount);
@@ -89,7 +90,7 @@ public class SessionManifestReader {
         DiagnosticLogSummary diagnosticSummary = readDiagnosticLogSummary(diagnosticFile);
         return new SessionManifest(SessionManifest.READ_INVALID_SESSION_JSON, sessionDir, sessionDir.getName(),
                 0L, 0L, "", "", 0, "", "diagnostic.jsonl", "track.gpx", "partial.gpx",
-                0L, 0L, 0, 0, 0, 0, 0.0, 0.0, 0, 0, "", diagnosticFile.exists(),
+                0L, 0L, 0, 0, 0, 0, 0.0, 0.0, 0, 0, 0, "", diagnosticFile.exists(),
                 trustedGpxFile.exists(), partialGpxFile.exists(), fileLengthIfExists(diagnosticFile),
                 fileLengthIfExists(trustedGpxFile), fileLengthIfExists(partialGpxFile), diagnosticSummary.readStatus,
                 diagnosticSummary.lastCompleteEventSeq, diagnosticSummary.completeEventCount);

@@ -63,13 +63,13 @@ public class RecordingForegroundService extends Service {
     private static final String CHANNEL_ID = "gnss_recording_visible_v2";
     private static final int NOTIFICATION_ID = 42;
     private static final long NO_LOCATION_TIMEOUT_MILLIS = 30_000L;
-    private static final long STARTING_INTERVAL_MILLIS = 3_000L;
+    private static final long STARTING_INTERVAL_MILLIS = 1_000L;
     private static final float STARTING_DISTANCE_METERS = 0f;
-    private static final long MOVING_INTERVAL_MILLIS = 8_000L;
-    private static final float MOVING_DISTANCE_METERS = 10f;
-    private static final long PAUSED_INTERVAL_MILLIS = 30_000L;
-    private static final float PAUSED_DISTANCE_METERS = 30f;
-    private static final long SIGNAL_WEAK_INTERVAL_MILLIS = 5_000L;
+    private static final long MOVING_INTERVAL_MILLIS = 3_000L;
+    private static final float MOVING_DISTANCE_METERS = 0f;
+    private static final long PAUSED_INTERVAL_MILLIS = 10_000L;
+    private static final float PAUSED_DISTANCE_METERS = 0f;
+    private static final long SIGNAL_WEAK_INTERVAL_MILLIS = 2_000L;
     private static final float SIGNAL_WEAK_DISTANCE_METERS = 0f;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -82,6 +82,7 @@ public class RecordingForegroundService extends Service {
     private boolean gnssStatusRegistered;
     private boolean stopRequested;
     private SamplingPolicy currentSamplingPolicy;
+    private final RecordingSamplingState samplingState = new RecordingSamplingState();
 
     private final BroadcastReceiver statusQueryReceiver = new BroadcastReceiver() {
         @Override
@@ -122,6 +123,7 @@ public class RecordingForegroundService extends Service {
             noLocationTimeoutLogged = false;
             if (trackSession != null) {
                 trackSession.onLocation(location);
+                samplingState.onDecisionReason(trackSession.getLastDecisionReason());
                 String statusText = "TrackPoint " + trackSession.getTrackPointCount()
                         + " / RawPoint " + trackSession.getRawPointCount()
                         + " / " + oneDecimal(trackSession.getTotalDistanceMeters()) + "m"
@@ -194,6 +196,7 @@ public class RecordingForegroundService extends Service {
     }
 
     private void startRecording(boolean forceWeakFirstFix) {
+        stopRequested = false;
         if (trackSession != null && trackSession.isActive()) {
             updateNotification("真实徒步记录中");
             sendStatus("真实徒步记录中");
@@ -206,6 +209,7 @@ public class RecordingForegroundService extends Service {
             return;
         }
         try {
+            samplingState.reset();
             trackSession.start(isGpsProviderEnabled(), true, forceWeakFirstFix, true);
             startLocationCallbacks();
             lastLocationReceivedElapsedRealtimeMillis = SystemClock.elapsedRealtime();
@@ -246,9 +250,7 @@ public class RecordingForegroundService extends Service {
             return;
         }
         try {
-            requestGpsLocationUpdates(1000L, 0f);
-            listening = true;
-            currentSamplingPolicy = new SamplingPolicy("TEST_BOOTSTRAP", 1000L, 0f);
+            currentSamplingPolicy = null;
             updateLocationRequestForCurrentPolicy(true);
             if (!gnssStatusRegistered) {
                 locationManager.registerGnssStatusCallback(gnssStatusCallback, mainHandler);
@@ -294,6 +296,10 @@ public class RecordingForegroundService extends Service {
             requestGpsLocationUpdates(nextPolicy.intervalMillis, nextPolicy.distanceMeters);
             listening = true;
             currentSamplingPolicy = nextPolicy;
+            if (trackSession != null) {
+                trackSession.onSamplingPolicyChanged(nextPolicy.state,
+                        nextPolicy.intervalMillis, nextPolicy.distanceMeters);
+            }
         } catch (RuntimeException e) {
             updateNotification("GPS 采样策略切换失败: " + e.getMessage());
             sendStatus("GPS 采样策略切换失败: " + e.getMessage());
@@ -328,8 +334,7 @@ public class RecordingForegroundService extends Service {
             return new SamplingPolicy("STARTING", STARTING_INTERVAL_MILLIS,
                     STARTING_DISTANCE_METERS);
         }
-        if (trackSession.getStationaryKeepaliveCount() >= 2
-                || trackSession.getStationaryJitterCount() >= 10) {
+        if (samplingState.shouldUsePausedPolicy()) {
             return new SamplingPolicy("PAUSED", PAUSED_INTERVAL_MILLIS,
                     PAUSED_DISTANCE_METERS);
         }
@@ -340,8 +345,10 @@ public class RecordingForegroundService extends Service {
     private boolean isWeakSignalReason(String reason) {
         return "accuracy_too_large".equals(reason)
                 || "first_fix_accuracy_too_large".equals(reason)
+                || "weak_first_fix".equals(reason)
                 || "weak_signal_stage1".equals(reason)
                 || "invalid_accuracy".equals(reason)
+                || "location_too_old".equals(reason)
                 || "impossible_speed".equals(reason);
     }
 
@@ -498,6 +505,9 @@ public class RecordingForegroundService extends Service {
         for (TrackPoint point : trackSession.getWeakTrackPoints()) {
             appendPolylinePoint(sb, point);
         }
+        for (TrackPoint point : trackSession.getTransportTrackPoints()) {
+            appendPolylinePoint(sb, point);
+        }
         return sortedPolyline(sb.toString());
     }
 
@@ -511,7 +521,8 @@ public class RecordingForegroundService extends Service {
                 .append(point.timeMillis).append(',')
                 .append(point.elapsedRealtimeNanos).append(',')
                 .append(point.decisionResult).append(',')
-                .append(point.hasAltitude ? point.altitude : Double.NaN);
+                .append(point.hasAltitude ? point.altitude : Double.NaN).append(',')
+                .append(point.decisionReason);
     }
 
     private String oneDecimal(double value) {
@@ -521,7 +532,13 @@ public class RecordingForegroundService extends Service {
     private double totalAscentMeters(List<TrackPoint> points) {
         double total = 0.0;
         Double previousAltitude = null;
+        boolean sawTrustedAltitude = false;
         for (TrackPoint point : points) {
+            if (isAscentAnchorPoint(point)) {
+                previousAltitude = point.hasAltitude ? point.altitude : null;
+                sawTrustedAltitude = sawTrustedAltitude || point.hasAltitude;
+                continue;
+            }
             if (!point.hasAltitude) {
                 continue;
             }
@@ -531,9 +548,15 @@ public class RecordingForegroundService extends Service {
                     total += delta;
                 }
             }
+            sawTrustedAltitude = true;
             previousAltitude = point.altitude;
         }
-        return previousAltitude == null ? -1.0 : total;
+        return sawTrustedAltitude ? total : -1.0;
+    }
+
+    private boolean isAscentAnchorPoint(TrackPoint point) {
+        return "gap_recovery".equals(point.decisionReason)
+                || "transport_recovery".equals(point.decisionReason);
     }
 
     private String sortedPolyline(String polyline) {

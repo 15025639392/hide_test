@@ -29,6 +29,9 @@ public class LocationValidator {
         if (rawPoint.elapsedRealtimeNanos < recordStartElapsedRealtimeNanos - START_TOLERANCE_NANOS) {
             return ValidationResult.reject("before_record_start", age);
         }
+        if (rawPoint.elapsedRealtimeNanos > now + START_TOLERANCE_NANOS) {
+            return ValidationResult.reject("location_from_future", age);
+        }
         if (age > MAX_LOCATION_AGE_NANOS) {
             return ValidationResult.reject("location_too_old", age);
         }

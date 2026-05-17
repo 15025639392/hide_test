@@ -8,12 +8,24 @@ public class TrackDecisionResult {
     public final long nextStationaryKeepaliveElapsedRealtimeNanos;
     public final int stationaryKeepaliveIncrement;
     public final int stationaryJitterIncrement;
+    public final boolean startsNewSegment;
 
     public TrackDecisionResult(String result, String reason,
                                double distanceDeltaMeters, double movingTimeDeltaSeconds,
                                long nextStationaryKeepaliveElapsedRealtimeNanos,
                                int stationaryKeepaliveIncrement,
                                int stationaryJitterIncrement) {
+        this(result, reason, distanceDeltaMeters, movingTimeDeltaSeconds,
+                nextStationaryKeepaliveElapsedRealtimeNanos,
+                stationaryKeepaliveIncrement, stationaryJitterIncrement, false);
+    }
+
+    public TrackDecisionResult(String result, String reason,
+                               double distanceDeltaMeters, double movingTimeDeltaSeconds,
+                               long nextStationaryKeepaliveElapsedRealtimeNanos,
+                               int stationaryKeepaliveIncrement,
+                               int stationaryJitterIncrement,
+                               boolean startsNewSegment) {
         this.result = result;
         this.reason = reason;
         this.distanceDeltaMeters = distanceDeltaMeters;
@@ -21,5 +33,6 @@ public class TrackDecisionResult {
         this.nextStationaryKeepaliveElapsedRealtimeNanos = nextStationaryKeepaliveElapsedRealtimeNanos;
         this.stationaryKeepaliveIncrement = stationaryKeepaliveIncrement;
         this.stationaryJitterIncrement = stationaryJitterIncrement;
+        this.startsNewSegment = startsNewSegment;
     }
 }
