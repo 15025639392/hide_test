@@ -64,6 +64,10 @@ LocationManager.GPS_PROVIDER
 - Android 设备、权限、Provider 状态
 - 前台服务与采样策略事件
 
+弱 GPS 诊断的外部参考与后续增强方向见
+`docs/weak-gps-github-research.md`。当前阶段优先补充卫星质量证据，
+不把弱信号修复结果写入可信轨迹。
+
 不进入正式轨迹：
 
 - `NETWORK_PROVIDER`
@@ -184,6 +188,46 @@ TrackPoint：
 - 静止点默认不累计距离。
 - 每 30 秒允许一次 `stationary_keepalive` 诊断。
 - 更频繁的小范围漂移记为 `stationary_jitter`。
+
+### 静止锚点优化暂缓
+
+`stationary_anchor_refinement` 指在静止或近静止小范围内，把多个可信点聚成一个
+stationary cluster，并选择其中最可信的点作为代表锚点。候选评分可参考 accuracy、
+GNSS snapshot 新鲜度、used satellite count、C/N0 和前后连接是否产生异常速度。
+
+该方向暂时不落地到当前主链路。
+
+可能收益：
+
+- 静止或休息时地图点位更稳定。
+- 静止簇能有一个更可解释的代表点。
+- 离开静止区后，展示线可能更少受抖动影响。
+- 样本报告可以更清楚表达“这里停留过，而不是移动过”。
+
+主要风险：
+
+- 真实徒步中的慢速移动、拍照挪步、折返、窄路绕行可能被误吞成静止。
+- 若代表锚点后续被更新，会影响离开静止区后的连接距离和时间语义。
+- 弱信号环境下 accuracy 不一定可靠，所谓“最可信点”仍可能是漂移点。
+- 需要维护 cluster 状态、best candidate、退出条件和重算逻辑，会增加 replay 与测试矩阵复杂度。
+
+暂缓原因：
+
+- 当前 `stationary_keepalive` / `stationary_jitter` 已经能做到静止抖动不累计距离。
+- 当前阶段更需要保持 RawPoint/TrackPoint 判点链路简单、可解释、可回放。
+- 在没有足够真实静止、休息、弱 GPS 样本前，把该优化接入 `totalDistanceMeters`
+  或 `track.gpx` 的收益不确定，风险高于收益。
+
+如后续验证该方向，第一阶段只能做 diagnostic/report/display only：
+
+```text
+识别 stationary cluster
+记录 bestStationaryAnchorCandidate
+输出到 sample_report 或地图辅助展示
+不改变 TrackPoint
+不改变 totalDistanceMeters
+不改变 track.gpx / partial.gpx
+```
 
 ## GAP 与连续轨迹
 
