@@ -2248,7 +2248,7 @@ public class MainActivity extends Activity {
         TrackPoint trustedPoint = lastTrustedMapTrackPoint(points);
         MapPoint currentPoint = currentMapPoint(trustedPoint);
         float accuracyMeters = currentAccuracyMeters(trustedPoint);
-        float heading = effectiveHeadingDegrees(trustedPoint);
+        float heading = effectiveHeadingDegrees(points, trustedPoint);
         double totalDistanceMeters = currentTotalDistanceMeters(points);
         double totalAscentMeters = currentTotalAscentMeters(points);
         if (mapView != null) {
@@ -2451,12 +2451,15 @@ public class MainActivity extends Activity {
         return 0f;
     }
 
-    private float effectiveHeadingDegrees(TrackPoint trustedPoint) {
+    private float effectiveHeadingDegrees(List<TrackPoint> points, TrackPoint trustedPoint) {
         if (trustedPoint != null) {
-            return trustedPoint.hasBearing ? trustedPoint.bearingDegrees : Float.NaN;
-        }
-        if (!Float.isNaN(headingDegrees)) {
-            return headingDegrees;
+            if (trustedPoint.hasBearing) {
+                return trustedPoint.bearingDegrees;
+            }
+            float trackHeading = trustedTrackHeadingDegrees(points, trustedPoint);
+            if (!Float.isNaN(trackHeading)) {
+                return trackHeading;
+            }
         }
         if (foregroundServiceRecording && foregroundServiceHasBearing) {
             return foregroundServiceBearingDegrees;
@@ -2464,7 +2467,61 @@ public class MainActivity extends Activity {
         if (lastLocation != null && lastLocation.hasBearing()) {
             return lastLocation.getBearing();
         }
+        if (!Float.isNaN(headingDegrees)) {
+            return headingDegrees;
+        }
         return Float.NaN;
+    }
+
+    private float trustedTrackHeadingDegrees(List<TrackPoint> points, TrackPoint currentPoint) {
+        if (points == null || currentPoint == null) {
+            return Float.NaN;
+        }
+        TrackPoint previousTrustedPoint = null;
+        for (int i = points.size() - 1; i >= 0; i--) {
+            TrackPoint point = points.get(i);
+            if (point == currentPoint) {
+                continue;
+            }
+            if (isWeakMapPoint(point) || isTransportMapPoint(point)) {
+                continue;
+            }
+            if (point.elapsedRealtimeNanos > currentPoint.elapsedRealtimeNanos) {
+                continue;
+            }
+            previousTrustedPoint = point;
+            break;
+        }
+        if (previousTrustedPoint == null
+                || mapDistanceMeters(previousTrustedPoint, currentPoint) < 1.0d) {
+            return Float.NaN;
+        }
+        return bearingBetweenDegrees(previousTrustedPoint.latitude, previousTrustedPoint.longitude,
+                currentPoint.latitude, currentPoint.longitude);
+    }
+
+    private double mapDistanceMeters(TrackPoint from, TrackPoint to) {
+        double lat1 = Math.toRadians(from.latitude);
+        double lat2 = Math.toRadians(to.latitude);
+        double dLat = lat2 - lat1;
+        double dLng = Math.toRadians(to.longitude - from.longitude);
+        double sinLat = Math.sin(dLat / 2d);
+        double sinLng = Math.sin(dLng / 2d);
+        double a = sinLat * sinLat
+                + Math.cos(lat1) * Math.cos(lat2) * sinLng * sinLng;
+        return 6_371_000d * 2d * Math.atan2(Math.sqrt(a), Math.sqrt(1d - a));
+    }
+
+    private float bearingBetweenDegrees(double fromLatitude, double fromLongitude,
+                                        double toLatitude, double toLongitude) {
+        double lat1 = Math.toRadians(fromLatitude);
+        double lat2 = Math.toRadians(toLatitude);
+        double dLng = Math.toRadians(toLongitude - fromLongitude);
+        double y = Math.sin(dLng) * Math.cos(lat2);
+        double x = Math.cos(lat1) * Math.sin(lat2)
+                - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+        double bearing = Math.toDegrees(Math.atan2(y, x));
+        return (float) ((bearing + 360d) % 360d);
     }
 
     private class NativeTrackMapView extends View {
@@ -3196,22 +3253,38 @@ public class MainActivity extends Activity {
         }
 
         private void drawHeading(Canvas canvas, float x, float y, float degrees) {
-            float radius = dp(22);
+            float tipRadius = dp(23);
+            float baseRadius = dp(4);
+            float halfBaseWidth = dp(5);
             double radians = Math.toRadians(degrees - 90f);
-            float tipX = x + (float) Math.cos(radians) * radius;
-            float tipY = y + (float) Math.sin(radians) * radius;
-            float leftX = x + (float) Math.cos(radians + 2.45d) * dp(9);
-            float leftY = y + (float) Math.sin(radians + 2.45d) * dp(9);
-            float rightX = x + (float) Math.cos(radians - 2.45d) * dp(9);
-            float rightY = y + (float) Math.sin(radians - 2.45d) * dp(9);
+            float directionX = (float) Math.cos(radians);
+            float directionY = (float) Math.sin(radians);
+            float normalX = -directionY;
+            float normalY = directionX;
+            float tipX = x + directionX * tipRadius;
+            float tipY = y + directionY * tipRadius;
+            float baseCenterX = x + directionX * baseRadius;
+            float baseCenterY = y + directionY * baseRadius;
+            float leftX = baseCenterX + normalX * halfBaseWidth;
+            float leftY = baseCenterY + normalY * halfBaseWidth;
+            float rightX = baseCenterX - normalX * halfBaseWidth;
+            float rightY = baseCenterY - normalY * halfBaseWidth;
             Path arrow = new Path();
             arrow.moveTo(tipX, tipY);
             arrow.lineTo(leftX, leftY);
-            arrow.lineTo(rightX, rightY);
+            arrow.quadTo(x, y, rightX, rightY);
             arrow.close();
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(Color.rgb(251, 146, 60));
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeWidth(dp(2));
+            paint.setColor(Color.argb(235, 255, 255, 255));
             canvas.drawPath(arrow, paint);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.argb(225, 37, 99, 235));
+            canvas.drawPath(arrow, paint);
+            paint.setStrokeJoin(Paint.Join.MITER);
+            paint.setStrokeCap(Paint.Cap.BUTT);
         }
 
         private void drawHud(Canvas canvas) {
