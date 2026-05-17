@@ -3,6 +3,7 @@ package com.example.gnsssatdemo.track.export;
 import org.junit.Test;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.util.List;
 
@@ -109,6 +110,67 @@ public class SessionFileStoreTest {
         assertInvalidSessionId(store, "a/b");
         assertInvalidSessionId(store, "a\\b");
         assertInvalidSessionId(store, "abc..def");
+    }
+
+    @Test
+    public void deleteSessionDir_deletesSessionDirectoryRecursively() throws Exception {
+        File root = Files.createTempDirectory("track-sessions").toFile();
+        SessionFileStore store = new SessionFileStore(root);
+        File dir = store.createSessionDir("session-delete");
+        File exportDir = store.exportDir(dir);
+        assertTrue(exportDir.mkdirs());
+        File diagnostic = store.diagnosticJsonl(dir);
+        File exported = new File(exportDir, "report.txt");
+
+        Files.write(diagnostic.toPath(), "{}\n".getBytes());
+        Files.write(exported.toPath(), "report".getBytes());
+
+        store.deleteSessionDir(dir);
+
+        assertTrue(!dir.exists());
+        assertTrue(root.exists());
+    }
+
+    @Test
+    public void deleteSessionDir_rejectsDirectoryOutsideRoot() throws Exception {
+        File parent = Files.createTempDirectory("track-sessions-parent").toFile();
+        File root = new File(parent, "root");
+        File outside = new File(parent, "outside-session");
+        assertTrue(root.mkdirs());
+        assertTrue(outside.mkdirs());
+        File outsideFile = new File(outside, "diagnostic.jsonl");
+        Files.write(outsideFile.toPath(), "{}\n".getBytes());
+        SessionFileStore store = new SessionFileStore(root);
+
+        try {
+            store.deleteSessionDir(outside);
+            throw new AssertionError("Expected deletion outside root to fail");
+        } catch (IOException expected) {
+            // Expected.
+        }
+
+        assertTrue(outside.exists());
+        assertTrue(outsideFile.exists());
+    }
+
+    @Test
+    public void deleteSessionDir_rejectsInvalidSessionDirectoryName() throws Exception {
+        File root = Files.createTempDirectory("track-sessions").toFile();
+        File invalidDir = new File(root, "bad..session");
+        assertTrue(invalidDir.mkdirs());
+        File diagnostic = new File(invalidDir, "diagnostic.jsonl");
+        Files.write(diagnostic.toPath(), "{}\n".getBytes());
+        SessionFileStore store = new SessionFileStore(root);
+
+        try {
+            store.deleteSessionDir(invalidDir);
+            throw new AssertionError("Expected invalid session directory name to fail");
+        } catch (IOException expected) {
+            // Expected.
+        }
+
+        assertTrue(invalidDir.exists());
+        assertTrue(diagnostic.exists());
     }
 
     private void assertInvalidSessionId(SessionFileStore store, String sessionId) {

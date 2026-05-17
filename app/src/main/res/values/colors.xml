@@ -1,0 +1,33 @@
+<resources>
+    <!-- Brand -->
+    <color name="primary">#2563EB</color>
+    <color name="primary_dark">#1D4ED8</color>
+    <color name="accent">#3B82F6</color>
+
+    <!-- Semantic -->
+    <color name="success">#10B981</color>
+    <color name="danger">#EF4444</color>
+    <color name="danger_dark">#DC2626</color>
+    <color name="warning">#F59E0B</color>
+
+    <!-- Backgrounds -->
+    <color name="bg_page">#F1F5F9</color>
+    <color name="bg_card">#FFFFFF</color>
+    <color name="bg_dark">#111827</color>
+    <color name="bg_info_panel">#F8FAFC</color>
+
+    <!-- Text -->
+    <color name="text_primary">#111827</color>
+    <color name="text_secondary">#6B7280</color>
+    <color name="text_tertiary">#9CA3AF</color>
+    <color name="text_on_primary">#FFFFFF</color>
+    <color name="text_on_danger">#FFFFFF</color>
+
+    <!-- Borders & Dividers -->
+    <color name="border_light">#E5E7EB</color>
+    <color name="border_card">#E2E8F0</color>
+
+    <!-- Map -->
+    <color name="map_bg">#111827</color>
+    <color name="map_surface">#172133</color>
+</resources>

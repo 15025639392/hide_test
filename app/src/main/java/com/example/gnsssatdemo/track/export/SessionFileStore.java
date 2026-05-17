@@ -107,6 +107,24 @@ public class SessionFileStore {
         return deleted;
     }
 
+    public void deleteSessionDir(String sessionId) throws IOException {
+        File dir = sessionDir(sessionId);
+        deleteSessionDir(dir);
+    }
+
+    public void deleteSessionDir(File sessionDir) throws IOException {
+        if (sessionDir == null || !sessionDir.exists()) {
+            return;
+        }
+        File rootCanonical = rootDir.getCanonicalFile();
+        File sessionCanonical = sessionDir.getCanonicalFile();
+        if (!rootCanonical.equals(sessionCanonical.getParentFile())
+                || !isValidSessionId(sessionCanonical.getName())) {
+            throw new IOException("拒绝删除非法 session 目录: " + sessionDir);
+        }
+        deleteRecursively(sessionCanonical);
+    }
+
     private boolean deleteIfExists(File file) throws IOException {
         if (!file.exists()) {
             return false;
@@ -115,6 +133,21 @@ public class SessionFileStore {
             throw new IOException("无法删除临时文件: " + file);
         }
         return true;
+    }
+
+    private void deleteRecursively(File file) throws IOException {
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children == null) {
+                throw new IOException("无法读取待删除目录: " + file);
+            }
+            for (File child : children) {
+                deleteRecursively(child);
+            }
+        }
+        if (!file.delete()) {
+            throw new IOException("无法删除文件: " + file);
+        }
     }
 
     private void requireValidSessionId(String sessionId) {

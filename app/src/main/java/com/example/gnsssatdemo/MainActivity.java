@@ -18,7 +18,6 @@ import android.graphics.Path;
 import android.graphics.PointF;
 import android.graphics.Rect;
 import android.graphics.RectF;
-import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.location.GnssClock;
 import android.location.GnssMeasurement;
@@ -46,6 +45,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.OverScroller;
 import android.widget.ScrollView;
@@ -108,6 +108,7 @@ public class MainActivity extends Activity {
     private static final float MIN_HEADING_RENDER_DELTA_DEGREES = 3f;
     private static final double DEFAULT_MAP_CENTER_LATITUDE = 29.53903137d;
     private static final double DEFAULT_MAP_CENTER_LONGITUDE = 106.49655175d;
+    private static final long UI_RENDER_MIN_INTERVAL_MILLIS = 250L;
     private static final long SATELLITE_TILE_INVALIDATE_COALESCE_MILLIS = 250L;
     private static final int SATELLITE_TILE_MEMORY_CACHE_KB = 128 * 1024;
 
@@ -131,17 +132,16 @@ public class MainActivity extends Activity {
     private LocationManager locationManager;
     private SensorManager sensorManager;
     private Sensor rotationVectorSensor;
-    private TextView output;
     private TextView status;
+    private LinearLayout noticeCard;
+    private TextView noticeText;
     private Button recordButton;
-    private Button fullScreenMapButton;
     private Button importReferenceButton;
+    private LinearLayout controlsOverlay;
+    private View recordOverlay;
     private LinearLayout historyActionsContainer;
     private NativeTrackMapView mapView;
     private Dialog historyDialog;
-    private Dialog fullScreenMapDialog;
-    private NativeTrackMapView fullScreenMapView;
-    private Button fullScreenCenterButton;
 
     private Location lastLocation;
     private GnssStatus lastGnssStatus;
@@ -170,12 +170,20 @@ public class MainActivity extends Activity {
     private final List<TrackPoint> foregroundServiceLiveRawPoints = new ArrayList<>();
     private SessionManifest latestManifest;
     private final List<SessionManifest> recentManifests = new ArrayList<>();
+    private String selectedHistoricalSessionId = "";
     private int lastScanSessionCount;
     private int lastScanCleanedTmpFileCount;
     private String lastScanError = "";
     private float headingDegrees = Float.NaN;
     private final List<ReferenceTrackPoint> referenceTrackPoints = new ArrayList<>();
     private String referenceTrackName = "";
+    private boolean renderScheduled;
+    private long lastRenderElapsedRealtimeMillis;
+    private String cachedHistoricalMapSessionId = "";
+    private long cachedHistoricalMapLastEventSeq = -1L;
+    private long cachedHistoricalMapDiagnosticBytes = -1L;
+    private final List<TrackPoint> cachedHistoricalMapPoints = new ArrayList<>();
+    private boolean controlsVisible = true;
 
     private final SensorEventListener headingListener = new SensorEventListener() {
         private final float[] rotationMatrix = new float[9];
@@ -224,6 +232,14 @@ public class MainActivity extends Activity {
             } else {
                 scheduleNoLocationTimeout();
             }
+        }
+    };
+
+    private final Runnable renderRunnable = new Runnable() {
+        @Override
+        public void run() {
+            renderScheduled = false;
+            renderNow();
         }
     };
 
@@ -317,9 +333,7 @@ public class MainActivity extends Activity {
             }
             updateForegroundServiceTrackPoints(intent.getStringExtra(
                     RecordingForegroundService.EXTRA_TRACK_POLYLINE));
-            recordButton.setText(foregroundServiceRecording
-                    ? "结束"
-                    : "记录");
+            updateRecordButtonState();
             if (!foregroundServiceRecording) {
                 scanExistingSessions();
                 foregroundServiceTrackPoints.clear();
@@ -394,15 +408,11 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        mainHandler.removeCallbacks(renderRunnable);
         stopHeadingUpdates();
         stopListening();
         if (trackSession != null) {
             trackSession.close();
-        }
-        if (fullScreenMapDialog != null) {
-            fullScreenMapDialog.dismiss();
-            fullScreenMapDialog = null;
-            fullScreenMapView = null;
         }
         unregisterReceiver(foregroundServiceStatusReceiver);
         satelliteTileExecutor.shutdownNow();
@@ -417,10 +427,10 @@ public class MainActivity extends Activity {
                 startListening();
             } else if (hasCoarseLocation()) {
                 setStatus("只授予了大致位置，请在系统权限中打开“精确位置”。");
-                output.setText("当前只有大致位置权限。请进入系统设置 > 应用 > GNSS Satellite Demo > 权限 > 位置信息，打开“精确位置”，否则系统 GNSS 精度会被降级。");
+                showNotice("当前只有大致位置权限。请进入系统设置 > 应用 > GNSS Satellite Demo > 权限 > 位置信息，打开“精确位置”。");
             } else {
                 setStatus("定位权限被拒绝");
-                output.setText("请授予精确定位权限，否则 Android 不会输出 GNSS 卫星数据。");
+                showNotice("请授予精确定位权限，否则 Android 不会输出 GNSS 卫星数据。");
             }
             return;
         }
@@ -527,124 +537,79 @@ public class MainActivity extends Activity {
     }
 
     private void buildUi() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.WHITE);
-        root.setPadding(dp(16), dp(32), dp(16), dp(16));
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(Color.rgb(18, 24, 33));
 
-        TextView title = new TextView(this);
-        title.setText("徒步记录");
-        title.setTextColor(Color.rgb(17, 24, 39));
-        title.setTextSize(22);
-        title.setGravity(Gravity.START);
-        root.addView(title, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
+        mapView = createNativeMapView(true);
+        mapView.setOnMapTapListener(this::toggleControlsVisibility);
+        root.addView(mapView, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
 
         status = new TextView(this);
-        status.setTextColor(Color.rgb(75, 85, 99));
-        status.setTextSize(14);
-        status.setPadding(0, dp(8), 0, dp(8));
         status.setText("等待定位权限...");
-        root.addView(status);
+        status.setVisibility(View.GONE);
+        root.addView(status, new FrameLayout.LayoutParams(1, 1));
 
-        LinearLayout trackActions = new LinearLayout(this);
-        trackActions.setOrientation(LinearLayout.HORIZONTAL);
-        trackActions.setPadding(0, dp(8), 0, 0);
-
-        recordButton = new Button(this);
-        recordButton.setText("记录");
-        recordButton.setAllCaps(false);
-        recordButton.setOnClickListener(v -> toggleTrackRecording());
-        trackActions.addView(recordButton, new LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f));
-
-        Button historyPageButton = new Button(this);
-        historyPageButton.setText("历史记录");
-        historyPageButton.setAllCaps(false);
-        historyPageButton.setOnClickListener(v -> showHistoryPage());
-        LinearLayout.LayoutParams historyParams = new LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f);
-        historyParams.setMargins(dp(8), 0, 0, 0);
-        trackActions.addView(historyPageButton, historyParams);
-
-        root.addView(trackActions, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-
-        mapView = createNativeMapView(false);
-        root.addView(mapView, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(240)));
-
-        LinearLayout secondaryActions = new LinearLayout(this);
-        secondaryActions.setOrientation(LinearLayout.HORIZONTAL);
-        secondaryActions.setPadding(0, dp(8), 0, 0);
+        controlsOverlay = new LinearLayout(this);
+        controlsOverlay.setOrientation(LinearLayout.HORIZONTAL);
+        controlsOverlay.setGravity(Gravity.CENTER_VERTICAL);
+        controlsOverlay.setPadding(dp(5), dp(5), dp(5), dp(5));
+        controlsOverlay.setBackground(roundedRect(Color.argb(165, 15, 23, 42), 20));
 
         importReferenceButton = new Button(this);
         importReferenceButton.setText("导入GPX");
-        importReferenceButton.setAllCaps(false);
+        importReferenceButton.setContentDescription("导入 GPX");
+        styleFloatingSecondaryButton(importReferenceButton);
         importReferenceButton.setOnClickListener(v -> requestReferenceGpxDocument());
-        LinearLayout.LayoutParams importParams = new LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f);
-        secondaryActions.addView(importReferenceButton, importParams);
+        LinearLayout.LayoutParams importParams = new LinearLayout.LayoutParams(dp(76), dp(38));
+        controlsOverlay.addView(importReferenceButton, importParams);
 
-        fullScreenMapButton = new Button(this);
-        fullScreenMapButton.setText("全屏地图");
-        fullScreenMapButton.setAllCaps(false);
-        fullScreenMapButton.setOnClickListener(v -> showFullScreenMap());
-        LinearLayout.LayoutParams fullMapParams = new LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f);
-        fullMapParams.setMargins(dp(8), 0, 0, 0);
-        secondaryActions.addView(fullScreenMapButton, fullMapParams);
+        Button historyButton = new Button(this);
+        historyButton.setText("历史");
+        historyButton.setContentDescription("历史记录");
+        styleFloatingSecondaryButton(historyButton);
+        historyButton.setOnClickListener(v -> showHistoryPage());
+        LinearLayout.LayoutParams historyParams = new LinearLayout.LayoutParams(dp(52), dp(38));
+        historyParams.setMargins(dp(6), 0, 0, 0);
+        controlsOverlay.addView(historyButton, historyParams);
+        updateRecordButtonState();
 
-        Button refreshButton = new Button(this);
-        refreshButton.setText("刷新");
-        refreshButton.setAllCaps(false);
-        refreshButton.setOnClickListener(v -> {
-            scanExistingSessions();
-            if (mapView != null) {
-                mapView.requestFrameNextUpdate();
-            }
-            if (fullScreenMapView != null) {
-                fullScreenMapView.requestFrameNextUpdate();
-            }
-            render();
-        });
-        LinearLayout.LayoutParams refreshParams = new LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f);
-        refreshParams.setMargins(dp(8), 0, 0, 0);
-        secondaryActions.addView(refreshButton, refreshParams);
+        FrameLayout.LayoutParams controlsParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.END);
+        controlsParams.setMargins(dp(12), pageTopPadding(), dp(12), 0);
+        root.addView(controlsOverlay, controlsParams);
 
-        root.addView(secondaryActions, new LinearLayout.LayoutParams(
+        recordButton = new Button(this);
+        recordButton.setOnClickListener(v -> toggleTrackRecording());
+        updateRecordButtonState();
+        recordOverlay = recordButton;
+        FrameLayout.LayoutParams recordOverlayParams = new FrameLayout.LayoutParams(
+                dp(260),
+                dp(46),
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        recordOverlayParams.setMargins(0, 0, 0, pageBottomPadding() + dp(44));
+        root.addView(recordOverlay, recordOverlayParams);
+
+        /* ---------- Permission notice ---------- */
+        noticeCard = new LinearLayout(this);
+        noticeCard.setOrientation(LinearLayout.VERTICAL);
+        noticeCard.setPadding(dp(12), dp(10), dp(12), dp(10));
+        styleCard(noticeCard, Color.rgb(254, 252, 232), 8, 1, Color.rgb(253, 224, 71));
+        noticeText = new TextView(this);
+        noticeText.setTextColor(Color.rgb(146, 64, 14));
+        noticeText.setTextSize(13);
+        noticeText.setLineSpacing(dp(3), 1.0f);
+        noticeCard.addView(noticeText);
+        noticeCard.setVisibility(View.GONE);
+        FrameLayout.LayoutParams noticeParams = new FrameLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-
-        output = new TextView(this);
-        output.setTextColor(Color.rgb(31, 41, 55));
-        output.setTextSize(13);
-        output.setLineSpacing(dp(2), 1.0f);
-        output.setTextIsSelectable(false);
-        output.setPadding(dp(12), dp(10), dp(12), dp(10));
-        output.setBackground(infoPanelBackground());
-
-        ScrollView scroll = new ScrollView(this);
-        scroll.setPadding(0, dp(12), 0, 0);
-        scroll.addView(output);
-        root.addView(scroll, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                0,
-                1f));
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM);
+        noticeParams.setMargins(dp(14), 0, dp(14), pageBottomPadding() + dp(98));
+        root.addView(noticeCard, noticeParams);
 
         setContentView(root);
     }
@@ -656,12 +621,29 @@ public class MainActivity extends Activity {
         return view;
     }
 
-    private GradientDrawable infoPanelBackground() {
-        GradientDrawable drawable = new GradientDrawable();
-        drawable.setColor(Color.rgb(248, 250, 252));
-        drawable.setCornerRadius(dp(8));
-        drawable.setStroke(dp(1), Color.rgb(226, 232, 240));
-        return drawable;
+    private void toggleControlsVisibility() {
+        controlsVisible = !controlsVisible;
+        if (controlsOverlay != null) {
+            controlsOverlay.setVisibility(controlsVisible ? View.VISIBLE : View.GONE);
+        }
+        if (recordOverlay != null) {
+            recordOverlay.setVisibility(controlsVisible ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    private void updateRecordButtonState() {
+        if (recordButton == null) {
+            return;
+        }
+        if (foregroundServiceRecording) {
+            recordButton.setText("结束记录");
+            recordButton.setContentDescription("结束记录");
+            styleRecordActionDangerButton(recordButton);
+        } else {
+            recordButton.setText("开始记录");
+            recordButton.setContentDescription("开始记录");
+            styleRecordActionPrimaryButton(recordButton);
+        }
     }
 
     private void showHistoryPage() {
@@ -674,15 +656,27 @@ public class MainActivity extends Activity {
 
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setBackgroundColor(Color.WHITE);
-        layout.setPadding(dp(16), dp(24), dp(16), dp(16));
+        layout.setBackgroundColor(Color.rgb(247, 249, 252));
+        layout.setPadding(dp(16), pageTopPadding(), dp(16), dp(14));
 
+        /* ---------- Header ---------- */
+        TextView header = new TextView(this);
+        header.setText("历史记录");
+        header.setTextColor(Color.rgb(17, 24, 39));
+        header.setTextSize(20);
+        header.setIncludeFontPadding(false);
+        layout.addView(header, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        /* ---------- Top actions ---------- */
         LinearLayout topBar = new LinearLayout(this);
         topBar.setOrientation(LinearLayout.HORIZONTAL);
+        topBar.setPadding(0, dp(10), 0, 0);
 
         Button closeButton = new Button(this);
         closeButton.setText("返回");
-        closeButton.setAllCaps(false);
+        styleSecondaryButton(closeButton);
         closeButton.setOnClickListener(v -> dialog.dismiss());
         topBar.addView(closeButton, new LinearLayout.LayoutParams(
                 0,
@@ -691,7 +685,7 @@ public class MainActivity extends Activity {
 
         Button refreshButton = new Button(this);
         refreshButton.setText("刷新");
-        refreshButton.setAllCaps(false);
+        styleSecondaryButton(refreshButton);
         refreshButton.setOnClickListener(v -> {
             scanExistingSessions();
             updateHistoryActionRows();
@@ -700,16 +694,17 @@ public class MainActivity extends Activity {
                 0,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 1f);
-        refreshParams.setMargins(dp(8), 0, 0, 0);
+        refreshParams.setMargins(dp(10), 0, 0, 0);
         topBar.addView(refreshButton, refreshParams);
 
         layout.addView(topBar, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
+        /* ---------- List ---------- */
         historyActionsContainer = new LinearLayout(this);
         historyActionsContainer.setOrientation(LinearLayout.VERTICAL);
-        historyActionsContainer.setPadding(0, dp(12), 0, 0);
+        historyActionsContainer.setPadding(0, dp(10), 0, 0);
 
         ScrollView scrollView = new ScrollView(this);
         scrollView.addView(historyActionsContainer);
@@ -731,90 +726,6 @@ public class MainActivity extends Activity {
                     ViewGroup.LayoutParams.MATCH_PARENT);
         }
         updateHistoryActionRows();
-    }
-
-    private void showFullScreenMap() {
-        if (fullScreenMapDialog != null && fullScreenMapDialog.isShowing()) {
-            return;
-        }
-        Dialog dialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
-        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
-
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setBackgroundColor(Color.rgb(17, 24, 39));
-
-        LinearLayout topBar = new LinearLayout(this);
-        topBar.setOrientation(LinearLayout.HORIZONTAL);
-
-        Button closeButton = new Button(this);
-        closeButton.setText("关闭地图");
-        closeButton.setAllCaps(false);
-        closeButton.setOnClickListener(v -> dialog.dismiss());
-        topBar.addView(closeButton, new LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f));
-
-        fullScreenCenterButton = new Button(this);
-        fullScreenCenterButton.setText("居中");
-        fullScreenCenterButton.setAllCaps(false);
-        fullScreenCenterButton.setOnClickListener(v -> {
-            if (fullScreenMapView != null) {
-                fullScreenMapView.requestFrameNextUpdate();
-                render();
-            }
-        });
-        topBar.addView(fullScreenCenterButton, new LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f));
-
-        Button refreshMapButton = new Button(this);
-        refreshMapButton.setText("刷新");
-        refreshMapButton.setAllCaps(false);
-        refreshMapButton.setOnClickListener(v -> {
-            if (fullScreenMapView != null) {
-                fullScreenMapView.requestFrameNextUpdate();
-                render();
-            }
-        });
-        topBar.addView(refreshMapButton, new LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f));
-
-        layout.addView(topBar, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-
-        fullScreenMapView = createNativeMapView(true);
-        layout.addView(fullScreenMapView, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                0,
-                1f));
-
-        dialog.setContentView(layout);
-        dialog.setOnDismissListener(d -> {
-            fullScreenCenterButton = null;
-            fullScreenMapView = null;
-            fullScreenMapDialog = null;
-        });
-        Window window = dialog.getWindow();
-        if (window != null) {
-            window.setBackgroundDrawable(new ColorDrawable(Color.rgb(17, 24, 39)));
-            window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT);
-        }
-        fullScreenMapDialog = dialog;
-        dialog.show();
-        updateMapPreview();
-        Window shownWindow = dialog.getWindow();
-        if (shownWindow != null) {
-            shownWindow.setBackgroundDrawable(new ColorDrawable(Color.rgb(17, 24, 39)));
-            shownWindow.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT);
-        }
     }
 
     private void startListening() {
@@ -864,12 +775,44 @@ public class MainActivity extends Activity {
     }
 
     private void render() {
-        StringBuilder sb = new StringBuilder();
-        appendRecordingOverview(sb);
-        appendLocationBrief(sb);
-        appendSatelliteBrief(sb);
-        output.setText(sb.toString());
+        long now = SystemClock.elapsedRealtime();
+        long elapsed = now - lastRenderElapsedRealtimeMillis;
+        if (lastRenderElapsedRealtimeMillis == 0L
+                || elapsed >= UI_RENDER_MIN_INTERVAL_MILLIS) {
+            mainHandler.removeCallbacks(renderRunnable);
+            renderScheduled = false;
+            renderNow();
+            return;
+        }
+        if (!renderScheduled) {
+            renderScheduled = true;
+            mainHandler.postDelayed(renderRunnable,
+                    UI_RENDER_MIN_INTERVAL_MILLIS - elapsed);
+        }
+    }
+
+    private void renderNow() {
+        lastRenderElapsedRealtimeMillis = SystemClock.elapsedRealtime();
+        updateNoticeCard();
         updateMapPreview();
+    }
+
+    private void updateNoticeCard() {
+        if (noticeCard == null) return;
+        if (hasFineLocation()) {
+            noticeCard.setVisibility(View.GONE);
+        }
+    }
+
+    private void showNotice(String text) {
+        if (noticeText != null) {
+            noticeText.setText(text);
+            noticeCard.setVisibility(View.VISIBLE);
+        }
+    }
+
+    private String sampleCountText(long rawPointCount, int trackPointCount) {
+        return "原始 " + rawPointCount + "  轨迹 " + trackPointCount;
     }
 
     private void appendRecordingOverview(StringBuilder sb) {
@@ -878,8 +821,8 @@ public class MainActivity extends Activity {
             appendInfoRow(sb, "状态", "记录中");
             appendInfoRow(sb, "里程", formatDistance(foregroundServiceTotalDistanceMeters)
                     + "  爬升 " + formatAscent(foregroundServiceTotalAscentMeters));
-            appendInfoRow(sb, "采样", "RawPoint " + foregroundServiceRawPointCount
-                    + "  TrackPoint " + foregroundServiceTrackPointCount);
+            appendInfoRow(sb, "采样", sampleCountText(foregroundServiceRawPointCount,
+                    foregroundServiceTrackPointCount));
             if (foregroundServiceHasLocation) {
                 StringBuilder live = new StringBuilder("当前点已同步");
                 if (!foregroundServiceLiveRawPoints.isEmpty()) {
@@ -897,12 +840,21 @@ public class MainActivity extends Activity {
                     (trackSession.isFinished() ? "已结束" : "未记录"));
             appendInfoRow(sb, "里程", formatDistance(trackSession.getTotalDistanceMeters())
                     + "  运动 " + one.format(trackSession.getMovingTimeSeconds()) + " s");
-            appendInfoRow(sb, "采样", "RawPoint " + trackSession.getRawPointCount()
-                    + "  TrackPoint " + trackSession.getTrackPointCount());
+            appendInfoRow(sb, "采样", sampleCountText(trackSession.getRawPointCount(),
+                    trackSession.getTrackPointCount()));
             if (!trackSession.getLastDecisionReason().isEmpty()) {
                 appendInfoRow(sb, "最近判断",
                         decisionReasonShortText(trackSession.getLastDecisionReason()));
             }
+            return;
+        }
+        if (latestManifest != null) {
+            appendInfoRow(sb, "状态", "历史 " + shortSessionId(latestManifest.sessionId));
+            appendInfoRow(sb, "里程", formatDistance(latestManifest.totalDistanceMeters)
+                    + "  运动 " + one.format(latestManifest.movingTimeSeconds) + " s");
+            appendInfoRow(sb, "采样", sampleCountText(latestManifest.rawPointCount,
+                    latestManifest.trackPointCount));
+            appendInfoRow(sb, "结论", trackOutcomeText(latestManifest));
             return;
         }
         appendInfoRow(sb, "状态", "未记录");
@@ -1043,19 +995,16 @@ public class MainActivity extends Activity {
             }
             sb.append("文件目录=").append(trackSession.getSessionDirPath()).append('\n');
         }
-        sb.append("说明: RawPoint 是系统原始回调；TrackPoint 才会进入 GPX。\n");
+        sb.append("说明: 原始点用于诊断，可信轨迹用于导出 GPX。\n");
         appendMapDisplayExplanation(sb);
         sb.append('\n');
     }
 
     private void appendMapDisplayExplanation(StringBuilder sb) {
-        sb.append("地图说明: 底图=高德卫星瓦片，地图缩放范围 2~22，瓦片数据源最大 z18，超过后放大 z18 瓦片；蓝色实线=可信 TrackPoint；")
-                .append("红色线=疑似交通工具混入轨迹，只用于诊断，不累计徒步距离；")
-                .append("黄色点=弱信号 TrackPoint，只用于诊断和 partial GPX；")
-                .append("紫色线=导入的三方 GPX 参考线路，只用于对比；")
-                .append("蓝色圆点=当前位置，浅蓝圆=系统水平精度；橙色箭头=系统 bearing。")
-                .append("最终轨迹保持连续展示；GAP 和交通工具混入会保留诊断语义，不累计可信距离。")
-                .append("轨迹原始/导出坐标仍为 WGS-84，地图上仅为对齐国内瓦片做 GCJ-02 显示转换。\n");
+        sb.append("地图说明: 蓝线是可导出的可信轨迹；黄点是弱信号采样，仅用于诊断；")
+                .append("红线是已排除的疑似交通工具片段，不计入徒步距离；")
+                .append("紫线是导入的参考 GPX；蓝点是当前位置，浅蓝圈是定位精度范围。")
+                .append("导出结果以记录到的真实定位轨迹为准。\n");
         if (!referenceTrackPoints.isEmpty()) {
             sb.append("参考 GPX=").append(referenceTrackPoints.size()).append(" 点");
             if (!referenceTrackName.isEmpty()) {
@@ -1075,7 +1024,7 @@ public class MainActivity extends Activity {
         if (recentManifests.isEmpty()) {
             return;
         }
-        sb.append("最近历史 session 摘要（最多 3 条）\n");
+        sb.append("历史 session 摘要\n");
         for (int i = 0; i < recentManifests.size(); i++) {
             appendHistoricalManifestSummary(sb, recentManifests.get(i), i + 1);
         }
@@ -1085,6 +1034,9 @@ public class MainActivity extends Activity {
                                                  int displayIndex) {
         sb.append("#").append(displayIndex)
                 .append(" session=").append(shortSessionId(manifest.sessionId)).append('\n');
+        if (isSelectedHistoricalManifest(manifest)) {
+            sb.append("当前显示=是\n");
+        }
         sb.append("读取状态=").append(readStatusText(manifest.readStatus)).append('\n');
         sb.append("恢复判断=").append(recoveryStateText(manifest.recoveryState)).append('\n');
         if (SessionManifest.READ_OK.equals(manifest.readStatus)) {
@@ -1167,6 +1119,25 @@ public class MainActivity extends Activity {
         return "有 TrackPoint，但内部 GPX 缺失";
     }
 
+    private String trackOutcomeShortText(SessionManifest manifest) {
+        if (!SessionManifest.READ_OK.equals(manifest.readStatus)) {
+            return "历史记录异常";
+        }
+        if (!"FINISHED".equals(manifest.completionState)) {
+            return canExportHistoricalPartialGpx(manifest) ? "轨迹已中断" : "记录未完成";
+        }
+        if (!"OK".equals(manifest.integrityState)) {
+            return "轨迹需检查";
+        }
+        if (manifest.trustedGpxExists && manifest.trackPointCount > 0) {
+            return "可导出 GPX";
+        }
+        if (manifest.weakTrackPointCount > 0) {
+            return "弱信号轨迹";
+        }
+        return "无可信轨迹";
+    }
+
     private String shortSessionId(String sessionId) {
         if (sessionId == null || sessionId.length() <= 16) {
             return sessionId == null ? "" : sessionId;
@@ -1193,6 +1164,137 @@ public class MainActivity extends Activity {
             return "-";
         }
         return one.format(meters) + " m";
+    }
+
+    private int gpsSignalLevel() {
+        if (!isGpsProviderEnabled()) {
+            return 0;
+        }
+        float accuracyMeters = currentGpsAccuracyForHud();
+        int accuracyLevel = 0;
+        if (accuracyMeters >= 0f) {
+            if (accuracyMeters <= 8f) {
+                accuracyLevel = 4;
+            } else if (accuracyMeters <= 18f) {
+                accuracyLevel = 3;
+            } else if (accuracyMeters <= 40f) {
+                accuracyLevel = 2;
+            } else {
+                accuracyLevel = 1;
+            }
+        }
+
+        int satelliteLevel = 0;
+        if (lastGnssStatus != null) {
+            int visible = lastGnssStatus.getSatelliteCount();
+            int used = 0;
+            float maxCn0 = 0f;
+            for (int i = 0; i < visible; i++) {
+                if (lastGnssStatus.usedInFix(i)) {
+                    used++;
+                }
+                maxCn0 = Math.max(maxCn0, lastGnssStatus.getCn0DbHz(i));
+            }
+            if (used >= 8 && maxCn0 >= 35f) {
+                satelliteLevel = 4;
+            } else if (used >= 5 && maxCn0 >= 28f) {
+                satelliteLevel = 3;
+            } else if (used >= 3 && maxCn0 >= 22f) {
+                satelliteLevel = 2;
+            } else if (visible > 0 || maxCn0 > 0f) {
+                satelliteLevel = 1;
+            }
+        }
+
+        return Math.max(accuracyLevel, satelliteLevel);
+    }
+
+    private String gpsSignalText() {
+        if (!isGpsProviderEnabled()) {
+            return "未开启";
+        }
+        int level = gpsSignalLevel();
+        if (level <= 0) {
+            return "等待定位";
+        }
+        String signalText;
+        if (level >= 4) {
+            signalText = "强";
+        } else if (level == 3) {
+            signalText = "良好";
+        } else if (level == 2) {
+            signalText = "一般";
+        } else {
+            signalText = "弱";
+        }
+        float accuracyMeters = currentGpsAccuracyForHud();
+        if (accuracyMeters < 0f) {
+            return signalText + "  搜星中";
+        }
+        StringBuilder text = new StringBuilder(signalText)
+                .append("  精度")
+                .append(one.format(accuracyMeters))
+                .append("m");
+        long ageSeconds = Math.max(0L,
+                (System.currentTimeMillis() - currentGpsTimeForHud()) / 1000L);
+        if (ageSeconds >= 5L) {
+            text.append("  ").append(ageSeconds).append("s前");
+        }
+        return text.toString();
+    }
+
+    private float currentGpsAccuracyForHud() {
+        if (foregroundServiceRecording && foregroundServiceHasLocation
+                && foregroundServiceAccuracyMeters >= 0f) {
+            return foregroundServiceAccuracyMeters;
+        }
+        if (lastLocation != null && lastLocation.hasAccuracy()) {
+            return lastLocation.getAccuracy();
+        }
+        return -1f;
+    }
+
+    private long currentGpsTimeForHud() {
+        if (lastLocation != null) {
+            return lastLocation.getTime();
+        }
+        return System.currentTimeMillis();
+    }
+
+    private String satelliteHudText() {
+        if (lastGnssStatus == null) {
+            return "卫星：等待数据";
+        }
+        int visible = lastGnssStatus.getSatelliteCount();
+        int used = 0;
+        for (int i = 0; i < visible; i++) {
+            if (lastGnssStatus.usedInFix(i)) {
+                used++;
+            }
+        }
+        return "卫星：定位 " + used + " 颗 / 可见 " + visible + " 颗";
+    }
+
+    private String formatDuration(double seconds) {
+        if (seconds <= 0.0 || Double.isNaN(seconds) || Double.isInfinite(seconds)) {
+            return "0秒";
+        }
+        long totalSeconds = Math.round(seconds);
+        long minutes = totalSeconds / 60L;
+        long remainingSeconds = totalSeconds % 60L;
+        if (minutes <= 0L) {
+            return remainingSeconds + "秒";
+        }
+        if (minutes < 60L) {
+            return remainingSeconds == 0L
+                    ? minutes + "分钟"
+                    : minutes + "分" + remainingSeconds + "秒";
+        }
+        long hours = minutes / 60L;
+        long remainingMinutes = minutes % 60L;
+        return remainingMinutes == 0L
+                ? hours + "小时"
+                : hours + "小时" + remainingMinutes + "分钟";
     }
 
     private String readStatusText(String status) {
@@ -1301,7 +1403,7 @@ public class MainActivity extends Activity {
             startService(intent);
         }
         foregroundServiceRecording = true;
-        recordButton.setText("结束");
+        updateRecordButtonState();
         updateHistoryActionRows();
         setStatus("记录已开始，通知栏会持续显示记录状态。");
         render();
@@ -1312,7 +1414,7 @@ public class MainActivity extends Activity {
         intent.setAction(RecordingForegroundService.ACTION_STOP);
         startService(intent);
         foregroundServiceRecording = false;
-        recordButton.setText("记录");
+        updateRecordButtonState();
         setStatus("已请求结束记录；如刚结束，请稍后刷新或重新打开查看最新 session。");
         render();
         mainHandler.postDelayed(() -> {
@@ -1327,24 +1429,42 @@ public class MainActivity extends Activity {
             SessionScanResult result = new SessionScanner(fileStore).scan();
             lastScanSessionCount = result.manifests.size();
             lastScanCleanedTmpFileCount = result.cleanedTmpFileCount;
-            latestManifest = result.manifests.isEmpty() ? null : result.manifests.get(0);
+            invalidateHistoricalMapCache();
             recentManifests.clear();
-            int displayCount = Math.min(3, result.manifests.size());
-            for (int i = 0; i < displayCount; i++) {
-                recentManifests.add(result.manifests.get(i));
-            }
+            recentManifests.addAll(result.manifests);
+            reconcileSelectedHistoricalSession();
             lastScanError = "";
             updateHistoricalActionButtons();
             updateHistoryActionRows();
         } catch (IOException e) {
             latestManifest = null;
             recentManifests.clear();
+            selectedHistoricalSessionId = "";
+            invalidateHistoricalMapCache();
             lastScanSessionCount = 0;
             lastScanCleanedTmpFileCount = 0;
             lastScanError = e.getMessage();
             updateHistoricalActionButtons();
             updateHistoryActionRows();
         }
+    }
+
+    private void reconcileSelectedHistoricalSession() {
+        latestManifest = null;
+        if (!selectedHistoricalSessionId.isEmpty()) {
+            for (SessionManifest manifest : recentManifests) {
+                if (selectedHistoricalSessionId.equals(manifest.sessionId)) {
+                    latestManifest = manifest;
+                    return;
+                }
+            }
+        }
+        if (recentManifests.isEmpty()) {
+            selectedHistoricalSessionId = "";
+            return;
+        }
+        latestManifest = recentManifests.get(0);
+        selectedHistoricalSessionId = latestManifest.sessionId;
     }
 
     private void updateHistoricalActionButtons() {
@@ -1361,7 +1481,6 @@ public class MainActivity extends Activity {
             historyActionsContainer.setVisibility(View.VISIBLE);
             addHistorySectionTitle("当前记录");
             addCurrentSessionActionRow();
-            return;
         }
         historyActionsContainer.setVisibility(View.VISIBLE);
         if (recentManifests.isEmpty()) {
@@ -1383,87 +1502,151 @@ public class MainActivity extends Activity {
     private void addHistorySectionTitle(String text) {
         TextView title = new TextView(this);
         title.setText(text);
-        title.setTextColor(Color.rgb(31, 41, 55));
-        title.setTextSize(14);
-        title.setPadding(0, 0, 0, dp(4));
+        title.setTextColor(Color.rgb(107, 114, 128));
+        title.setTextSize(12);
+        title.setPadding(0, dp(8), 0, dp(6));
         historyActionsContainer.addView(title, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
     }
 
     private void addCurrentSessionActionRow() {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(0, dp(2), 0, dp(4));
-        boolean hasAction = false;
-        if (trackSession.canExportTrustedGpx()) {
-            Button gpxButton = historyButton("导出GPX");
-            gpxButton.setOnClickListener(v -> exportCurrentTrackAsGpx());
-            row.addView(gpxButton, weightedButtonParams(hasAction));
-            hasAction = true;
-        }
-        Button diagnosticButton = historyButton("导出诊断");
-        diagnosticButton.setOnClickListener(v -> exportCurrentDiagnosticLog());
-        row.addView(diagnosticButton, weightedButtonParams(hasAction));
-        hasAction = true;
-        if (canExportCurrentSampleReport()) {
-            Button reportButton = historyButton("导出报告");
-            reportButton.setOnClickListener(v -> exportCurrentSampleReport());
-            row.addView(reportButton, weightedButtonParams(hasAction));
-            hasAction = true;
-        }
-        if (hasAction) {
-            historyActionsContainer.addView(row, new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT));
-        }
-    }
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(12), dp(10), dp(12), dp(10));
+        styleCard(card, Color.WHITE, 8);
+        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        cardLp.setMargins(0, 0, 0, dp(10));
 
-    private void addHistoryActionRow(SessionManifest manifest, int displayIndex) {
-        TextView label = new TextView(this);
-        label.setText(historyActionLabel(manifest, displayIndex));
-        label.setTextColor(Color.rgb(75, 85, 99));
-        label.setTextSize(12);
-        label.setPadding(0, dp(4), 0, 0);
-        historyActionsContainer.addView(label, new LinearLayout.LayoutParams(
+        TextView header = new TextView(this);
+        header.setText("当前 session");
+        header.setTextColor(Color.rgb(17, 24, 39));
+        header.setTextSize(14);
+        card.addView(header, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(0, dp(2), 0, dp(4));
+        row.setPadding(0, dp(8), 0, 0);
+        boolean hasAction = false;
+        if (trackSession.canExportTrustedGpx()) {
+            Button gpxButton = new Button(this);
+            gpxButton.setText("导出GPX");
+            styleSmallSecondaryButton(gpxButton);
+            gpxButton.setOnClickListener(v -> exportCurrentTrackAsGpx());
+            row.addView(gpxButton, weightedButtonParams(hasAction));
+            hasAction = true;
+        }
+        Button diagnosticButton = new Button(this);
+        diagnosticButton.setText("导出诊断");
+        styleSmallSecondaryButton(diagnosticButton);
+        diagnosticButton.setOnClickListener(v -> exportCurrentDiagnosticLog());
+        row.addView(diagnosticButton, weightedButtonParams(hasAction));
+        hasAction = true;
+        if (canExportCurrentSampleReport()) {
+            Button reportButton = new Button(this);
+            reportButton.setText("导出报告");
+            styleSmallSecondaryButton(reportButton);
+            reportButton.setOnClickListener(v -> exportCurrentSampleReport());
+            row.addView(reportButton, weightedButtonParams(hasAction));
+            hasAction = true;
+        }
+        if (hasAction) {
+            card.addView(row, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+        }
+        historyActionsContainer.addView(card, cardLp);
+    }
+
+    private void addHistoryActionRow(SessionManifest manifest, int displayIndex) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(12), dp(10), dp(12), dp(10));
+        styleCard(card, Color.WHITE, 8);
+        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        cardLp.setMargins(0, 0, 0, dp(10));
+
+        /* Header label */
+        TextView label = new TextView(this);
+        label.setText(historyActionLabel(manifest, displayIndex));
+        label.setTextColor(Color.rgb(17, 24, 39));
+        label.setTextSize(14);
+        card.addView(label, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        /* Manage row (display + delete) */
+        LinearLayout manageRow = new LinearLayout(this);
+        manageRow.setOrientation(LinearLayout.HORIZONTAL);
+        manageRow.setPadding(0, dp(10), 0, 0);
+        boolean selected = isSelectedHistoricalManifest(manifest);
+        boolean currentRecordingSession = isCurrentForegroundSession(manifest);
+
+        Button displayButton = new Button(this);
+        displayButton.setText(currentRecordingSession
+                ? "记录中"
+                : (selected ? "正在显示" : "显示"));
+        if (selected || currentRecordingSession) {
+            styleSmallPrimaryButton(displayButton);
+        } else {
+            styleSmallSecondaryButton(displayButton);
+        }
+        displayButton.setEnabled(!selected && !foregroundServiceRecording
+                && !currentRecordingSession);
+        displayButton.setOnClickListener(v -> selectHistoricalSession(manifest));
+        manageRow.addView(displayButton, weightedButtonParams(false));
+
+        Button deleteButton = new Button(this);
+        deleteButton.setText("删除");
+        styleSmallDangerButton(deleteButton);
+        deleteButton.setEnabled(!currentRecordingSession);
+        deleteButton.setOnClickListener(v -> confirmDeleteHistoricalSession(manifest));
+        manageRow.addView(deleteButton, weightedButtonParams(true));
+        card.addView(manageRow, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        /* Export row */
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, dp(6), 0, 0);
         boolean hasAction = false;
         if (canExportHistoricalGpx(manifest)) {
-            Button gpxButton = historyButton("导出GPX");
+            Button gpxButton = new Button(this);
+            gpxButton.setText("导出GPX");
+            styleSmallSecondaryButton(gpxButton);
             gpxButton.setOnClickListener(v -> exportHistoricalTrustedGpx(manifest));
             row.addView(gpxButton, weightedButtonParams(hasAction));
             hasAction = true;
         }
         if (canExportHistoricalDiagnostic(manifest)) {
-            Button diagnosticButton = historyButton("导出诊断");
+            Button diagnosticButton = new Button(this);
+            diagnosticButton.setText("导出诊断");
+            styleSmallSecondaryButton(diagnosticButton);
             diagnosticButton.setOnClickListener(v -> exportHistoricalDiagnosticLog(manifest));
             row.addView(diagnosticButton, weightedButtonParams(hasAction));
             hasAction = true;
         }
         if (canExportHistoricalSampleReport(manifest)) {
-            Button reportButton = historyButton("导出报告");
+            Button reportButton = new Button(this);
+            reportButton.setText("导出报告");
+            styleSmallSecondaryButton(reportButton);
             reportButton.setOnClickListener(v -> exportHistoricalSampleReport(manifest));
             row.addView(reportButton, weightedButtonParams(hasAction));
             hasAction = true;
         }
         if (hasAction) {
-            historyActionsContainer.addView(row, new LinearLayout.LayoutParams(
+            card.addView(row, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT));
         }
-    }
-
-    private Button historyButton(String text) {
-        Button button = new Button(this);
-        button.setText(text);
-        button.setAllCaps(false);
-        button.setTextSize(12);
-        return button;
+        historyActionsContainer.addView(card, cardLp);
     }
 
     private LinearLayout.LayoutParams weightedButtonParams(boolean hasLeftSibling) {
@@ -1472,7 +1655,7 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 1f);
         if (hasLeftSibling) {
-            params.setMargins(dp(6), 0, 0, 0);
+            params.setMargins(dp(8), 0, 0, 0);
         }
         return params;
     }
@@ -1481,9 +1664,96 @@ public class MainActivity extends Activity {
         String time = SessionManifest.READ_OK.equals(manifest.readStatus)
                 ? formatWallTime(manifest.lastUpdatedWallTimeMillis)
                 : readStatusText(manifest.readStatus);
-        return "历史 " + displayIndex + "  " + time + "  "
+        String prefix = isSelectedHistoricalManifest(manifest)
+                ? "正在显示 历史 "
+                : "历史 ";
+        return prefix + displayIndex + "  " + time + "  "
                 + one.format(manifest.totalDistanceMeters) + "m  "
                 + trackOutcomeText(manifest);
+    }
+
+    private boolean isSelectedHistoricalManifest(SessionManifest manifest) {
+        return !foregroundServiceRecording
+                && manifest != null
+                && manifest.sessionId != null
+                && manifest.sessionId.equals(selectedHistoricalSessionId);
+    }
+
+    private boolean isCurrentForegroundSession(SessionManifest manifest) {
+        return manifest != null
+                && manifest.sessionId != null
+                && manifest.sessionId.equals(foregroundServiceSessionId)
+                && (foregroundServiceRecording || "ACTIVE".equals(manifest.completionState));
+    }
+
+    private void selectHistoricalSession(SessionManifest manifest) {
+        if (manifest == null || manifest.sessionId == null) {
+            setStatus("无法显示这条历史记录：session 信息缺失");
+            return;
+        }
+        if (foregroundServiceRecording) {
+            setStatus("记录中先显示实时轨迹，结束后可切换历史记录。");
+            return;
+        }
+        if (isCurrentForegroundSession(manifest)) {
+            setStatus("当前 session 正在记录中，结束记录后再查看历史轨迹。");
+            return;
+        }
+        selectedHistoricalSessionId = manifest.sessionId;
+        latestManifest = manifest;
+        requestMapFrameNextUpdate();
+        updateHistoryActionRows();
+        setStatus("正在显示历史记录: " + shortSessionId(manifest.sessionId));
+        render();
+    }
+
+    private void confirmDeleteHistoricalSession(SessionManifest manifest) {
+        if (manifest == null || manifest.sessionId == null) {
+            setStatus("无法删除这条历史记录：session 信息缺失");
+            return;
+        }
+        if (isCurrentForegroundSession(manifest)) {
+            setStatus("当前 session 正在记录中，结束记录后才能删除。");
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("删除历史记录？")
+                .setMessage("将删除 " + shortSessionId(manifest.sessionId)
+                        + " 的 GPX、诊断日志和报告源文件，删除后不能恢复。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("删除", (dialog, which) -> deleteHistoricalSession(manifest))
+                .show();
+    }
+
+    private void deleteHistoricalSession(SessionManifest manifest) {
+        if (manifest == null || manifest.sessionId == null) {
+            setStatus("无法删除这条历史记录：session 信息缺失");
+            return;
+        }
+        if (isCurrentForegroundSession(manifest)) {
+            setStatus("当前 session 正在记录中，结束记录后才能删除。");
+            return;
+        }
+        String deletedSessionId = manifest.sessionId;
+        try {
+            new SessionFileStore(this).deleteSessionDir(manifest.sessionDir);
+            if (deletedSessionId.equals(selectedHistoricalSessionId)) {
+                selectedHistoricalSessionId = "";
+                latestManifest = null;
+            }
+            scanExistingSessions();
+            requestMapFrameNextUpdate();
+            setStatus("已删除历史记录: " + shortSessionId(deletedSessionId));
+            render();
+        } catch (IOException | IllegalArgumentException e) {
+            setStatus("删除历史记录失败: " + e.getMessage());
+        }
+    }
+
+    private void requestMapFrameNextUpdate() {
+        if (mapView != null) {
+            mapView.requestFrameNextUpdate();
+        }
     }
 
     private void appendTrackPointIfRecording(Location location) {
@@ -1733,9 +2003,6 @@ public class MainActivity extends Activity {
             if (mapView != null) {
                 mapView.requestFrameNextUpdate();
             }
-            if (fullScreenMapView != null) {
-                fullScreenMapView.requestFrameNextUpdate();
-            }
             setStatus("已导入参考 GPX: " + points.size() + " 点，用紫色线显示");
             render();
         } catch (IOException | ParserConfigurationException | SAXException e) {
@@ -1978,18 +2245,15 @@ public class MainActivity extends Activity {
 
     private void updateMapPreview() {
         List<TrackPoint> points = mapTrackPoints();
-        MapPoint currentPoint = currentMapPoint();
-        float accuracyMeters = currentAccuracyMeters();
-        float heading = effectiveHeadingDegrees();
+        TrackPoint trustedPoint = lastTrustedMapTrackPoint(points);
+        MapPoint currentPoint = currentMapPoint(trustedPoint);
+        float accuracyMeters = currentAccuracyMeters(trustedPoint);
+        float heading = effectiveHeadingDegrees(trustedPoint);
         double totalDistanceMeters = currentTotalDistanceMeters(points);
         double totalAscentMeters = currentTotalAscentMeters(points);
         if (mapView != null) {
             mapView.setMapState(points, referenceTrackPoints, currentPoint, accuracyMeters,
                     heading, totalDistanceMeters, totalAscentMeters);
-        }
-        if (fullScreenMapView != null) {
-            fullScreenMapView.setMapState(points, referenceTrackPoints, currentPoint,
-                    accuracyMeters, heading, totalDistanceMeters, totalAscentMeters);
         }
     }
 
@@ -2078,11 +2342,6 @@ public class MainActivity extends Activity {
     }
 
     private void invalidateVisibleSatelliteMapView() {
-        if (fullScreenMapDialog != null && fullScreenMapDialog.isShowing()
-                && fullScreenMapView != null) {
-            fullScreenMapView.postInvalidateOnAnimation();
-            return;
-        }
         if (mapView != null) {
             mapView.postInvalidateOnAnimation();
         }
@@ -2104,17 +2363,43 @@ public class MainActivity extends Activity {
         }
         if (latestManifest != null && latestManifest.diagnosticLogExists
                 && (latestManifest.trackPointCount > 0 || latestManifest.weakTrackPointCount > 0)) {
-            try {
-                List<TrackPoint> points = new DiagnosticTrackPointReader().readDisplayTrackPoints(
-                        new File(latestManifest.sessionDir,
-                                latestManifest.diagnosticLogFileName));
-                sortMapTrackPoints(points);
-                return points;
-            } catch (IOException | JSONException ignored) {
-                return new ArrayList<>();
-            }
+            return historicalMapTrackPoints(latestManifest);
         }
         return new ArrayList<>();
+    }
+
+    private List<TrackPoint> historicalMapTrackPoints(SessionManifest manifest) {
+        if (isHistoricalMapCacheValid(manifest)) {
+            return new ArrayList<>(cachedHistoricalMapPoints);
+        }
+        cachedHistoricalMapSessionId = manifest.sessionId == null ? "" : manifest.sessionId;
+        cachedHistoricalMapLastEventSeq = manifest.lastEventSeq;
+        cachedHistoricalMapDiagnosticBytes = manifest.diagnosticLogBytes;
+        cachedHistoricalMapPoints.clear();
+        try {
+            List<TrackPoint> points = new DiagnosticTrackPointReader().readDisplayTrackPoints(
+                    new File(manifest.sessionDir, manifest.diagnosticLogFileName));
+            sortMapTrackPoints(points);
+            cachedHistoricalMapPoints.addAll(points);
+        } catch (IOException | JSONException ignored) {
+            cachedHistoricalMapPoints.clear();
+        }
+        return new ArrayList<>(cachedHistoricalMapPoints);
+    }
+
+    private boolean isHistoricalMapCacheValid(SessionManifest manifest) {
+        return manifest != null
+                && manifest.sessionId != null
+                && manifest.sessionId.equals(cachedHistoricalMapSessionId)
+                && manifest.lastEventSeq == cachedHistoricalMapLastEventSeq
+                && manifest.diagnosticLogBytes == cachedHistoricalMapDiagnosticBytes;
+    }
+
+    private void invalidateHistoricalMapCache() {
+        cachedHistoricalMapSessionId = "";
+        cachedHistoricalMapLastEventSeq = -1L;
+        cachedHistoricalMapDiagnosticBytes = -1L;
+        cachedHistoricalMapPoints.clear();
     }
 
     private void sortMapTrackPoints(List<TrackPoint> points) {
@@ -2130,7 +2415,20 @@ public class MainActivity extends Activity {
         });
     }
 
-    private MapPoint currentMapPoint() {
+    private TrackPoint lastTrustedMapTrackPoint(List<TrackPoint> points) {
+        for (int i = points.size() - 1; i >= 0; i--) {
+            TrackPoint point = points.get(i);
+            if (!isWeakMapPoint(point) && !isTransportMapPoint(point)) {
+                return point;
+            }
+        }
+        return null;
+    }
+
+    private MapPoint currentMapPoint(TrackPoint trustedPoint) {
+        if (trustedPoint != null) {
+            return new MapPoint(trustedPoint.latitude, trustedPoint.longitude);
+        }
         if (foregroundServiceRecording && foregroundServiceHasLocation) {
             return new MapPoint(foregroundServiceLatitude, foregroundServiceLongitude);
         }
@@ -2140,7 +2438,10 @@ public class MainActivity extends Activity {
         return null;
     }
 
-    private float currentAccuracyMeters() {
+    private float currentAccuracyMeters(TrackPoint trustedPoint) {
+        if (trustedPoint != null) {
+            return Math.max(0f, trustedPoint.accuracyMeters);
+        }
         if (foregroundServiceRecording && foregroundServiceHasLocation) {
             return Math.max(0f, foregroundServiceAccuracyMeters);
         }
@@ -2150,7 +2451,10 @@ public class MainActivity extends Activity {
         return 0f;
     }
 
-    private float effectiveHeadingDegrees() {
+    private float effectiveHeadingDegrees(TrackPoint trustedPoint) {
+        if (trustedPoint != null) {
+            return trustedPoint.hasBearing ? trustedPoint.bearingDegrees : Float.NaN;
+        }
         if (!Float.isNaN(headingDegrees)) {
             return headingDegrees;
         }
@@ -2175,6 +2479,7 @@ public class MainActivity extends Activity {
         private static final int FLING_SCROLL_RANGE_PIXELS = 100_000;
         private static final int MIN_FLING_VELOCITY_PIXELS_PER_SECOND = 150;
         private static final int MAX_FLING_VELOCITY_PIXELS_PER_SECOND = 6_000;
+        private static final int TAP_SLOP_DP = 8;
         private static final double MIN_FRAME_WORLD_RANGE = 0.000006d;
         private static final int FRAME_PADDING_DP = 2;
         private static final long FAILED_TILE_RETRY_DELAY_MILLIS = 30_000L;
@@ -2205,9 +2510,13 @@ public class MainActivity extends Activity {
         private float panX;
         private float panY;
         private float lastPinchDistance;
+        private float touchStartX;
+        private float touchStartY;
         private float flingStartPanX;
         private float flingStartPanY;
+        private boolean tapCandidate;
         private VelocityTracker velocityTracker;
+        private Runnable mapTapListener;
 
         NativeTrackMapView(Context context) {
             super(context);
@@ -2218,6 +2527,10 @@ public class MainActivity extends Activity {
 
         void setInteractive(boolean interactive) {
             this.interactive = interactive;
+        }
+
+        void setOnMapTapListener(Runnable listener) {
+            mapTapListener = listener;
         }
 
         void requestFrameNextUpdate() {
@@ -2299,10 +2612,14 @@ public class MainActivity extends Activity {
             }
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
+                    touchStartX = event.getX();
+                    touchStartY = event.getY();
+                    tapCandidate = true;
                     lastTouchPoint.set(event.getX(), event.getY());
                     lastPinchDistance = 0f;
                     return true;
                 case MotionEvent.ACTION_POINTER_DOWN:
+                    tapCandidate = false;
                     stopMapFling();
                     recycleVelocityTracker();
                     lastPinchDistance = pinchDistance(event);
@@ -2310,6 +2627,7 @@ public class MainActivity extends Activity {
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     if (event.getPointerCount() >= 2) {
+                        tapCandidate = false;
                         float nextDistance = pinchDistance(event);
                         if (lastPinchDistance > 0f && nextDistance > 0f) {
                             float factor = nextDistance / lastPinchDistance;
@@ -2329,6 +2647,9 @@ public class MainActivity extends Activity {
                             invalidate();
                         }
                     } else {
+                        if (tapCandidate && movedBeyondTapSlop(event.getX(), event.getY())) {
+                            tapCandidate = false;
+                        }
                         panX += event.getX() - lastTouchPoint.x;
                         panY += event.getY() - lastTouchPoint.y;
                         lastTouchPoint.set(event.getX(), event.getY());
@@ -2338,6 +2659,7 @@ public class MainActivity extends Activity {
                     }
                     return true;
                 case MotionEvent.ACTION_POINTER_UP:
+                    tapCandidate = false;
                     updateTouchAnchorAfterPointerUp(event);
                     if (event.getPointerCount() - 1 != 1) {
                         recycleVelocityTracker();
@@ -2346,16 +2668,26 @@ public class MainActivity extends Activity {
                     }
                     return true;
                 case MotionEvent.ACTION_UP:
+                    if (tapCandidate && mapTapListener != null) {
+                        recycleVelocityTracker();
+                        performClick();
+                        lastPinchDistance = 0f;
+                        mapTapListener.run();
+                        tapCandidate = false;
+                        return true;
+                    }
                     startMapFlingIfNeeded();
                     recycleVelocityTracker();
                     performClick();
                     lastPinchDistance = 0f;
+                    tapCandidate = false;
                     return true;
                 case MotionEvent.ACTION_CANCEL:
                     stopMapFling();
                     recycleVelocityTracker();
                     performClick();
                     lastPinchDistance = 0f;
+                    tapCandidate = false;
                     return true;
                 default:
                     return true;
@@ -2839,10 +3171,6 @@ public class MainActivity extends Activity {
         private void drawCurrentLocation(Canvas canvas) {
             MapPoint point = currentPoint;
             boolean hasCurrentLocation = point != null;
-            if (point == null && !points.isEmpty()) {
-                TrackPoint lastPoint = points.get(points.size() - 1);
-                point = new MapPoint(lastPoint.latitude, lastPoint.longitude);
-            }
             if (point == null) {
                 return;
             }
@@ -2887,37 +3215,72 @@ public class MainActivity extends Activity {
         }
 
         private void drawHud(Canvas canvas) {
-            float left = dp(8);
-            float bottom = getHeight() - dp(8);
-            float width = getWidth() - dp(16);
-            float lineHeight = dp(16);
-            float padding = dp(6);
-            float hudHeight = dp(44);
-            viewBounds.set(left, bottom - hudHeight, left + width, bottom);
+            float left = dp(10);
+            float top = pageTopPadding() + dp(4);
+            float width = Math.min(getWidth() - dp(22), dp(184));
+            float lineHeight = dp(15);
+            float paddingX = dp(8);
+            float paddingY = dp(7);
+            float hudHeight = paddingY * 2 + lineHeight * 4;
+            viewBounds.set(left, top, left + width, top + hudHeight);
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(Color.argb(150, 17, 24, 39));
+            paint.setColor(Color.argb(165, 17, 24, 39));
             canvas.drawRoundRect(viewBounds, dp(6), dp(6), paint);
 
             paint.setStyle(Paint.Style.FILL);
-            paint.setTextSize(dp(12));
+            paint.setTextSize(dp(11));
             paint.setColor(Color.argb(220, 229, 231, 235));
-            int zoom = satelliteZoom();
-            int tileZoom = satelliteTileZoom(zoom);
-            String zoomLabel = tileZoom == zoom ? "z" + zoom : "z" + zoom + " / 瓦片z" + tileZoom;
-            String label = points.isEmpty()
-                    ? "高德卫星 " + zoomLabel + "  总里程 " + formatDistance(totalDistanceMeters)
-                    + " / 爬升 " + formatAscent(totalAscentMeters)
-                    + " / 等待轨迹 / 参考 " + referencePoints.size() + " 点"
-                    : "高德卫星 " + zoomLabel + "  总里程 " + formatDistance(totalDistanceMeters)
-                    + " / 爬升 " + formatAscent(totalAscentMeters)
-                    + " / " + trustedPointCount() + " 可信点 / "
-                    + weakPointCount() + " 弱点 / "
-                    + transportPointCount() + " 交通点 / 参考 " + referencePoints.size() + " 点";
-            String legend = "蓝线=可信  红线=交通工具  紫线=参考GPX  黄点=弱信号";
-            canvas.drawText(fitHudText(label, width - padding * 2), left + padding,
-                    bottom - lineHeight - padding, paint);
-            canvas.drawText(fitHudText(legend, width - padding * 2), left + padding,
-                    bottom - padding, paint);
+            String distanceLine = "里程：" + formatDistance(totalDistanceMeters)
+                    + "  爬升：" + formatAscent(totalAscentMeters);
+            String trackLine = points.isEmpty()
+                    ? "轨迹：等待可信点"
+                    : "轨迹：可信 " + trustedPointCount() + " 点 / 弱信号 " + weakPointCount() + " 点";
+            if (!referencePoints.isEmpty()) {
+                trackLine += " / 参考路线";
+            }
+            float textX = left + paddingX;
+            float baseline = top + paddingY + dp(11);
+            float textWidth = width - paddingX * 2;
+            canvas.drawText(fitHudText(distanceLine, textWidth), textX, baseline, paint);
+            baseline += lineHeight;
+            drawGpsHudLine(canvas, textX, baseline, textWidth);
+            baseline += lineHeight;
+            canvas.drawText(fitHudText(satelliteHudText(), textWidth), textX, baseline, paint);
+            baseline += lineHeight;
+            canvas.drawText(fitHudText(trackLine, textWidth), textX, baseline, paint);
+        }
+
+        private void drawGpsHudLine(Canvas canvas, float textX, float baseline, float textWidth) {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setTextSize(dp(11));
+            paint.setColor(Color.argb(220, 229, 231, 235));
+            String prefix = "GPS：";
+            canvas.drawText(prefix, textX, baseline, paint);
+            float barsX = textX + paint.measureText(prefix);
+            drawGpsSignalBars(canvas, barsX, baseline, gpsSignalLevel());
+            float signalX = barsX + dp(27);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setTextSize(dp(11));
+            paint.setColor(Color.argb(220, 229, 231, 235));
+            canvas.drawText(fitHudText(gpsSignalText(), textWidth - (signalX - textX)),
+                    signalX, baseline, paint);
+        }
+
+        private void drawGpsSignalBars(Canvas canvas, float left, float baseline, int level) {
+            float barWidth = dp(3);
+            float gap = dp(2);
+            float bottom = baseline - dp(2);
+            int activeColor = level >= 3
+                    ? Color.rgb(74, 222, 128)
+                    : (level == 2 ? Color.rgb(250, 204, 21) : Color.rgb(251, 146, 60));
+            for (int i = 0; i < 4; i++) {
+                float height = dp(4 + i * 3);
+                float x = left + i * (barWidth + gap);
+                viewBounds.set(x, bottom - height, x + barWidth, bottom);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(i < level ? activeColor : Color.argb(90, 148, 163, 184));
+                canvas.drawRoundRect(viewBounds, dp(1), dp(1), paint);
+            }
         }
 
         private int weakPointCount() {
@@ -3115,6 +3478,13 @@ public class MainActivity extends Activity {
                 velocityTracker.recycle();
                 velocityTracker = null;
             }
+        }
+
+        private boolean movedBeyondTapSlop(float x, float y) {
+            float dx = x - touchStartX;
+            float dy = y - touchStartY;
+            float slop = dp(TAP_SLOP_DP);
+            return dx * dx + dy * dy > slop * slop;
         }
 
         private float pinchDistance(MotionEvent event) {
@@ -3532,6 +3902,166 @@ public class MainActivity extends Activity {
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private int pageTopPadding() {
+        int statusBarHeight = 0;
+        int resourceId = getResources().getIdentifier("status_bar_height", "dimen", "android");
+        if (resourceId > 0) {
+            statusBarHeight = getResources().getDimensionPixelSize(resourceId);
+        }
+        return statusBarHeight + dp(12);
+    }
+
+    private int pageBottomPadding() {
+        int navigationBarHeight = 0;
+        int resourceId = getResources().getIdentifier("navigation_bar_height", "dimen", "android");
+        if (resourceId > 0) {
+            navigationBarHeight = getResources().getDimensionPixelSize(resourceId);
+        }
+        return navigationBarHeight + dp(12);
+    }
+
+    /* ======================================================================== */
+    /*  Visual helpers — rounded rects, buttons, cards                         */
+    /* ======================================================================== */
+
+    private GradientDrawable roundedRect(int fillColor, float radiusDp,
+                                          int strokeWidthDp, int strokeColor) {
+        GradientDrawable d = new GradientDrawable();
+        d.setColor(fillColor);
+        d.setCornerRadius(dp((int) radiusDp));
+        if (strokeWidthDp > 0) {
+            d.setStroke(dp(strokeWidthDp), strokeColor);
+        }
+        return d;
+    }
+
+    private GradientDrawable roundedRect(int fillColor, float radiusDp) {
+        return roundedRect(fillColor, radiusDp, 0, 0);
+    }
+
+    private void prepareButton(Button button, int minHeightDp) {
+        button.setAllCaps(false);
+        button.setGravity(Gravity.CENTER);
+        button.setIncludeFontPadding(false);
+        button.setMinWidth(0);
+        button.setMinimumWidth(0);
+        button.setMinHeight(dp(minHeightDp));
+        button.setMinimumHeight(dp(minHeightDp));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            button.setStateListAnimator(null);
+        }
+    }
+
+    private void stylePrimaryButton(Button button) {
+        button.setBackground(roundedRect(Color.rgb(37, 99, 235), 8));
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(13);
+        button.setPadding(dp(10), 0, dp(10), 0);
+        prepareButton(button, 44);
+    }
+
+    private void styleFloatingPrimaryButton(Button button) {
+        button.setBackground(roundedRect(Color.rgb(37, 99, 235), 26));
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(22);
+        button.setPadding(0, 0, 0, dp(2));
+        prepareButton(button, 52);
+    }
+
+    private void styleFloatingDangerButton(Button button) {
+        button.setBackground(roundedRect(Color.rgb(239, 68, 68), 26));
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(20);
+        button.setPadding(0, 0, 0, dp(2));
+        prepareButton(button, 52);
+    }
+
+    private void styleRecordActionPrimaryButton(Button button) {
+        button.setBackground(roundedRect(Color.rgb(37, 99, 235), 10));
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(15);
+        button.setPadding(dp(12), 0, dp(12), 0);
+        prepareButton(button, 46);
+    }
+
+    private void styleRecordActionDangerButton(Button button) {
+        button.setBackground(roundedRect(Color.rgb(239, 68, 68), 10));
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(15);
+        button.setPadding(dp(12), 0, dp(12), 0);
+        prepareButton(button, 46);
+    }
+
+    private void styleFloatingSecondaryButton(Button button) {
+        button.setBackground(roundedRect(Color.argb(230, 255, 255, 255), 16,
+                1, Color.argb(210, 226, 232, 240)));
+        button.setTextColor(Color.rgb(31, 41, 55));
+        button.setTextSize(12);
+        button.setPadding(dp(6), 0, dp(6), 0);
+        prepareButton(button, 38);
+    }
+
+    private void styleDangerButton(Button button) {
+        button.setBackground(roundedRect(Color.rgb(239, 68, 68), 8));
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(13);
+        button.setPadding(dp(10), 0, dp(10), 0);
+        prepareButton(button, 44);
+    }
+
+    private void styleSecondaryButton(Button button) {
+        button.setBackground(roundedRect(Color.WHITE, 8, 1, Color.rgb(229, 231, 235)));
+        button.setTextColor(Color.rgb(55, 65, 81));
+        button.setTextSize(13);
+        button.setPadding(dp(10), 0, dp(10), 0);
+        prepareButton(button, 44);
+    }
+
+    private void styleSmallSecondaryButton(Button button) {
+        button.setBackground(roundedRect(Color.WHITE, 6, 1, Color.rgb(229, 231, 235)));
+        button.setTextColor(Color.rgb(75, 85, 99));
+        button.setTextSize(12);
+        button.setPadding(dp(8), 0, dp(8), 0);
+        prepareButton(button, 36);
+    }
+
+    private void styleSmallPrimaryButton(Button button) {
+        button.setBackground(roundedRect(Color.rgb(37, 99, 235), 6));
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(12);
+        button.setPadding(dp(8), 0, dp(8), 0);
+        prepareButton(button, 36);
+    }
+
+    private void styleSmallDangerButton(Button button) {
+        button.setBackground(roundedRect(Color.rgb(239, 68, 68), 6));
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(12);
+        button.setPadding(dp(8), 0, dp(8), 0);
+        prepareButton(button, 36);
+    }
+
+    private void styleCard(View view, int fillColor, float radiusDp,
+                           int strokeWidthDp, int strokeColor) {
+        view.setBackground(roundedRect(fillColor, radiusDp, strokeWidthDp, strokeColor));
+    }
+
+    private void styleCard(View view, int fillColor, float radiusDp) {
+        styleCard(view, fillColor, radiusDp, 1, Color.rgb(226, 232, 240));
+    }
+
+    private GradientDrawable infoPanelBackground() {
+        return roundedRect(Color.rgb(248, 250, 252), 8, 1, Color.rgb(226, 232, 240));
+    }
+
+    private void styleDarkButton(Button button) {
+        button.setBackground(roundedRect(Color.rgb(31, 41, 55), 8, 1, Color.rgb(55, 65, 81)));
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(13);
+        button.setPadding(dp(10), 0, dp(10), 0);
+        prepareButton(button, 44);
     }
 
     private static class SatRow {
