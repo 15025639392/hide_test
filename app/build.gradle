@@ -1,0 +1,34 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "com.example.gnsssatdemo"
+    compileSdk 36
+
+    defaultConfig {
+        applicationId "com.example.gnsssatdemo"
+        minSdk 24
+        targetSdk 36
+        versionCode 1
+        versionName "1.0"
+    }
+}
+
+dependencies {
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.json:json:20250517"
+}
+
+tasks.register("runReplay", JavaExec) {
+    dependsOn "compileDebugJavaWithJavac", "compileDebugUnitTestJavaWithJavac"
+    mainClass = "com.example.gnsssatdemo.track.replay.ReplayCli"
+    classpath = files(
+            "$buildDir/intermediates/javac/debug/compileDebugJavaWithJavac/classes",
+            "$buildDir/intermediates/javac/debugUnitTest/compileDebugUnitTestJavaWithJavac/classes"
+    ) + configurations.debugUnitTestRuntimeClasspath
+    args(
+            project.findProperty("replayInput") ?: "$projectDir/src/test/resources/replay-fixtures",
+            project.findProperty("replayOutput") ?: "$buildDir/replay-reports"
+    )
+}

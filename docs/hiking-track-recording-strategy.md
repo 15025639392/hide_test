@@ -1,0 +1,778 @@
+# 徒步轨迹记录策略设计
+
+## 1. 核心定义
+
+轨迹记录的本质不是把 GPS 点按时间存下来，而是：
+
+```text
+把人在户外场景中的连续移动，转化为可回放、可解释、可统计、可信任的时空过程。
+```
+
+因此，轨迹系统不应该只回答“多久采一次点”，而应该持续回答：
+
+- 当前点是否可信
+- 当前用户是在移动、停留、信号弱，还是恢复中
+- 当前点能否进入主轨迹
+- 当前点能否参与距离、速度、爬升等统计
+- 当前轨迹段应该如何展示给用户
+- 这条轨迹最终有多完整、多可信
+
+## 2. 设计原则
+
+### 2.1 原始点不等于轨迹点
+
+系统采集到的位置点应先作为原始观测保存，不能直接进入正式轨迹。
+
+```text
+RawPoint      原始定位点，全部保存，用于诊断、回放、复算
+TrackPoint    清洗后的正式轨迹点，用于画线、统计、导出
+TrackEvent    异常、暂停、弱信号、中断、恢复等事件
+Segment       一段具有明确语义的轨迹片段
+```
+
+原则：
+
+```text
+采到点 != 画到轨迹上
+采到点 != 累计距离
+采到点 != 证明用户真实经过
+```
+
+### 2.2 动态采样，而不是固定频率
+
+轨迹系统应根据以下因素动态调整采集策略：
+
+- `accuracy`：定位精度
+- `speed`：速度
+- `timeGap`：与上一个点的时间间隔
+- `movement`：短时间窗口内的位移趋势
+- `battery`：电量与系统限制
+- `terrain`：地形、坡度、开阔程度、山地遮挡
+
+核心思路：
+
+```text
+定位采集 -> 点质量评估 -> 运动状态判断 -> 动态采样策略 -> 轨迹写入策略 -> 统计与可信度输出
+```
+
+### 2.3 信号异常要显式表达
+
+山地、峡谷、密林、隧道、岩壁附近经常出现定位异常。系统不能把异常“修成正常”，而应该识别、隔离、标记。
+
+常见异常：
+
+- 精度很差
+- 长时间没有定位点
+- 位置突然跳远
+- 速度不符合徒步场景
+- 海拔剧烈抖动
+- 后台或低电量导致采样间隔变长
+
+展示上应区分：
+
+```text
+实线：可信轨迹
+虚线：中断后的连接或估算
+浅色线：低可信轨迹
+异常点：疑似漂移
+灰色区间：无定位或弱信号
+```
+
+当前测试 App 的地图显示约定：
+
+```text
+底图:
+  使用原生 Canvas 地图视图，不再通过 WebView 传输轨迹数据。
+  卫星瓦片使用高德 style=6，地图视图 zoom 根据当前比例动态计算，范围 2~22。
+  瓦片数据源最大只请求 z18；视图 zoom 超过 18 时继续放大 z18 瓦片，不请求 z19~z22 瓦片。
+  轨迹记录、诊断日志和 GPX 导出坐标保持 WGS-84。
+  仅在绘制到国内卫星瓦片时，把显示坐标临时转换为 GCJ-02。
+
+可信主轨迹:
+  蓝色实线。
+  只连接 decisionResult = anchor / accept 的可信 TrackPoint。
+  只累计可信距离和 movingTime。
+
+弱信号轨迹:
+  黄色点。
+  来源为 decisionResult = weak 的 TrackPoint。
+  不参与可信距离，不画成蓝色实线。
+  进入 partial GPX / diagnostic 用于排查弱信号环境。
+
+断点:
+  地图视觉上不留空白断口。
+  所有可信 TrackPoint 按时间顺序用蓝色实线连续连接。
+  弱信号点只显示为黄色诊断点，不打断可信实线，也不参与可信距离。
+
+当前位置:
+  蓝色圆点表示系统最新 Location。
+  浅蓝圆表示系统水平精度半径。
+  橙色箭头表示系统 bearing。
+```
+
+## 3. 数据模型建议
+
+### 3.1 原始位置点
+
+```kotlin
+data class RawLocationPoint(
+    val latitude: Double,
+    val longitude: Double,
+    val altitude: Double?,
+    val accuracy: Float,
+    val altitudeAccuracy: Float?,
+    val speed: Float?,
+    val bearing: Float?,
+    val wallTimeMillis: Long,
+    val elapsedRealtimeNanos: Long,
+    val provider: String,
+    val batteryLevel: Float?,
+    val isMocked: Boolean
+)
+```
+
+### 3.2 点质量
+
+```kotlin
+enum class PointQuality {
+    EXCELLENT,
+    GOOD,
+    WEAK,
+    BAD,
+    DRIFT,
+    GAP
+}
+```
+
+建议初始阈值：
+
+```text
+EXCELLENT:
+  accuracy <= 10m
+
+GOOD:
+  accuracy <= 25m
+
+WEAK:
+  25m < accuracy <= 80m
+
+BAD:
+  accuracy > 80m
+
+DRIFT:
+  与上一个可信点推算速度明显不合理
+
+GAP:
+  与上一个点时间间隔过长，例如 > 2-5 分钟
+```
+
+徒步场景中，普通平路速度通常远低于骑行和驾车。第一版可先把异常速度阈值设得保守一些，例如：
+
+```text
+impliedSpeed > 12m/s
+```
+
+这约等于 43.2km/h，在真实徒步中基本可以视为跳点或异常。
+
+### 3.3 轨迹状态
+
+```kotlin
+enum class TrackingState {
+    STARTING,
+    MOVING,
+    MAYBE_PAUSED,
+    PAUSED,
+    SIGNAL_WEAK,
+    RECOVERING,
+    BATTERY_SAVING,
+    ENDED
+}
+```
+
+状态含义：
+
+```text
+STARTING:
+  刚开始记录，等待稳定首点和初始方向
+
+MOVING:
+  用户正在持续移动
+
+MAYBE_PAUSED:
+  短时间位移很小，疑似停留，但还不能确认
+
+PAUSED:
+  已经确认停留
+
+SIGNAL_WEAK:
+  连续弱定位、坏点、漂移点，或长时间没有定位
+
+RECOVERING:
+  弱信号后重新拿到较好定位，正在确认恢复稳定
+
+BATTERY_SAVING:
+  低电量或系统约束下的省电记录模式
+
+ENDED:
+  用户结束记录
+```
+
+### 3.4 轨迹片段
+
+```kotlin
+enum class SegmentType {
+    MOVING,
+    PAUSED,
+    WEAK_SIGNAL,
+    GAP,
+    ESTIMATED,
+    CLIMB,
+    DESCENT
+}
+```
+
+第一版不需要一次性实现所有类型。建议优先支持：
+
+```text
+MOVING
+PAUSED
+WEAK_SIGNAL
+GAP
+```
+
+## 4. 点质量评估
+
+每个位置点进入系统后，先执行质量评估。
+
+```text
+onLocation(point)
+  -> 保存 RawPoint
+  -> 检查 provider / timestamp / elapsedRealtime
+  -> 计算与上一个可信点的 timeGap / distance / impliedSpeed
+  -> 根据 accuracy 和连续性生成 PointQuality
+```
+
+伪代码：
+
+```kotlin
+fun evaluatePoint(
+    point: RawLocationPoint,
+    previousTrustedPoint: RawLocationPoint?
+): PointQuality {
+    if (previousTrustedPoint == null) {
+        return when {
+            point.accuracy <= 10f -> PointQuality.EXCELLENT
+            point.accuracy <= 25f -> PointQuality.GOOD
+            point.accuracy <= 80f -> PointQuality.WEAK
+            else -> PointQuality.BAD
+        }
+    }
+
+    val timeGapMillis = elapsedGapMillis(previousTrustedPoint, point)
+    if (timeGapMillis > 5 * 60 * 1000) {
+        return PointQuality.GAP
+    }
+
+    val distanceMeters = distanceMeters(previousTrustedPoint, point)
+    val impliedSpeed = distanceMeters / (timeGapMillis / 1000.0)
+    if (impliedSpeed > 12.0) {
+        return PointQuality.DRIFT
+    }
+
+    return when {
+        point.accuracy <= 10f -> PointQuality.EXCELLENT
+        point.accuracy <= 25f -> PointQuality.GOOD
+        point.accuracy <= 80f -> PointQuality.WEAK
+        else -> PointQuality.BAD
+    }
+}
+```
+
+质量评估只回答“这个点有多可信”，不要在这里混入太多业务行为。状态转换和采样策略应在后续模块处理。
+
+## 5. 运动状态机
+
+### 5.1 基础转换
+
+```text
+STARTING
+  -> MOVING
+     连续拿到若干 GOOD/EXCELLENT 点，并发生有效位移
+
+MOVING
+  -> MAYBE_PAUSED
+     一段时间内位移很小，速度持续偏低
+
+MAYBE_PAUSED
+  -> PAUSED
+     持续静止超过阈值，例如 3-5 分钟
+
+MAYBE_PAUSED
+  -> MOVING
+     重新出现连续有效位移
+
+PAUSED
+  -> MOVING
+     离开停留区域，例如连续位移超过 20-30 米
+
+MOVING / MAYBE_PAUSED / PAUSED
+  -> SIGNAL_WEAK
+     连续多个 WEAK/BAD/DRIFT 点，或长时间无定位
+
+SIGNAL_WEAK
+  -> RECOVERING
+     重新拿到 GOOD/EXCELLENT 点
+
+RECOVERING
+  -> MOVING
+     连续稳定一段时间
+
+任意状态
+  -> BATTERY_SAVING
+     电量低于阈值，例如 15%
+```
+
+### 5.2 徒步场景的特殊判断
+
+徒步不能简单用低速判断暂停：
+
+```text
+上坡慢 != 停止
+原地漂移 != 移动
+信号断了 != 用户没走
+```
+
+因此需要一个 `MAYBE_PAUSED` 缓冲状态，避免把慢速爬坡、短暂停顿、拍照等场景过早判定为暂停。
+
+建议第一版暂停判断：
+
+```text
+MAYBE_PAUSED:
+  最近 60-120 秒有效位移很小
+
+PAUSED:
+  在半径 20-30 米范围内持续 3-5 分钟
+  且没有连续可信的离开趋势
+```
+
+山地或陡坡场景可延长暂停确认时间：
+
+```text
+陡坡/爬升中:
+  pauseDetectionMinDuration = 5 分钟
+
+开阔平地:
+  pauseDetectionMinDuration = 3 分钟
+```
+
+## 6. 动态采样策略
+
+### 6.1 采样策略结构
+
+```kotlin
+data class SamplingPolicy(
+    val intervalMillis: Long,
+    val distanceFilterMeters: Float,
+    val desiredAccuracy: DesiredAccuracy
+)
+
+enum class DesiredAccuracy {
+    HIGH,
+    BALANCED,
+    LOW_POWER
+}
+```
+
+### 6.2 状态对应策略
+
+```text
+STARTING:
+  intervalMillis = 2-3 秒
+  distanceFilterMeters = 3-5 米
+  desiredAccuracy = HIGH
+
+MOVING:
+  intervalMillis = 5-10 秒
+  distanceFilterMeters = 8-15 米
+  desiredAccuracy = HIGH 或 BALANCED
+
+MAYBE_PAUSED:
+  intervalMillis = 15-30 秒
+  distanceFilterMeters = 10-20 米
+  desiredAccuracy = BALANCED
+
+PAUSED:
+  intervalMillis = 30-60 秒
+  distanceFilterMeters = 30-50 米
+  desiredAccuracy = LOW_POWER 或 BALANCED
+
+SIGNAL_WEAK:
+  intervalMillis = 5-15 秒
+  distanceFilterMeters = 0-10 米
+  desiredAccuracy = HIGH
+  注意：提高采集尝试，不等于提高点的信任度
+
+RECOVERING:
+  intervalMillis = 5-10 秒
+  distanceFilterMeters = 5-10 米
+  desiredAccuracy = HIGH
+
+BATTERY_SAVING:
+  intervalMillis = 30-90 秒
+  distanceFilterMeters = 30-80 米
+  desiredAccuracy = LOW_POWER
+```
+
+### 6.3 决策伪代码
+
+```kotlin
+fun chooseSamplingPolicy(context: TrackingContext): SamplingPolicy {
+    if (context.batteryLevel != null && context.batteryLevel < 0.15f) {
+        return SamplingPolicy(
+            intervalMillis = 60_000,
+            distanceFilterMeters = 50f,
+            desiredAccuracy = DesiredAccuracy.LOW_POWER
+        )
+    }
+
+    return when (context.state) {
+        TrackingState.STARTING -> SamplingPolicy(3_000, 5f, DesiredAccuracy.HIGH)
+        TrackingState.MOVING -> SamplingPolicy(8_000, 10f, DesiredAccuracy.HIGH)
+        TrackingState.MAYBE_PAUSED -> SamplingPolicy(20_000, 15f, DesiredAccuracy.BALANCED)
+        TrackingState.PAUSED -> SamplingPolicy(60_000, 40f, DesiredAccuracy.LOW_POWER)
+        TrackingState.SIGNAL_WEAK -> SamplingPolicy(10_000, 5f, DesiredAccuracy.HIGH)
+        TrackingState.RECOVERING -> SamplingPolicy(8_000, 8f, DesiredAccuracy.HIGH)
+        TrackingState.BATTERY_SAVING -> SamplingPolicy(60_000, 50f, DesiredAccuracy.LOW_POWER)
+        TrackingState.ENDED -> SamplingPolicy(60_000, 100f, DesiredAccuracy.LOW_POWER)
+    }
+}
+```
+
+## 7. 轨迹写入策略
+
+不同质量的点应采用不同写入策略。
+
+```text
+EXCELLENT / GOOD:
+  进入 TrackPoint
+  参与距离、速度、爬升统计
+  可作为可信段的基础
+
+WEAK:
+  保存 RawPoint
+  可作为辅助显示或恢复判断
+  谨慎进入 TrackPoint
+  默认不强参与距离统计，或降低权重
+
+BAD:
+  只保存 RawPoint
+  不进入主轨迹
+  不参与距离统计
+
+DRIFT:
+  只保存 RawPoint
+  记录 drift event
+  不进入主轨迹
+
+GAP:
+  结束上一段 Segment
+  创建 GAP 或 WEAK_SIGNAL 事件
+  后续恢复后新开 Segment
+  展示时用虚线或缺口表达
+```
+
+距离统计规则：
+
+```text
+只累计可信点之间的移动距离
+停留状态下的小范围漂移不累计
+异常速度不累计
+长时间断点不按直线累计为真实距离
+低精度点可进入估算距离，不进入可信距离
+```
+
+## 8. 轨迹分段
+
+分段的目的不是为了存储方便，而是为了把一次徒步解释成多个有意义的过程。
+
+真实徒步可能包含：
+
+```text
+移动
+休息
+拍照
+补给
+爬升
+下降
+走错路
+折返
+弱信号
+轨迹中断
+恢复定位
+```
+
+第一版建议分段：
+
+```text
+MOVING:
+  正常移动段
+
+PAUSED:
+  停留段
+
+WEAK_SIGNAL:
+  连续低质量定位段
+
+GAP:
+  长时间无有效定位段
+```
+
+第二阶段可增强：
+
+```text
+CLIMB:
+  持续爬升段
+
+DESCENT:
+  持续下降段
+
+ESTIMATED:
+  中断后基于路线或前后点估算的段
+```
+
+第三阶段再考虑：
+
+```text
+BACKTRACK:
+  折返或疑似走错路
+
+OFF_ROUTE:
+  偏离预设路线
+```
+
+## 9. 信号异常处理
+
+### 9.1 有差点和没点是两类问题
+
+```text
+有 Location 但质量差:
+  保存 RawPoint
+  拒绝进入主轨迹
+  记录 reject reason
+
+没有 Location 回调:
+  没有 RawPoint
+  记录 no_location_timeout event
+  不伪造点
+```
+
+### 9.2 异常段不要伪装成真实轨迹
+
+两个点之间如果间隔过长，不应直接画成真实路线。
+
+```text
+10:01 A 点
+10:20 B 点
+```
+
+中间 19 分钟没有定位时，展示应使用虚线、缺口或弱信号区间，而不是一条普通实线。
+
+### 9.3 网络与定位解耦
+
+徒步场景中网络差很常见。轨迹记录不能依赖实时上传成功。
+
+```text
+本地持续记录
+本地队列持久化
+网络恢复后批量上传
+上传成功后标记 synced
+失败则重试
+```
+
+定位采集失败和上传失败要分开表达：
+
+```text
+定位失败:
+  没有可靠位置
+
+上传失败:
+  有本地记录，但暂时没有同步到服务端
+```
+
+## 10. 可信度输出
+
+轨迹结束后不应只输出距离和耗时，还应输出可信度指标。
+
+建议 summary：
+
+```text
+总距离
+可信距离
+估算距离
+总耗时
+移动耗时
+停留耗时
+累计爬升
+累计下降
+轨迹完整度
+低精度区间数量
+中断区间数量
+漂移点数量
+```
+
+示例：
+
+```text
+总距离：12.8 km
+可信距离：12.1 km
+估算距离：0.7 km
+总耗时：5h 20m
+移动耗时：4h 35m
+停留耗时：45m
+轨迹完整度：94%
+低精度区间：3 段
+中断区间：1 段
+```
+
+## 11. 分阶段落地路线
+
+### MVP：可靠记录
+
+目标：
+
+```text
+采得到
+存得住
+传得上
+后台不轻易断
+```
+
+范围：
+
+- 原始点本地保存
+- 前台服务或后台保活
+- 网络失败后补传
+- 基础采样策略
+- 开始、暂停、结束
+- 标准 GPX 或内部格式导出
+
+### V1：点质量与主轨迹分离
+
+目标：
+
+```text
+不要让坏点污染正式轨迹
+```
+
+范围：
+
+- `RawPoint` / `TrackPoint` 分离
+- `accuracy` 分级
+- 异常速度过滤
+- 长时间断点识别
+- 低精度点弱化
+- 停留漂移不累计距离
+
+### V2：状态机与动态采样
+
+目标：
+
+```text
+根据用户状态平衡连续性、精度和功耗
+```
+
+范围：
+
+- `STARTING`
+- `MOVING`
+- `MAYBE_PAUSED`
+- `PAUSED`
+- `SIGNAL_WEAK`
+- `RECOVERING`
+- `BATTERY_SAVING`
+- 不同状态对应不同采样策略
+
+### V3：分段与可信度
+
+目标：
+
+```text
+让轨迹从一条线变成可解释的徒步过程
+```
+
+范围：
+
+- 移动段
+- 停留段
+- 弱信号段
+- 中断段
+- 可信距离
+- 估算距离
+- 移动耗时
+- 停留耗时
+- 轨迹完整度
+
+### V4：专业徒步增强
+
+目标：
+
+```text
+让系统更理解山地与路线场景
+```
+
+范围：
+
+- 地形识别
+- 陡坡慢速容忍
+- 海拔平滑
+- 累计爬升修正
+- 路线吸附
+- 偏航提醒
+- 折返识别
+- 离线地图
+- 弱网补偿
+
+## 12. 第一版建议边界
+
+第一版不要追求把所有智能能力做完。建议优先落地：
+
+```text
+1. 原始点全部保存
+2. 点质量分级
+3. RawPoint / TrackPoint 分离
+4. MOVING / MAYBE_PAUSED / PAUSED / SIGNAL_WEAK 状态机
+5. 坏点不进入主轨迹
+6. 停留漂移不累计距离
+7. 长时间无点标记 GAP
+8. 轨迹结束输出基础可信度
+```
+
+暂缓：
+
+```text
+路线吸附
+折返识别
+复杂地形模型
+自动补线
+机器学习判断停留
+高精度海拔融合
+```
+
+## 13. 总结
+
+精密的徒步轨迹记录，不是更频繁地采点，而是根据定位质量和用户状态动态决定：
+
+```text
+采不采
+信不信
+存不存
+算不算
+怎么展示
+如何证明
+```
+
+最终系统形态应该是：
+
+```text
+一个持续解释位置质量和用户状态的自适应轨迹引擎。
+```

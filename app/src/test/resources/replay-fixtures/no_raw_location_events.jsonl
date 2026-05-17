@@ -1,0 +1,3 @@
+{"event":"session_metadata","createdElapsedRealtimeNanos":1000000000}
+{"event":"config_snapshot","forcedWeakFirstFixEnabled":false}
+{"event":"session_event","eventType":"start_recording","recordingStateBefore":"IDLE","recordingStateAfter":"RECORDING","fixStateAfter":"WAITING_FIRST_FIX"}

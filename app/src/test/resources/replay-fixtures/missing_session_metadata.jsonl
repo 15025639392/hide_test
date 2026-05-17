@@ -1,0 +1,2 @@
+{"event":"config_snapshot","forcedWeakFirstFixEnabled":false}
+{"event":"raw_location","rawPointId":1,"provider":"gps","lat":29.0,"lng":106.0,"accuracy":10.0,"timeMillis":1,"elapsedRealtimeNanos":2000000000,"expectedResult":"anchor","expectedReason":"first_fix_good"}
