@@ -58,6 +58,8 @@ import com.example.gnsssatdemo.track.export.HikingSampleReportGenerator;
 import com.example.gnsssatdemo.track.export.SessionFileStore;
 import com.example.gnsssatdemo.track.export.SessionManifest;
 import com.example.gnsssatdemo.track.export.SessionManifestReader;
+import com.example.gnsssatdemo.track.export.WeakGnssReport;
+import com.example.gnsssatdemo.track.export.WeakGnssReportGenerator;
 import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
 import com.example.gnsssatdemo.track.model.ReferenceTrackPoint;
 import com.example.gnsssatdemo.track.model.TrackPoint;
@@ -92,6 +94,7 @@ public class MainActivity extends Activity {
     private static final int REQ_NOTIFICATIONS = 1004;
     private static final int REQ_IMPORT_REFERENCE_GPX = 1005;
     private static final int REQ_CREATE_SAMPLE_REPORT = 1006;
+    private static final int REQ_CREATE_WEAK_GNSS_REPORT = 1007;
     private static final long NO_LOCATION_TIMEOUT_MILLIS = 30_000L;
     private static final float MIN_HEADING_RENDER_DELTA_DEGREES = 3f;
     private static final double DEFAULT_MAP_CENTER_LATITUDE = 29.53903137d;
@@ -135,6 +138,7 @@ public class MainActivity extends Activity {
     private String pendingGpxText;
     private String pendingDiagnosticText;
     private String pendingSampleReportText;
+    private String pendingWeakGnssReportText;
     private long lastLocationReceivedElapsedRealtimeMillis;
     private boolean noLocationTimeoutLogged;
     private boolean foregroundServiceRecording;
@@ -371,6 +375,12 @@ public class MainActivity extends Activity {
                 writePendingSampleReport(data.getData());
             } else {
                 setStatus("已取消导出样本报告");
+            }
+        } else if (requestCode == REQ_CREATE_WEAK_GNSS_REPORT) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                writePendingWeakGnssReport(data.getData());
+            } else {
+                setStatus("已取消导出弱 GPS 报告");
             }
         }
     }
@@ -1491,6 +1501,12 @@ public class MainActivity extends Activity {
             reportButton.setOnClickListener(v -> exportCurrentSampleReport());
             row.addView(reportButton, weightedButtonParams(hasAction));
             hasAction = true;
+            Button weakGnssReportButton = new Button(this);
+            weakGnssReportButton.setText("弱GPS");
+            styleSmallSecondaryButton(weakGnssReportButton);
+            weakGnssReportButton.setOnClickListener(v -> exportCurrentWeakGnssReport());
+            row.addView(weakGnssReportButton, weightedButtonParams(hasAction));
+            hasAction = true;
         }
         if (hasAction) {
             card.addView(row, new LinearLayout.LayoutParams(
@@ -1577,6 +1593,12 @@ public class MainActivity extends Activity {
             styleSmallSecondaryButton(reportButton);
             reportButton.setOnClickListener(v -> exportHistoricalSampleReport(manifest));
             row.addView(reportButton, weightedButtonParams(hasAction));
+            hasAction = true;
+            Button weakGnssReportButton = new Button(this);
+            weakGnssReportButton.setText("弱GPS");
+            styleSmallSecondaryButton(weakGnssReportButton);
+            weakGnssReportButton.setOnClickListener(v -> exportHistoricalWeakGnssReport(manifest));
+            row.addView(weakGnssReportButton, weightedButtonParams(hasAction));
             hasAction = true;
         }
         if (hasAction) {
@@ -2034,6 +2056,40 @@ public class MainActivity extends Activity {
         requestSampleReportDocument("sample_report_" + manifest.sessionId + ".txt");
     }
 
+    private void exportCurrentWeakGnssReport() {
+        if (!canExportCurrentSampleReport()) {
+            setStatus("当前记录还没有可分析的 session 目录");
+            return;
+        }
+        try {
+            SessionFileStore fileStore = new SessionFileStore(this);
+            SessionManifest manifest = new SessionManifestReader(fileStore).read(
+                    new File(trackSession.getSessionDirPath()));
+            exportWeakGnssReport(manifest);
+        } catch (IOException | JSONException e) {
+            setStatus("生成当前弱 GPS 报告失败: " + e.getMessage());
+        }
+    }
+
+    private void exportHistoricalWeakGnssReport(SessionManifest manifest) {
+        if (!canExportHistoricalSampleReport(manifest)) {
+            setStatus("这条历史记录没有诊断日志，无法生成弱 GPS 报告");
+            return;
+        }
+        try {
+            exportWeakGnssReport(manifest);
+        } catch (IOException | JSONException e) {
+            setStatus("生成历史弱 GPS 报告失败: " + e.getMessage());
+        }
+    }
+
+    private void exportWeakGnssReport(SessionManifest manifest) throws IOException, JSONException {
+        WeakGnssReport report = new WeakGnssReportGenerator().generate(manifest);
+        pendingWeakGnssReportText = report.toText();
+        setStatus("准备导出弱 GPS 报告: " + manifest.sessionId);
+        requestWeakGnssReportDocument("weak_gnss_report_" + manifest.sessionId + ".txt");
+    }
+
     private void requestDiagnosticDocument(String fileName) {
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
@@ -2048,6 +2104,14 @@ public class MainActivity extends Activity {
         intent.setType("text/plain");
         intent.putExtra(Intent.EXTRA_TITLE, fileName);
         startActivityForResult(intent, REQ_CREATE_SAMPLE_REPORT);
+    }
+
+    private void requestWeakGnssReportDocument(String fileName) {
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("text/plain");
+        intent.putExtra(Intent.EXTRA_TITLE, fileName);
+        startActivityForResult(intent, REQ_CREATE_WEAK_GNSS_REPORT);
     }
 
     private String readText(File file) throws IOException {
@@ -2102,6 +2166,26 @@ public class MainActivity extends Activity {
             setStatus("样本报告导出失败: " + e.getMessage());
         } finally {
             pendingSampleReportText = null;
+        }
+    }
+
+    private void writePendingWeakGnssReport(Uri uri) {
+        if (pendingWeakGnssReportText == null) {
+            setStatus("没有待导出的弱 GPS 报告");
+            return;
+        }
+        try (OutputStream outputStream = getContentResolver().openOutputStream(uri)) {
+            if (outputStream == null) {
+                setStatus("无法打开弱 GPS 报告导出文件");
+                return;
+            }
+            outputStream.write(pendingWeakGnssReportText.getBytes(StandardCharsets.UTF_8));
+            outputStream.flush();
+            setStatus("弱 GPS 报告已导出: " + uri);
+        } catch (IOException e) {
+            setStatus("弱 GPS 报告导出失败: " + e.getMessage());
+        } finally {
+            pendingWeakGnssReportText = null;
         }
     }
 

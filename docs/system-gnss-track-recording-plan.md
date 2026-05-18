@@ -338,8 +338,11 @@ transport mode 中:
 真实样本验证额外支持导出：
 
 - `sample_report_{sessionId}.txt`
+- `weak_gnss_report_{sessionId}.txt`
 
 样本报告由 `diagnostic.jsonl` 和 `session.json` 自动生成，覆盖采样策略分布、记录时长、距离、GAP、no-location timeout、reject/weak/accept 原因分布和阻塞问题。当前报告明确不统计电量/省电证据，也不做多地图 GPX 兼容性自动回归。
+
+弱 GPS 诊断报告由 `diagnostic.jsonl` 和 `session.json` 自动生成，覆盖 weak/reject 决策关联的卫星 C/N0、参与定位卫星数、raw location stale GNSS 占比、GAP 前后 30 秒 GNSS 质量和 no-location timeout。该报告只解释弱信号证据，不改变可信轨迹、距离、GPX 或 replay 判点结果。
 
 `session.json` 至少表达：
 

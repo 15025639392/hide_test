@@ -424,6 +424,36 @@ gradle testDebugUnitTest
 gradle :app:runReplay
 ```
 
+### Phase 10: Standalone Weak GNSS Report
+
+Goal: create an offline weak GNSS report that answers why a session had weak,
+rejected, GAP, or stale-GNSS evidence without changing trusted track policy.
+
+Suggested extraction order:
+
+1. Add `WeakGnssReportGenerator` that reads `session.json` and
+   `diagnostic.jsonl` through `SessionManifest`.
+2. Add `WeakGnssReport` JSON and text output for weak/reject/GAP/no-location
+   evidence.
+3. Add compatibility tests for old `gnss_snapshot` events that do not contain
+   Phase 6 fields.
+
+Rules:
+
+- Missing Phase 6 fields must not fail report generation.
+- Missing `sourceGnssSnapshotId` must be reported as an explainability gap, not
+  a policy failure.
+- The standalone report remains diagnostic/export only.
+- Do not alter decision, distance, moving-time, segment, GPX, or replay
+  expectations.
+
+Validation:
+
+```bash
+gradle testDebugUnitTest
+gradle :app:runReplay
+```
+
 ## Stop Conditions
 
 Stop and report instead of continuing if:
@@ -507,11 +537,17 @@ Completed:
   and text.
 - Phase 9 / Task 3: added sample-report coverage for weak/reject decision GNSS
   correlation while preserving legacy compatibility.
+- Phase 10 / Task 1: added `WeakGnssReportGenerator` for standalone weak GNSS
+  diagnostics from `SessionManifest` and `diagnostic.jsonl`.
+- Phase 10 / Task 2: added `WeakGnssReport` JSON and text output for
+  weak/reject/GAP/no-location evidence.
+- Phase 10 / Task 3: added weak GNSS report tests for Phase 6 metrics and
+  legacy `gnss_snapshot` compatibility.
 
 The current governance cursor is:
 
 ```text
-Phase 9 complete
+Phase 10 complete
 ```
 
 Move the cursor only after completing a task and validating it according to the
