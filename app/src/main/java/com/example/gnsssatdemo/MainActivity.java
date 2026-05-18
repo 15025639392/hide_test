@@ -97,6 +97,7 @@ public class MainActivity extends Activity {
     private static final int REQ_CREATE_WEAK_GNSS_REPORT = 1007;
     private static final long NO_LOCATION_TIMEOUT_MILLIS = 30_000L;
     private static final float MIN_HEADING_RENDER_DELTA_DEGREES = 3f;
+    private static final long HEADING_STALE_RENDER_DELAY_MILLIS = 550L;
     private static final double DEFAULT_MAP_CENTER_LATITUDE = 29.53903137d;
     private static final double DEFAULT_MAP_CENTER_LONGITUDE = 106.49655175d;
     private static final long UI_RENDER_MIN_INTERVAL_MILLIS = 250L;
@@ -115,6 +116,8 @@ public class MainActivity extends Activity {
     private LocationManager locationManager;
     private SensorManager sensorManager;
     private Sensor rotationVectorSensor;
+    private Sensor magneticFieldSensor;
+    private Sensor gyroscopeSensor;
     private RecordingServiceController recordingServiceController;
     private HistorySessionController historySessionController;
     private SatelliteTileLoader satelliteTileLoader;
@@ -153,6 +156,8 @@ public class MainActivity extends Activity {
     private double foregroundServiceLatitude;
     private double foregroundServiceLongitude;
     private float foregroundServiceAccuracyMeters = -1f;
+    private boolean foregroundServiceHasSpeed;
+    private float foregroundServiceSpeedMetersPerSecond = -1f;
     private boolean foregroundServiceHasBearing;
     private float foregroundServiceBearingDegrees = -1f;
     private final List<TrackPoint> foregroundServiceTrackPoints = new ArrayList<>();
@@ -164,6 +169,17 @@ public class MainActivity extends Activity {
     private int lastScanCleanedTmpFileCount;
     private String lastScanError = "";
     private float headingDegrees = Float.NaN;
+    private String headingUnreliableReason = "sensor_unavailable";
+    private final CompassHeadingReliability headingReliability =
+            new CompassHeadingReliability();
+    private final Runnable headingStaleRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (updateHeadingReliability(SystemClock.elapsedRealtimeNanos())) {
+                render();
+            }
+        }
+    };
     private final List<ReferenceTrackPoint> referenceTrackPoints = new ArrayList<>();
     private String referenceTrackName = "";
     private boolean renderScheduled;
@@ -180,18 +196,40 @@ public class MainActivity extends Activity {
 
         @Override
         public void onSensorChanged(SensorEvent event) {
+            if (event.sensor.getType() == Sensor.TYPE_MAGNETIC_FIELD) {
+                headingReliability.recordMagneticField(event.values[0], event.values[1],
+                        event.values[2]);
+                if (updateHeadingReliability(SystemClock.elapsedRealtimeNanos())) {
+                    render();
+                }
+                return;
+            }
+            if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
+                headingReliability.recordGyroscope(event.values[0], event.values[1],
+                        event.values[2], event.timestamp);
+                if (updateHeadingReliability(SystemClock.elapsedRealtimeNanos())) {
+                    render();
+                }
+                return;
+            }
             if (event.sensor.getType() != Sensor.TYPE_ROTATION_VECTOR) {
                 return;
             }
+            headingReliability.recordSensorAccuracy(event.accuracy);
             SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values);
             SensorManager.getOrientation(rotationMatrix, orientation);
             float nextHeading = (float) Math.toDegrees(orientation[0]);
             if (nextHeading < 0f) {
                 nextHeading += 360f;
             }
+            headingReliability.recordHeading(nextHeading, event.timestamp);
+            scheduleHeadingStaleCheck();
+            boolean reliableChanged = updateHeadingReliability(
+                    SystemClock.elapsedRealtimeNanos());
             if (Float.isNaN(headingDegrees)
                     || headingDeltaDegrees(headingDegrees, nextHeading)
-                    >= MIN_HEADING_RENDER_DELTA_DEGREES) {
+                    >= MIN_HEADING_RENDER_DELTA_DEGREES
+                    || reliableChanged) {
                 headingDegrees = nextHeading;
                 render();
             }
@@ -199,7 +237,12 @@ public class MainActivity extends Activity {
 
         @Override
         public void onAccuracyChanged(Sensor sensor, int accuracy) {
-            // Direction is advisory for UI only; no action needed on accuracy changes.
+            if (sensor != null && sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
+                headingReliability.recordSensorAccuracy(accuracy);
+                if (updateHeadingReliability(SystemClock.elapsedRealtimeNanos())) {
+                    render();
+                }
+            }
         }
     };
 
@@ -298,9 +341,17 @@ public class MainActivity extends Activity {
                 foregroundServiceLatitude = serviceStatus.latitude;
                 foregroundServiceLongitude = serviceStatus.longitude;
                 foregroundServiceAccuracyMeters = serviceStatus.accuracyMeters;
+                foregroundServiceHasSpeed = serviceStatus.hasSpeed;
+                foregroundServiceSpeedMetersPerSecond = serviceStatus.speedMetersPerSecond;
                 foregroundServiceHasBearing = serviceStatus.hasBearing;
                 foregroundServiceBearingDegrees = serviceStatus.bearingDegrees;
                 appendForegroundServiceLiveRawPoint();
+            } else {
+                foregroundServiceAccuracyMeters = -1f;
+                foregroundServiceHasSpeed = false;
+                foregroundServiceSpeedMetersPerSecond = -1f;
+                foregroundServiceHasBearing = false;
+                foregroundServiceBearingDegrees = -1f;
             }
             updateForegroundServiceTrackPoints(serviceStatus.trackPolyline);
             updateRecordButtonState();
@@ -324,6 +375,10 @@ public class MainActivity extends Activity {
                 () -> mainHandler.post(this::scheduleSatelliteMapViewsInvalidate));
         if (sensorManager != null) {
             rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+            magneticFieldSensor = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD);
+            gyroscopeSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+            headingReliability.setSensorAvailability(magneticFieldSensor != null,
+                    gyroscopeSensor != null);
         }
         trackSession = new BasicTrackSession(this);
         buildUi();
@@ -487,7 +542,8 @@ public class MainActivity extends Activity {
         foregroundServiceLiveRawPoints.add(new TrackPoint(id, id, id, 1L,
                 foregroundServiceLatitude, foregroundServiceLongitude,
                 false, 0.0, foregroundServiceAccuracyMeters,
-                false, 0f, foregroundServiceHasBearing, foregroundServiceBearingDegrees,
+                foregroundServiceHasSpeed, foregroundServiceSpeedMetersPerSecond,
+                foregroundServiceHasBearing, foregroundServiceBearingDegrees,
                 System.currentTimeMillis(), 0L, "raw_live", "foreground_live_raw",
                 0.0, 0.0, null));
         while (foregroundServiceLiveRawPoints.size() > 1000) {
@@ -501,12 +557,26 @@ public class MainActivity extends Activity {
         }
         sensorManager.registerListener(headingListener, rotationVectorSensor,
                 SensorManager.SENSOR_DELAY_UI, mainHandler);
+        if (magneticFieldSensor != null) {
+            sensorManager.registerListener(headingListener, magneticFieldSensor,
+                    SensorManager.SENSOR_DELAY_UI, mainHandler);
+        }
+        if (gyroscopeSensor != null) {
+            sensorManager.registerListener(headingListener, gyroscopeSensor,
+                    SensorManager.SENSOR_DELAY_UI, mainHandler);
+        }
     }
 
     private void stopHeadingUpdates() {
+        mainHandler.removeCallbacks(headingStaleRunnable);
         if (sensorManager != null) {
             sensorManager.unregisterListener(headingListener);
         }
+    }
+
+    private void scheduleHeadingStaleCheck() {
+        mainHandler.removeCallbacks(headingStaleRunnable);
+        mainHandler.postDelayed(headingStaleRunnable, HEADING_STALE_RENDER_DELAY_MILLIS);
     }
 
     private void buildUi() {
@@ -2259,7 +2329,11 @@ public class MainActivity extends Activity {
         fallback.foregroundAccuracyMeters = foregroundServiceAccuracyMeters;
         fallback.foregroundHasBearing = foregroundServiceHasBearing;
         fallback.foregroundBearingDegrees = foregroundServiceBearingDegrees;
+        fallback.foregroundHasSpeed = foregroundServiceHasSpeed;
+        fallback.foregroundSpeedMetersPerSecond = foregroundServiceSpeedMetersPerSecond;
         fallback.compassHeadingDegrees = headingDegrees;
+        fallback.compassHeadingReliable = headingReliability.headingReliable(
+                SystemClock.elapsedRealtimeNanos());
         if (lastLocation != null) {
             fallback.hasLastLocation = true;
             fallback.lastLatitude = lastLocation.getLatitude();
@@ -2267,6 +2341,8 @@ public class MainActivity extends Activity {
             fallback.lastAccuracyMeters = lastLocation.getAccuracy();
             fallback.lastHasBearing = lastLocation.hasBearing();
             fallback.lastBearingDegrees = lastLocation.hasBearing() ? lastLocation.getBearing() : -1f;
+            fallback.lastHasSpeed = lastLocation.hasSpeed();
+            fallback.lastSpeedMetersPerSecond = lastLocation.hasSpeed() ? lastLocation.getSpeed() : -1f;
         }
         if (trackSession != null && trackSession.getSessionId() != null) {
             fallback.hasSessionTotalDistance = true;
@@ -3457,7 +3533,18 @@ public class MainActivity extends Activity {
         if (Float.isNaN(headingDegrees)) {
             return rotationVectorSensor == null ? "无罗盘" : "校准中";
         }
-        return one.format(headingDegrees) + "° " + cardinalDirection(headingDegrees);
+        String reason = headingReliability.unreliableReason(SystemClock.elapsedRealtimeNanos());
+        headingUnreliableReason = reason;
+        String reliability = reason.isEmpty() ? "可靠" : "不可靠:" + reason;
+        return one.format(headingDegrees) + "° " + cardinalDirection(headingDegrees)
+                + " " + reliability;
+    }
+
+    private boolean updateHeadingReliability(long nowNanos) {
+        String nextReason = headingReliability.unreliableReason(nowNanos);
+        boolean changed = !nextReason.equals(headingUnreliableReason);
+        headingUnreliableReason = nextReason;
+        return changed;
     }
 
     private String cardinalDirection(float degrees) {

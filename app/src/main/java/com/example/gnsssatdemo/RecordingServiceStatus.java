@@ -12,6 +12,8 @@ class RecordingServiceStatus {
     final double latitude;
     final double longitude;
     final float accuracyMeters;
+    final boolean hasSpeed;
+    final float speedMetersPerSecond;
     final boolean hasBearing;
     final float bearingDegrees;
     final String trackPolyline;
@@ -21,6 +23,7 @@ class RecordingServiceStatus {
                            double totalDistanceMeters, double totalAscentMeters,
                            String statusText, boolean hasLocation,
                            double latitude, double longitude, float accuracyMeters,
+                           boolean hasSpeed, float speedMetersPerSecond,
                            boolean hasBearing, float bearingDegrees,
                            String trackPolyline) {
         this.active = active;
@@ -34,6 +37,8 @@ class RecordingServiceStatus {
         this.latitude = latitude;
         this.longitude = longitude;
         this.accuracyMeters = accuracyMeters;
+        this.hasSpeed = hasSpeed;
+        this.speedMetersPerSecond = speedMetersPerSecond;
         this.hasBearing = hasBearing;
         this.bearingDegrees = bearingDegrees;
         this.trackPolyline = trackPolyline;

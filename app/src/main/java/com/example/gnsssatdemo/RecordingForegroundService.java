@@ -61,6 +61,8 @@ public class RecordingForegroundService extends Service {
     public static final String EXTRA_LATITUDE = "latitude";
     public static final String EXTRA_LONGITUDE = "longitude";
     public static final String EXTRA_ACCURACY_METERS = "accuracyMeters";
+    public static final String EXTRA_HAS_SPEED = "hasSpeed";
+    public static final String EXTRA_SPEED_METERS_PER_SECOND = "speedMetersPerSecond";
     public static final String EXTRA_HAS_BEARING = "hasBearing";
     public static final String EXTRA_BEARING_DEGREES = "bearingDegrees";
     public static final String EXTRA_TRACK_POLYLINE = "trackPolyline";
@@ -509,6 +511,9 @@ public class RecordingForegroundService extends Service {
             intent.putExtra(EXTRA_LONGITUDE, lastLocation.getLongitude());
             intent.putExtra(EXTRA_ACCURACY_METERS,
                     lastLocation.hasAccuracy() ? lastLocation.getAccuracy() : -1f);
+            intent.putExtra(EXTRA_HAS_SPEED, lastLocation.hasSpeed());
+            intent.putExtra(EXTRA_SPEED_METERS_PER_SECOND,
+                    lastLocation.hasSpeed() ? lastLocation.getSpeed() : -1f);
             intent.putExtra(EXTRA_HAS_BEARING, lastLocation.hasBearing());
             intent.putExtra(EXTRA_BEARING_DEGREES,
                     lastLocation.hasBearing() ? lastLocation.getBearing() : -1f);

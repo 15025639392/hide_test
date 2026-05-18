@@ -35,6 +35,8 @@ public class TrackMapStateTest {
         fallback.foregroundLatitude = 29.5;
         fallback.foregroundLongitude = 106.5;
         fallback.foregroundAccuracyMeters = 12f;
+        fallback.foregroundHasSpeed = true;
+        fallback.foregroundSpeedMetersPerSecond = 1.2f;
         fallback.foregroundHasBearing = true;
         fallback.foregroundBearingDegrees = 88f;
         fallback.foregroundTotalDistanceMeters = 123.0;
@@ -61,6 +63,133 @@ public class TrackMapStateTest {
                 new TrackMapState.Fallback());
 
         assertEquals(10.0, state.totalDistanceMeters, 0.0);
+    }
+
+    @Test
+    public void build_usesCompassFallbackOnlyWhenReliable() {
+        TrackMapState.Fallback fallback = new TrackMapState.Fallback();
+        fallback.hasLastLocation = true;
+        fallback.lastLatitude = 29.5;
+        fallback.lastLongitude = 106.5;
+        fallback.lastAccuracyMeters = 8f;
+        fallback.compassHeadingDegrees = 45f;
+
+        TrackMapState unreliable = TrackMapState.build(Arrays.asList(), fallback);
+        assertTrue(Float.isNaN(unreliable.headingDegrees));
+
+        fallback.compassHeadingReliable = true;
+        TrackMapState reliable = TrackMapState.build(Arrays.asList(), fallback);
+        assertEquals(45f, reliable.headingDegrees, 0f);
+    }
+
+    @Test
+    public void build_ignoresLowSpeedGnssBearingForStrongArrow() {
+        TrackMapState.Fallback fallback = new TrackMapState.Fallback();
+        fallback.hasLastLocation = true;
+        fallback.lastLatitude = 29.5;
+        fallback.lastLongitude = 106.5;
+        fallback.lastAccuracyMeters = 8f;
+        fallback.lastHasBearing = true;
+        fallback.lastBearingDegrees = 88f;
+        fallback.lastHasSpeed = true;
+        fallback.lastSpeedMetersPerSecond = 0.3f;
+        fallback.compassHeadingDegrees = 45f;
+        fallback.compassHeadingReliable = true;
+
+        TrackMapState state = TrackMapState.build(Arrays.asList(), fallback);
+
+        assertEquals(45f, state.headingDegrees, 0f);
+    }
+
+    @Test
+    public void build_doesNotReuseLastBearingWhenForegroundLocationIsStopped() {
+        TrackMapState.Fallback fallback = new TrackMapState.Fallback();
+        fallback.foregroundRecording = true;
+        fallback.foregroundHasLocation = true;
+        fallback.foregroundLatitude = 29.5;
+        fallback.foregroundLongitude = 106.5;
+        fallback.foregroundAccuracyMeters = 8f;
+        fallback.foregroundHasBearing = true;
+        fallback.foregroundBearingDegrees = 30f;
+        fallback.foregroundHasSpeed = true;
+        fallback.foregroundSpeedMetersPerSecond = 0.1f;
+        fallback.hasLastLocation = true;
+        fallback.lastLatitude = 29.5;
+        fallback.lastLongitude = 106.5;
+        fallback.lastAccuracyMeters = 8f;
+        fallback.lastHasBearing = true;
+        fallback.lastBearingDegrees = 88f;
+        fallback.lastHasSpeed = true;
+        fallback.lastSpeedMetersPerSecond = 1.5f;
+        fallback.compassHeadingDegrees = 45f;
+        fallback.compassHeadingReliable = true;
+
+        TrackMapState state = TrackMapState.build(Arrays.asList(), fallback);
+
+        assertEquals(45f, state.headingDegrees, 0f);
+    }
+
+    @Test
+    public void build_ignoresStaleTrackHeadingWhenCurrentLocationIsStopped() {
+        TrackMapState.Fallback fallback = new TrackMapState.Fallback();
+        fallback.hasLastLocation = true;
+        fallback.lastLatitude = 29.0002;
+        fallback.lastLongitude = 106.0;
+        fallback.lastAccuracyMeters = 8f;
+        fallback.lastHasSpeed = true;
+        fallback.lastSpeedMetersPerSecond = 0.1f;
+        fallback.hasSessionTotalDistance = true;
+        fallback.sessionTotalDistanceMeters = 10.0;
+        fallback.compassHeadingDegrees = 45f;
+        fallback.compassHeadingReliable = true;
+
+        TrackMapState state = TrackMapState.build(Arrays.asList(
+                point(1L, 29.0, 106.0, "anchor", "first_fix_good", false, 0f, 0.0),
+                point(2L, 29.0002, 106.0, "accept", "moving_good_fix", true, 0f, 10.0)),
+                fallback);
+
+        assertEquals(45f, state.headingDegrees, 0f);
+    }
+
+    @Test
+    public void build_allowsTrackHeadingWhenCurrentLocationHasNoSpeed() {
+        TrackMapState.Fallback fallback = new TrackMapState.Fallback();
+        fallback.hasLastLocation = true;
+        fallback.lastLatitude = 29.0002;
+        fallback.lastLongitude = 106.0;
+        fallback.lastAccuracyMeters = 8f;
+        fallback.lastHasSpeed = false;
+        fallback.compassHeadingDegrees = 45f;
+        fallback.compassHeadingReliable = true;
+
+        TrackMapState state = TrackMapState.build(Arrays.asList(
+                point(1L, 29.0, 106.0, "anchor", "first_fix_good", false, 0f, 0.0),
+                point(2L, 29.0002, 106.0, "accept", "moving_good_fix", false, 0f, 10.0)),
+                fallback);
+
+        assertEquals(0f, state.headingDegrees, 0.1f);
+    }
+
+    @Test
+    public void build_doesNotGateHistoricalTrackHeadingByCurrentDeviceSpeed() {
+        TrackMapState.Fallback fallback = new TrackMapState.Fallback();
+        fallback.hasLastLocation = true;
+        fallback.lastLatitude = 29.0002;
+        fallback.lastLongitude = 106.0;
+        fallback.lastAccuracyMeters = 8f;
+        fallback.lastHasSpeed = true;
+        fallback.lastSpeedMetersPerSecond = 0.1f;
+        fallback.hasManifestTotalDistance = true;
+        fallback.manifestTotalDistanceMeters = 10.0;
+        fallback.compassHeadingDegrees = 45f;
+        fallback.compassHeadingReliable = true;
+
+        TrackMapState state = TrackMapState.build(Arrays.asList(
+                point(1L, 29.0, 106.0, "anchor", "first_fix_good", false, 0f, 0.0),
+                point(2L, 29.0002, 106.0, "accept", "moving_good_fix", false, 0f, 10.0)),
+                fallback);
+
+        assertEquals(0f, state.headingDegrees, 0.1f);
     }
 
     private TrackPoint point(long id, double latitude, double longitude, String result,

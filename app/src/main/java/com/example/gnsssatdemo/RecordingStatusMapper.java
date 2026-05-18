@@ -33,6 +33,10 @@ class RecordingStatusMapper {
                 hasLocation ? intent.getFloatExtra(
                         RecordingForegroundService.EXTRA_ACCURACY_METERS, -1f) : -1f,
                 hasLocation && intent.getBooleanExtra(
+                        RecordingForegroundService.EXTRA_HAS_SPEED, false),
+                hasLocation ? intent.getFloatExtra(
+                        RecordingForegroundService.EXTRA_SPEED_METERS_PER_SECOND, -1f) : -1f,
+                hasLocation && intent.getBooleanExtra(
                         RecordingForegroundService.EXTRA_HAS_BEARING, false),
                 hasLocation ? intent.getFloatExtra(
                         RecordingForegroundService.EXTRA_BEARING_DEGREES, -1f) : -1f,

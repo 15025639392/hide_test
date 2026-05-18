@@ -6,6 +6,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 class TrackMapState {
+    static final float MIN_GNSS_BEARING_SPEED_METERS_PER_SECOND = 0.8f;
+    static final double MIN_TRACK_HEADING_DISTANCE_METERS = 5.0d;
+
     final List<TrackPoint> points;
     final MapPoint currentPoint;
     final float accuracyMeters;
@@ -82,8 +85,11 @@ class TrackMapState {
 
     private static float effectiveHeadingDegrees(List<TrackPoint> points, TrackPoint trustedPoint,
                                                  Fallback fallback) {
-        if (trustedPoint != null) {
-            if (trustedPoint.hasBearing) {
+        if (trustedPoint != null
+                && (!shouldGateTrustedHeadingByLiveMovement(fallback)
+                || currentMovementReliable(fallback))) {
+            if (hasReliableGnssBearing(trustedPoint.hasBearing, trustedPoint.hasSpeed,
+                    trustedPoint.speedMetersPerSecond)) {
                 return trustedPoint.bearingDegrees;
             }
             float trackHeading = trustedTrackHeadingDegrees(points, trustedPoint);
@@ -91,16 +97,42 @@ class TrackMapState {
                 return trackHeading;
             }
         }
-        if (fallback.foregroundRecording && fallback.foregroundHasBearing) {
+        if (fallback.foregroundRecording
+                && hasReliableGnssBearing(fallback.foregroundHasBearing,
+                fallback.foregroundHasSpeed, fallback.foregroundSpeedMetersPerSecond)) {
             return fallback.foregroundBearingDegrees;
         }
-        if (fallback.lastHasBearing) {
+        if (!hasCurrentForegroundLocation(fallback)
+                && hasReliableGnssBearing(fallback.lastHasBearing, fallback.lastHasSpeed,
+                fallback.lastSpeedMetersPerSecond)) {
             return fallback.lastBearingDegrees;
         }
-        if (!Float.isNaN(fallback.compassHeadingDegrees)) {
+        if (fallback.compassHeadingReliable && !Float.isNaN(fallback.compassHeadingDegrees)) {
             return fallback.compassHeadingDegrees;
         }
         return Float.NaN;
+    }
+
+    private static boolean currentMovementReliable(Fallback fallback) {
+        if (hasCurrentForegroundLocation(fallback)) {
+            return !fallback.foregroundHasSpeed
+                    || fallback.foregroundSpeedMetersPerSecond
+                    >= MIN_GNSS_BEARING_SPEED_METERS_PER_SECOND;
+        }
+        if (fallback.hasLastLocation) {
+            return !fallback.lastHasSpeed
+                    || fallback.lastSpeedMetersPerSecond
+                    >= MIN_GNSS_BEARING_SPEED_METERS_PER_SECOND;
+        }
+        return true;
+    }
+
+    private static boolean shouldGateTrustedHeadingByLiveMovement(Fallback fallback) {
+        return fallback.foregroundRecording || fallback.hasSessionTotalDistance;
+    }
+
+    private static boolean hasCurrentForegroundLocation(Fallback fallback) {
+        return fallback.foregroundRecording && fallback.foregroundHasLocation;
     }
 
     private static double totalDistanceMeters(List<TrackPoint> points, Fallback fallback) {
@@ -183,11 +215,18 @@ class TrackMapState {
             break;
         }
         if (previousTrustedPoint == null
-                || mapDistanceMeters(previousTrustedPoint, currentPoint) < 1.0d) {
+                || mapDistanceMeters(previousTrustedPoint, currentPoint)
+                < MIN_TRACK_HEADING_DISTANCE_METERS) {
             return Float.NaN;
         }
         return bearingBetweenDegrees(previousTrustedPoint.latitude, previousTrustedPoint.longitude,
                 currentPoint.latitude, currentPoint.longitude);
+    }
+
+    private static boolean hasReliableGnssBearing(boolean hasBearing, boolean hasSpeed,
+                                                  float speedMetersPerSecond) {
+        return hasBearing && hasSpeed
+                && speedMetersPerSecond >= MIN_GNSS_BEARING_SPEED_METERS_PER_SECOND;
     }
 
     private static double mapDistanceMeters(TrackPoint from, TrackPoint to) {
@@ -224,13 +263,18 @@ class TrackMapState {
         float foregroundAccuracyMeters = -1f;
         boolean foregroundHasBearing;
         float foregroundBearingDegrees = -1f;
+        boolean foregroundHasSpeed;
+        float foregroundSpeedMetersPerSecond;
         boolean hasLastLocation;
         double lastLatitude;
         double lastLongitude;
         float lastAccuracyMeters;
         boolean lastHasBearing;
         float lastBearingDegrees;
+        boolean lastHasSpeed;
+        float lastSpeedMetersPerSecond;
         float compassHeadingDegrees = Float.NaN;
+        boolean compassHeadingReliable;
         boolean hasSessionTotalDistance;
         double sessionTotalDistanceMeters;
         boolean hasManifestTotalDistance;
