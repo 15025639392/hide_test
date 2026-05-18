@@ -537,15 +537,6 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams importParams = new LinearLayout.LayoutParams(dp(76), dp(38));
         controlsOverlay.addView(importReferenceButton, importParams);
 
-        locateButton = new Button(this);
-        locateButton.setText("定位");
-        locateButton.setContentDescription("定位到当前位置");
-        styleFloatingSecondaryButton(locateButton);
-        locateButton.setOnClickListener(v -> centerMapOnCurrentLocation());
-        LinearLayout.LayoutParams locateParams = new LinearLayout.LayoutParams(dp(52), dp(38));
-        locateParams.setMargins(dp(6), 0, 0, 0);
-        controlsOverlay.addView(locateButton, locateParams);
-
         Button historyButton = new Button(this);
         historyButton.setText("历史");
         historyButton.setContentDescription("历史记录");
@@ -562,6 +553,18 @@ public class MainActivity extends Activity {
                 Gravity.TOP | Gravity.END);
         controlsParams.setMargins(dp(12), pageTopPadding(), dp(12), 0);
         root.addView(controlsOverlay, controlsParams);
+
+        locateButton = new Button(this);
+        locateButton.setText("定位");
+        locateButton.setContentDescription("定位到当前位置");
+        styleFloatingSecondaryButton(locateButton);
+        locateButton.setOnClickListener(v -> centerMapOnCurrentLocation());
+        FrameLayout.LayoutParams locateParams = new FrameLayout.LayoutParams(
+                dp(58),
+                dp(42),
+                Gravity.BOTTOM | Gravity.END);
+        locateParams.setMargins(0, 0, dp(14), pageBottomPadding() + dp(104));
+        root.addView(locateButton, locateParams);
 
         recordButton = new Button(this);
         recordButton.setOnClickListener(v -> toggleTrackRecording());
@@ -606,6 +609,9 @@ public class MainActivity extends Activity {
         controlsVisible = !controlsVisible;
         if (controlsOverlay != null) {
             controlsOverlay.setVisibility(controlsVisible ? View.VISIBLE : View.GONE);
+        }
+        if (locateButton != null) {
+            locateButton.setVisibility(controlsVisible ? View.VISIBLE : View.GONE);
         }
         if (recordOverlay != null) {
             recordOverlay.setVisibility(controlsVisible ? View.VISIBLE : View.GONE);
