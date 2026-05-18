@@ -36,6 +36,10 @@ public class SessionFileStoreTest {
         assertEquals(new File(dir, "track.gpx"), store.trackGpx(dir));
         assertEquals(new File(dir, "track.gpx.tmp"), store.trackGpxTmp(dir));
         assertEquals(new File(dir, "export"), store.exportDir(dir));
+        assertEquals(new File(dir, "export/weak_gnss_report_session-2.txt"),
+                store.weakGnssReportText(dir));
+        assertEquals(new File(dir, "export/weak_gnss_report_session-2.json"),
+                store.weakGnssReportJson(dir));
     }
 
     @Test

@@ -454,6 +454,33 @@ gradle testDebugUnitTest
 gradle :app:runReplay
 ```
 
+### Phase 11: Export UI and Device Report Usability
+
+Goal: make history export operations usable on narrow real-device screens and
+make the weak GNSS report easy to retrieve during device validation.
+
+Suggested extraction order:
+
+1. Split per-session export actions into stable track/diagnostic and report rows.
+2. Rename weak GNSS report actions so they are self-explanatory in the UI.
+3. Persist weak GNSS report text and JSON into each session `export/` directory
+   before launching the system document export flow.
+
+Rules:
+
+- Keep report generation diagnostic/export only.
+- Do not alter decision, distance, moving-time, segment, GPX, or replay
+  expectations.
+- The system document export flow should remain available for user-selected
+  destinations.
+
+Validation:
+
+```bash
+gradle testDebugUnitTest
+gradle :app:runReplay
+```
+
 ## Stop Conditions
 
 Stop and report instead of continuing if:
@@ -543,11 +570,16 @@ Completed:
   weak/reject/GAP/no-location evidence.
 - Phase 10 / Task 3: added weak GNSS report tests for Phase 6 metrics and
   legacy `gnss_snapshot` compatibility.
+- Phase 11 / Task 1: split current and historical export actions into separate
+  track/diagnostic and report rows for narrow device screens.
+- Phase 11 / Task 2: renamed weak GNSS export actions to `弱GPS报告`.
+- Phase 11 / Task 3: weak GNSS report export now saves text and JSON copies
+  under the session `export/` directory before opening the system export picker.
 
 The current governance cursor is:
 
 ```text
-Phase 10 complete
+Phase 11 complete
 ```
 
 Move the cursor only after completing a task and validating it according to the

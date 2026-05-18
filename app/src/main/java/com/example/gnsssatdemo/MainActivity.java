@@ -1476,42 +1476,18 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(0, dp(8), 0, 0);
-        boolean hasAction = false;
+        LinearLayout trackExportRow = newExportButtonRow(dp(8));
         if (trackSession.canExportTrustedGpx()) {
-            Button gpxButton = new Button(this);
-            gpxButton.setText("导出GPX");
-            styleSmallSecondaryButton(gpxButton);
-            gpxButton.setOnClickListener(v -> exportCurrentTrackAsGpx());
-            row.addView(gpxButton, weightedButtonParams(hasAction));
-            hasAction = true;
+            addSmallExportButton(trackExportRow, "GPX", v -> exportCurrentTrackAsGpx());
         }
-        Button diagnosticButton = new Button(this);
-        diagnosticButton.setText("导出诊断");
-        styleSmallSecondaryButton(diagnosticButton);
-        diagnosticButton.setOnClickListener(v -> exportCurrentDiagnosticLog());
-        row.addView(diagnosticButton, weightedButtonParams(hasAction));
-        hasAction = true;
+        addSmallExportButton(trackExportRow, "诊断", v -> exportCurrentDiagnosticLog());
+        addExportRowIfNotEmpty(card, trackExportRow);
+
         if (canExportCurrentSampleReport()) {
-            Button reportButton = new Button(this);
-            reportButton.setText("导出报告");
-            styleSmallSecondaryButton(reportButton);
-            reportButton.setOnClickListener(v -> exportCurrentSampleReport());
-            row.addView(reportButton, weightedButtonParams(hasAction));
-            hasAction = true;
-            Button weakGnssReportButton = new Button(this);
-            weakGnssReportButton.setText("弱GPS");
-            styleSmallSecondaryButton(weakGnssReportButton);
-            weakGnssReportButton.setOnClickListener(v -> exportCurrentWeakGnssReport());
-            row.addView(weakGnssReportButton, weightedButtonParams(hasAction));
-            hasAction = true;
-        }
-        if (hasAction) {
-            card.addView(row, new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT));
+            LinearLayout reportExportRow = newExportButtonRow(dp(6));
+            addSmallExportButton(reportExportRow, "样本报告", v -> exportCurrentSampleReport());
+            addSmallExportButton(reportExportRow, "弱GPS报告", v -> exportCurrentWeakGnssReport());
+            addExportRowIfNotEmpty(card, reportExportRow);
         }
         historyActionsContainer.addView(card, cardLp);
     }
@@ -1567,46 +1543,51 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
         /* Export row */
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(0, dp(6), 0, 0);
-        boolean hasAction = false;
+        LinearLayout trackExportRow = newExportButtonRow(dp(6));
         if (canExportHistoricalGpx(manifest)) {
-            Button gpxButton = new Button(this);
-            gpxButton.setText("导出GPX");
-            styleSmallSecondaryButton(gpxButton);
-            gpxButton.setOnClickListener(v -> exportHistoricalTrustedGpx(manifest));
-            row.addView(gpxButton, weightedButtonParams(hasAction));
-            hasAction = true;
+            addSmallExportButton(trackExportRow, "GPX",
+                    v -> exportHistoricalTrustedGpx(manifest));
         }
         if (canExportHistoricalDiagnostic(manifest)) {
-            Button diagnosticButton = new Button(this);
-            diagnosticButton.setText("导出诊断");
-            styleSmallSecondaryButton(diagnosticButton);
-            diagnosticButton.setOnClickListener(v -> exportHistoricalDiagnosticLog(manifest));
-            row.addView(diagnosticButton, weightedButtonParams(hasAction));
-            hasAction = true;
+            addSmallExportButton(trackExportRow, "诊断",
+                    v -> exportHistoricalDiagnosticLog(manifest));
         }
+        addExportRowIfNotEmpty(card, trackExportRow);
+
         if (canExportHistoricalSampleReport(manifest)) {
-            Button reportButton = new Button(this);
-            reportButton.setText("导出报告");
-            styleSmallSecondaryButton(reportButton);
-            reportButton.setOnClickListener(v -> exportHistoricalSampleReport(manifest));
-            row.addView(reportButton, weightedButtonParams(hasAction));
-            hasAction = true;
-            Button weakGnssReportButton = new Button(this);
-            weakGnssReportButton.setText("弱GPS");
-            styleSmallSecondaryButton(weakGnssReportButton);
-            weakGnssReportButton.setOnClickListener(v -> exportHistoricalWeakGnssReport(manifest));
-            row.addView(weakGnssReportButton, weightedButtonParams(hasAction));
-            hasAction = true;
-        }
-        if (hasAction) {
-            card.addView(row, new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT));
+            LinearLayout reportExportRow = newExportButtonRow(dp(6));
+            addSmallExportButton(reportExportRow, "样本报告",
+                    v -> exportHistoricalSampleReport(manifest));
+            addSmallExportButton(reportExportRow, "弱GPS报告",
+                    v -> exportHistoricalWeakGnssReport(manifest));
+            addExportRowIfNotEmpty(card, reportExportRow);
         }
         historyActionsContainer.addView(card, cardLp);
+    }
+
+    private LinearLayout newExportButtonRow(int topPadding) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, topPadding, 0, 0);
+        return row;
+    }
+
+    private void addSmallExportButton(LinearLayout row, String text,
+                                      View.OnClickListener listener) {
+        Button button = new Button(this);
+        button.setText(text);
+        styleSmallSecondaryButton(button);
+        button.setOnClickListener(listener);
+        row.addView(button, weightedButtonParams(row.getChildCount() > 0));
+    }
+
+    private void addExportRowIfNotEmpty(LinearLayout card, LinearLayout row) {
+        if (row.getChildCount() == 0) {
+            return;
+        }
+        card.addView(row, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
     }
 
     private LinearLayout.LayoutParams weightedButtonParams(boolean hasLeftSibling) {
@@ -2086,8 +2067,28 @@ public class MainActivity extends Activity {
     private void exportWeakGnssReport(SessionManifest manifest) throws IOException, JSONException {
         WeakGnssReport report = new WeakGnssReportGenerator().generate(manifest);
         pendingWeakGnssReportText = report.toText();
-        setStatus("准备导出弱 GPS 报告: " + manifest.sessionId);
+        String internalSaveStatus = tryWriteInternalWeakGnssReportFiles(
+                manifest, report, pendingWeakGnssReportText);
+        setStatus("准备导出弱 GPS 报告: " + manifest.sessionId + internalSaveStatus);
         requestWeakGnssReportDocument("weak_gnss_report_" + manifest.sessionId + ".txt");
+    }
+
+    private String tryWriteInternalWeakGnssReportFiles(SessionManifest manifest,
+                                                       WeakGnssReport report,
+                                                       String reportText) {
+        try {
+            SessionFileStore fileStore = new SessionFileStore(this);
+            File exportDir = fileStore.exportDir(manifest.sessionDir);
+            if (!exportDir.exists() && !exportDir.mkdirs()) {
+                throw new IOException("无法创建报告目录: " + exportDir);
+            }
+            writeText(fileStore.weakGnssReportText(manifest.sessionDir), reportText);
+            writeText(fileStore.weakGnssReportJson(manifest.sessionDir),
+                    report.toJson().toString(2));
+            return "，已同步保存到 session/export";
+        } catch (IOException | JSONException e) {
+            return "，内部副本保存失败: " + e.getMessage();
+        }
     }
 
     private void requestDiagnosticDocument(String fileName) {
@@ -2126,6 +2127,13 @@ public class MainActivity extends Activity {
                 offset += read;
             }
             return new String(bytes, 0, offset, StandardCharsets.UTF_8);
+        }
+    }
+
+    private void writeText(File file, String text) throws IOException {
+        try (FileOutputStream outputStream = new FileOutputStream(file)) {
+            outputStream.write(text.getBytes(StandardCharsets.UTF_8));
+            outputStream.flush();
         }
     }
 

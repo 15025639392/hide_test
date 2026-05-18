@@ -69,6 +69,14 @@ public class SessionFileStore {
         return new File(sessionDir, "export");
     }
 
+    public File weakGnssReportText(File sessionDir) {
+        return new File(exportDir(sessionDir), "weak_gnss_report_" + sessionDir.getName() + ".txt");
+    }
+
+    public File weakGnssReportJson(File sessionDir) {
+        return new File(exportDir(sessionDir), "weak_gnss_report_" + sessionDir.getName() + ".json");
+    }
+
     public List<File> listSessionDirsNewestFirst() {
         File[] children = rootDir.listFiles();
         List<File> sessionDirs = new ArrayList<>();
