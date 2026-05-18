@@ -91,12 +91,12 @@ Compatibility rules:
 
 ## Rest Anchor Refinement Decision Reasons
 
-These reasons are emitted only when the base GNSS decision would have accepted a
-nearby `moving_good_fix`, but recent accelerometer summaries support that the
-device is still:
+These reasons are emitted when rest-anchor refinement downgrades an otherwise
+accepted point: either a nearby `moving_good_fix` with still accelerometer
+evidence, or a nearby `gap_recovery` without enough GPS movement evidence:
 
 | Reason | Result | Notes |
 | --- | --- | --- |
 | `stationary_anchor_refined` | `reject` | The current raw point had better rest-anchor quality and was kept as diagnostic evidence instead of adding movement distance. |
 | `stationary_accel_supported_jitter` | `reject` | The current raw point stayed near the rest anchor but did not improve anchor quality, so it was discarded as stationary drift. |
-| `stationary_gap_recovery` | `reject` | A long-location-gap recovery point stayed near the rest anchor while recent accelerometer evidence showed stillness, so it did not create a new segment. |
+| `stationary_gap_recovery` | `reject` | A long-location-gap recovery point stayed near the rest anchor without enough GPS speed or displacement evidence to prove movement, so it did not create a new segment. |

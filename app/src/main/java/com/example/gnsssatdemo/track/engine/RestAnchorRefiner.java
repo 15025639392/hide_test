@@ -43,6 +43,9 @@ public class RestAnchorRefiner {
         if (outcome == null || rawPoint == null || previousTrackPoint == null) {
             return Decision.noop();
         }
+        if (isGapRecovery(outcome)) {
+            return refineGapRecovery(rawPoint, previousTrackPoint, exportedRestAnchorTrackPoint);
+        }
         if (outcome.distanceDeltaMeters > REST_ANCHOR_RADIUS_METERS) {
             return Decision.noop();
         }
@@ -50,19 +53,6 @@ public class RestAnchorRefiner {
             return Decision.noop();
         }
         if (!hasStationaryEvidence(rawPoint.elapsedRealtimeNanos, recentMotionSummaries)) {
-            return Decision.noop();
-        }
-        if (isGapRecovery(outcome)) {
-            double distanceMeters = distanceMeters(previousTrackPoint.latitude,
-                    previousTrackPoint.longitude, rawPoint.latitude, rawPoint.longitude);
-            if (distanceMeters <= REST_ANCHOR_RADIUS_METERS) {
-                if (exportedRestAnchorTrackPoint == null
-                        || distanceMeters(exportedRestAnchorTrackPoint.latitude,
-                        exportedRestAnchorTrackPoint.longitude,
-                        rawPoint.latitude, rawPoint.longitude) <= REST_ANCHOR_RADIUS_METERS) {
-                    return Decision.rejectStationaryGap();
-                }
-            }
             return Decision.noop();
         }
         if (!isMovingGoodFix(outcome)) {
@@ -85,6 +75,26 @@ public class RestAnchorRefiner {
     private boolean isGapRecovery(TrackDecisionResult outcome) {
         return "accept".equals(outcome.result)
                 && "gap_recovery".equals(outcome.reason);
+    }
+
+    private Decision refineGapRecovery(RawPoint rawPoint, TrackPoint previousTrackPoint,
+                                       TrackPoint exportedRestAnchorTrackPoint) {
+        if (rawPoint.hasSpeed
+                && rawPoint.speedMetersPerSecond > MAX_REST_SPEED_METERS_PER_SECOND) {
+            return Decision.noop();
+        }
+        double distanceMeters = distanceMeters(previousTrackPoint.latitude,
+                previousTrackPoint.longitude, rawPoint.latitude, rawPoint.longitude);
+        if (distanceMeters > REST_ANCHOR_RADIUS_METERS) {
+            return Decision.noop();
+        }
+        if (exportedRestAnchorTrackPoint != null
+                && distanceMeters(exportedRestAnchorTrackPoint.latitude,
+                exportedRestAnchorTrackPoint.longitude,
+                rawPoint.latitude, rawPoint.longitude) > REST_ANCHOR_RADIUS_METERS) {
+            return Decision.noop();
+        }
+        return Decision.rejectStationaryGap();
     }
 
     private boolean hasStationaryEvidence(long elapsedRealtimeNanos,
