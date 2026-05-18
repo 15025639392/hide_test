@@ -483,11 +483,274 @@ transport mode 中:
 - `gapCount`、`gap_recovery`、`segmentId` 可在诊断中复盘。
 - 历史记录可以导出样本报告，用于减少手工翻看 `diagnostic.jsonl`。
 
+## 海拔与累计爬升目标策略
+
+累计爬升不再按“相邻可信点海拔正差求和”作为长期口径。后续实现应抽出
+独立的 `TrackAscentCalculator`，由前台实时状态、地图回放和样本报告共用，
+避免多处重复计算出现不同结果。
+
+海拔源优先级：
+
+```text
+1. 气压计海拔：设备存在 Sensor.TYPE_PRESSURE 时启用
+2. GNSS 海拔：仅在有 verticalAccuracy 且精度足够时作为保守兜底
+3. DEM 地形高程：后续作为结束后补算/校准增强，不阻塞当前实现
+```
+
+气压计策略：
+
+```text
+启动记录时检测 Sensor.TYPE_PRESSURE
+有气压计:
+  记录 pressure_sample / pressure_summary 诊断
+  用首个可靠 GNSS verticalAccuracy 或后续 DEM 作为绝对海拔校准
+  短时间相对高度变化优先使用气压计
+  信息栏显示“气压计海拔”，并标明爬升来源为 BAROMETER
+无气压计:
+  不显示气压计海拔
+  进入保守 GNSS 爬升策略
+```
+
+GNSS 保守策略：
+
+```text
+必须满足:
+  Location.hasAltitude()
+  Android O+ 且 Location.hasVerticalAccuracy()
+  verticalAccuracy <= 12m
+  horizontal accuracy <= 30m
+  decisionReason == moving_good_fix
+
+不满足时:
+  可显示参考海拔
+  不参与累计爬升
+```
+
+爬升计算口径：
+
+```text
+只在可信 moving_good_fix 段内累计爬升
+first_fix_good / first_fix_relaxed / forced_weak_first_fix 只设海拔 anchor
+gap_recovery / transport_recovery / rest_moving_recovery 只重置海拔 anchor
+weak / transport / stationary / REST_PAUSED / REST_PROBING / reject 不参与爬升
+
+使用滤波后的 altitude，不直接累计原始 altitude
+使用趋势确认，不按单点正差直接累计
+GNSS 阈值随 verticalAccuracy 放大，气压计阈值可更小
+```
+
+`TrackAscentCalculator` 输入模型：
+
+```text
+ElevationSample:
+  elapsedRealtimeNanos
+  altitudeMeters
+  source = BAROMETER / GNSS / DEM
+  verticalAccuracyMeters?  // GNSS/DEM 可有，BAROMETER 可为空
+  horizontalAccuracyMeters?
+  distanceDeltaMeters
+  decisionReason
+  pressureHpa?             // BAROMETER 原始气压，便于诊断
+```
+
+`TrackAscentCalculator` 状态：
+
+```text
+totalAscentMeters
+activeSource
+filteredAltitude
+baseAltitude       // 当前可信低点
+peakAltitude       // 当前上升趋势高点
+lastAltitude
+lastElapsedRealtimeNanos
+calibrationOffset  // 气压计绝对海拔校准偏移
+hasReliableAscent
+```
+
+气压计海拔换算：
+
+```text
+rawBarometerAltitude =
+  SensorManager.getAltitude(SensorManager.PRESSURE_STANDARD_ATMOSPHERE, pressureHpa)
+
+如果拿到可靠参考海拔:
+  calibrationOffset = referenceAltitude - rawBarometerAltitude
+  displayedBarometerAltitude = rawBarometerAltitude + calibrationOffset
+
+如果暂时没有可靠参考海拔:
+  可用 rawBarometerAltitude 做相对爬升
+  信息栏绝对“气压计海拔”应标记为未校准或暂不显示
+```
+
+参考海拔来源优先级：
+
+```text
+1. GNSS altitude 且 verticalAccuracy <= 8m
+2. DEM elevation
+3. GNSS altitude 且 verticalAccuracy <= 12m
+```
+
+海拔源选择：
+
+```text
+if hasRecentPressureSample:
+  source = BAROMETER
+else if gnssAltitudeQualityOk:
+  source = GNSS
+else if demElevationAvailable:
+  source = DEM
+else:
+  source = NONE
+```
+
+采样时效：
+
+```text
+BAROMETER pressure sample 距 TrackPoint <= 3s 才可关联
+GNSS altitude 只随当前 TrackPoint 使用
+DEM 可在结束后按 TrackPoint 经纬度补算
+```
+
+滤波策略：
+
+```text
+source == BAROMETER:
+  alpha = 0.35
+
+source == GNSS:
+  alpha = 0.15
+
+source == DEM:
+  alpha = 0.25
+
+filteredAltitude =
+  alpha * currentAltitude + (1 - alpha) * previousFilteredAltitude
+
+source 发生切换、REST/GAP/transport recovery 重置时:
+  重置 filteredAltitude/baseAltitude/peakAltitude
+  不跨源或跨恢复点延续爬升趋势
+```
+
+移动点处理流程：
+
+```text
+onTrackPoint(point):
+  if point.reason in anchorReasons:
+    resetAltitudeAnchor(sampleFrom(point))
+    return
+
+  if point.reason != moving_good_fix:
+    return
+
+  sample = chooseElevationSample(point)
+  if sample == NONE:
+    return
+
+  if !passesPhysicalGate(sample, point):
+    return
+
+  altitude = filter(sample.altitudeMeters)
+  updateTrend(altitude, sample)
+```
+
+锚点 reason：
+
+```text
+first_fix_good
+first_fix_relaxed
+forced_weak_first_fix
+gap_recovery
+transport_recovery
+rest_moving_recovery
+```
+
+趋势确认算法：
+
+```text
+if no baseAltitude:
+  baseAltitude = altitude
+  peakAltitude = altitude
+  lastAltitude = altitude
+  return
+
+if altitude >= peakAltitude:
+  更新 peakAltitude
+  lastAltitude = altitude
+  return
+
+drop = peakAltitude - altitude
+pendingGain = peakAltitude - baseAltitude
+
+if drop >= dropThreshold:
+  if pendingGain >= climbThreshold:
+    totalAscent += pendingGain
+    hasReliableAscent = true
+  baseAltitude = altitude
+  peakAltitude = altitude
+  lastAltitude = altitude
+  return
+
+lastAltitude = altitude
+```
+
+阈值：
+
+```text
+BAROMETER:
+  climbThreshold = 3m
+  dropThreshold = 1.5m
+
+GNSS:
+  climbThreshold = max(5m, verticalAccuracy * 0.8)
+  dropThreshold = max(3m, verticalAccuracy * 0.4)
+
+DEM:
+  climbThreshold = 5m
+  dropThreshold = 3m
+```
+
+记录结束时：
+
+```text
+pendingGain = peakAltitude - baseAltitude
+if pendingGain >= climbThreshold:
+  totalAscent += pendingGain
+```
+
+异常约束：
+
+```text
+abs(verticalSpeed) > 2.0m/s 的高度变化不计入徒步爬升
+GNSS horizontalDistance < 5m 时不累计 GNSS 海拔变化
+GNSS verticalAccuracy > 12m 时不累计爬升
+GNSS horizontal accuracy > 30m 时不累计爬升
+不跨 REST / GAP / transport recovery 累计爬升
+```
+
+信息栏展示：
+
+```text
+有气压计:
+  显示 气压计海拔 xxx m
+  显示 爬升 xxx m
+  可补充 来源 BAROMETER
+
+无气压计但 GNSS 高度可信:
+  显示 GNSS 海拔 xxx m
+  显示 爬升 xxx m
+  可补充 来源 GNSS
+
+无气压计且 GNSS verticalAccuracy 不足:
+  显示 参考海拔 xxx m（如有）
+  爬升显示 -
+  不把参考海拔用于累计爬升
+```
+
 ## 已知限制
 
 - 当前仍是第一阶段判点，不做候选点延迟回填。
 - GAP 后的连续线是产品展示线，不代表系统证明用户沿直线行走。
-- 海拔、坡度、累计爬升仍需更多真实路线校准。
+- 海拔、坡度、累计爬升需按上述海拔源策略继续落代码并用真实路线校准。
 - 不同 Android 厂商的后台和省电策略仍可能影响连续采样。
 - 当前不做 active session 自动续写；进程级中断后的 session 需要按 `INTERRUPTED` 处理。
 
