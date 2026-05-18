@@ -42,7 +42,8 @@ public class RecordingSamplingStateTest {
 
         state.onDecisionReason("stationary_anchor_refined");
         state.onDecisionReason("stationary_accel_supported_jitter");
+        state.onDecisionReason("stationary_gap_recovery");
 
-        assertEquals(2, state.consecutiveStationaryJitterCount());
+        assertEquals(3, state.consecutiveStationaryJitterCount());
     }
 }

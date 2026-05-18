@@ -84,14 +84,63 @@ public class RestAnchorRefinerTest {
         assertFalse(decision.handled);
     }
 
+    @Test
+    public void refine_rejectsNearbyGapRecoveryWhenDeviceIsStill() {
+        RestAnchorRefiner.Decision decision = refiner.refine(gapRecovery(),
+                raw(2L, 10f, 29.00005, 106.0, 6_000_000_000L, true, 0f, 2L),
+                previousTrackPoint(12f, 1L),
+                snapshot(2L, 14, 24f),
+                snapshot(1L, 14, 24f),
+                stillSummaries());
+
+        assertTrue(decision.handled);
+        assertFalse(decision.refineAnchor);
+        assertEquals(RestAnchorRefiner.REASON_STATIONARY_GAP_RECOVERY, decision.reason);
+    }
+
+    @Test
+    public void refine_keepsFarGapRecoveryAsNewSegmentCandidate() {
+        RestAnchorRefiner.Decision decision = refiner.refine(gapRecovery(),
+                raw(2L, 10f, 29.001, 106.0, 6_000_000_000L, true, 0f, 2L),
+                previousTrackPoint(12f, 1L),
+                snapshot(2L, 14, 24f),
+                snapshot(1L, 14, 24f),
+                stillSummaries());
+
+        assertFalse(decision.handled);
+    }
+
+    @Test
+    public void refine_keepsGapRecoveryWhenHiddenReferenceDriftsFromExportedAnchor() {
+        RestAnchorRefiner.Decision decision = refiner.refine(gapRecovery(),
+                raw(2L, 10f, 29.00027, 106.0, 6_000_000_000L, true, 0f, 2L),
+                trackPoint(1L, 29.00014, 106.0, 12f, 1L),
+                trackPoint(1L, 29.0, 106.0, 12f, 1L),
+                snapshot(2L, 14, 24f),
+                snapshot(1L, 14, 24f),
+                stillSummaries());
+
+        assertFalse(decision.handled);
+    }
+
     private TrackDecisionResult movingGoodFix(double distanceMeters) {
         return new TrackDecisionResult("accept", "moving_good_fix",
                 distanceMeters, 5.0, 0L, 0, 0);
     }
 
+    private TrackDecisionResult gapRecovery() {
+        return new TrackDecisionResult("accept", "gap_recovery",
+                0.0, 0.0, 0L, 0, 0, true);
+    }
+
     private TrackPoint previousTrackPoint(float accuracyMeters, Long snapshotId) {
+        return trackPoint(1L, 29.0, 106.0, accuracyMeters, snapshotId);
+    }
+
+    private TrackPoint trackPoint(long trackPointId, double latitude, double longitude,
+                                  float accuracyMeters, Long snapshotId) {
         return new TrackPoint(1L, 1L, 1L, 1L,
-                29.0, 106.0, false, 0.0, accuracyMeters,
+                latitude, longitude, false, 0.0, accuracyMeters,
                 false, 0f, false, 0f,
                 1L, 1_000_000_000L, "anchor", "first_fix_good",
                 0.0, 0.0, snapshotId);

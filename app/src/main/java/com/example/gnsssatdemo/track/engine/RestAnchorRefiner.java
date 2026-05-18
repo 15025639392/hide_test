@@ -11,6 +11,8 @@ public class RestAnchorRefiner {
     public static final String REASON_ANCHOR_REFINED = "stationary_anchor_refined";
     public static final String REASON_ACCEL_SUPPORTED_JITTER =
             "stationary_accel_supported_jitter";
+    public static final String REASON_STATIONARY_GAP_RECOVERY =
+            "stationary_gap_recovery";
 
     private static final double REST_ANCHOR_RADIUS_METERS = 15.0;
     private static final double MAX_REST_SPEED_METERS_PER_SECOND = 0.5;
@@ -28,7 +30,17 @@ public class RestAnchorRefiner {
                            GnssQualitySnapshot currentSnapshot,
                            GnssQualitySnapshot previousSnapshot,
                            List<MotionSummary> recentMotionSummaries) {
-        if (!isMovingGoodFix(outcome) || rawPoint == null || previousTrackPoint == null) {
+        return refine(outcome, rawPoint, previousTrackPoint, null, currentSnapshot,
+                previousSnapshot, recentMotionSummaries);
+    }
+
+    public Decision refine(TrackDecisionResult outcome, RawPoint rawPoint,
+                           TrackPoint previousTrackPoint,
+                           TrackPoint exportedRestAnchorTrackPoint,
+                           GnssQualitySnapshot currentSnapshot,
+                           GnssQualitySnapshot previousSnapshot,
+                           List<MotionSummary> recentMotionSummaries) {
+        if (outcome == null || rawPoint == null || previousTrackPoint == null) {
             return Decision.noop();
         }
         if (outcome.distanceDeltaMeters > REST_ANCHOR_RADIUS_METERS) {
@@ -38,6 +50,22 @@ public class RestAnchorRefiner {
             return Decision.noop();
         }
         if (!hasStationaryEvidence(rawPoint.elapsedRealtimeNanos, recentMotionSummaries)) {
+            return Decision.noop();
+        }
+        if (isGapRecovery(outcome)) {
+            double distanceMeters = distanceMeters(previousTrackPoint.latitude,
+                    previousTrackPoint.longitude, rawPoint.latitude, rawPoint.longitude);
+            if (distanceMeters <= REST_ANCHOR_RADIUS_METERS) {
+                if (exportedRestAnchorTrackPoint == null
+                        || distanceMeters(exportedRestAnchorTrackPoint.latitude,
+                        exportedRestAnchorTrackPoint.longitude,
+                        rawPoint.latitude, rawPoint.longitude) <= REST_ANCHOR_RADIUS_METERS) {
+                    return Decision.rejectStationaryGap();
+                }
+            }
+            return Decision.noop();
+        }
+        if (!isMovingGoodFix(outcome)) {
             return Decision.noop();
         }
         if (canReplaceTrackPoint(previousTrackPoint)
@@ -52,6 +80,11 @@ public class RestAnchorRefiner {
         return outcome != null
                 && "accept".equals(outcome.result)
                 && "moving_good_fix".equals(outcome.reason);
+    }
+
+    private boolean isGapRecovery(TrackDecisionResult outcome) {
+        return "accept".equals(outcome.result)
+                && "gap_recovery".equals(outcome.reason);
     }
 
     private boolean hasStationaryEvidence(long elapsedRealtimeNanos,
@@ -111,6 +144,19 @@ public class RestAnchorRefiner {
                 >= previousSnapshot.top4AvgCn0 + MIN_TOP4_CN0_IMPROVEMENT;
     }
 
+    private double distanceMeters(double lat1, double lon1, double lat2, double lon2) {
+        double earthRadiusMeters = 6_371_000.0;
+        double lat1Rad = Math.toRadians(lat1);
+        double lat2Rad = Math.toRadians(lat2);
+        double deltaLat = Math.toRadians(lat2 - lat1);
+        double deltaLon = Math.toRadians(lon2 - lon1);
+        double a = Math.sin(deltaLat / 2.0) * Math.sin(deltaLat / 2.0)
+                + Math.cos(lat1Rad) * Math.cos(lat2Rad)
+                * Math.sin(deltaLon / 2.0) * Math.sin(deltaLon / 2.0);
+        double c = 2.0 * Math.atan2(Math.sqrt(a), Math.sqrt(1.0 - a));
+        return earthRadiusMeters * c;
+    }
+
     public static class Decision {
         public final boolean handled;
         public final boolean refineAnchor;
@@ -132,6 +178,10 @@ public class RestAnchorRefiner {
 
         static Decision rejectJitter() {
             return new Decision(true, false, REASON_ACCEL_SUPPORTED_JITTER);
+        }
+
+        static Decision rejectStationaryGap() {
+            return new Decision(true, false, REASON_STATIONARY_GAP_RECOVERY);
         }
     }
 }

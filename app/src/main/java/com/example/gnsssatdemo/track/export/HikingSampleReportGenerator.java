@@ -421,7 +421,8 @@ public class HikingSampleReportGenerator {
             return "stationary_jitter".equals(reason)
                     || "stationary_keepalive".equals(reason)
                     || "stationary_anchor_refined".equals(reason)
-                    || "stationary_accel_supported_jitter".equals(reason);
+                    || "stationary_accel_supported_jitter".equals(reason)
+                    || "stationary_gap_recovery".equals(reason);
         }
 
         MotionMetricSnapshot recentMotionSummary(long decisionElapsedRealtimeNanos) {

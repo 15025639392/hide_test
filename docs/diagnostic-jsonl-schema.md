@@ -99,3 +99,4 @@ device is still:
 | --- | --- | --- |
 | `stationary_anchor_refined` | `reject` | The current raw point had better rest-anchor quality and was kept as diagnostic evidence instead of adding movement distance. |
 | `stationary_accel_supported_jitter` | `reject` | The current raw point stayed near the rest anchor but did not improve anchor quality, so it was discarded as stationary drift. |
+| `stationary_gap_recovery` | `reject` | A long-location-gap recovery point stayed near the rest anchor while recent accelerometer evidence showed stillness, so it did not create a new segment. |

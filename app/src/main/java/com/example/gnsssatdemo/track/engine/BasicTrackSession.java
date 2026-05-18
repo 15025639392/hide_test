@@ -81,6 +81,7 @@ public class BasicTrackSession implements Closeable {
     private final List<TrackPoint> transportTrackPoints = new ArrayList<>();
     private final List<MotionSummary> recentMotionSummaries = new ArrayList<>();
     private final Set<Long> acceptedDecisionIds = new HashSet<>();
+    private TrackPoint decisionReferenceTrackPoint;
     private final List<String> recentSummaries = new ArrayList<>();
 
     public BasicTrackSession(Context context) {
@@ -126,6 +127,7 @@ public class BasicTrackSession implements Closeable {
         transportTrackPoints.clear();
         recentMotionSummaries.clear();
         acceptedDecisionIds.clear();
+        decisionReferenceTrackPoint = null;
         recentSummaries.clear();
 
         sessionDir = fileStore.createSessionDir(sessionId);
@@ -217,17 +219,22 @@ public class BasicTrackSession implements Closeable {
                 return;
             }
 
-            TrackPoint previousTrackPoint = trackPoints.isEmpty()
+            TrackPoint exportedPreviousTrackPoint = trackPoints.isEmpty()
                     ? null : trackPoints.get(trackPoints.size() - 1);
             TrackDecisionCoordinator.Decision decision = decisionCoordinator.decide(rawPoint,
-                    previousTrackPoint, lastStationaryKeepaliveElapsedRealtimeNanos,
+                    exportedPreviousTrackPoint, lastStationaryKeepaliveElapsedRealtimeNanos,
                     forcedWeakFirstFixEnabled);
             TrackDecisionResult outcome = decision.outcome;
+            TrackPoint restAnchorPreviousTrackPoint = restAnchorReferenceTrackPoint(outcome,
+                    exportedPreviousTrackPoint, decisionReferenceTrackPoint);
+            TrackPoint restAnchorExportedTrackPoint = restAnchorExportedTrackPoint(outcome,
+                    exportedPreviousTrackPoint, decisionReferenceTrackPoint);
             RestAnchorRefiner.Decision restAnchorDecision = restAnchorRefiner.refine(outcome,
-                    rawPoint, previousTrackPoint,
+                    rawPoint, restAnchorPreviousTrackPoint, restAnchorExportedTrackPoint,
                     gnssSnapshotBuffer.findById(rawPoint.sourceGnssSnapshotId),
-                    previousTrackPoint == null ? null
-                            : gnssSnapshotBuffer.findById(previousTrackPoint.sourceGnssSnapshotId),
+                    restAnchorPreviousTrackPoint == null ? null
+                            : gnssSnapshotBuffer.findById(
+                                    restAnchorPreviousTrackPoint.sourceGnssSnapshotId),
                     recentMotionSummaries);
             TrackPoint trackPoint = null;
             TrackPoint decisionTrackPoint = null;
@@ -237,14 +244,27 @@ public class BasicTrackSession implements Closeable {
                 outcome = new TrackDecisionResult("reject", restAnchorDecision.reason,
                         0.0, 0.0, lastStationaryKeepaliveElapsedRealtimeNanos,
                         0, 1);
-                if (restAnchorDecision.refineAnchor && previousTrackPoint != null) {
+                if (shouldAdvanceDecisionReference(outcome)
+                        && restAnchorPreviousTrackPoint != null) {
+                    decisionReferenceTrackPoint = new TrackPoint(
+                            restAnchorPreviousTrackPoint.trackPointId,
+                            rawPoint.rawPointId, decisionSeq + 1L,
+                            restAnchorPreviousTrackPoint.segmentId,
+                            rawPoint.latitude, rawPoint.longitude, rawPoint.hasAltitude,
+                            rawPoint.altitude, rawPoint.accuracyMeters, rawPoint.hasSpeed,
+                            rawPoint.speedMetersPerSecond, rawPoint.hasBearing,
+                            rawPoint.bearingDegrees, rawPoint.timeMillis,
+                            rawPoint.elapsedRealtimeNanos, outcome.result, outcome.reason,
+                            0.0, 0.0, rawPoint.sourceGnssSnapshotId);
+                }
+                if (restAnchorDecision.refineAnchor && restAnchorPreviousTrackPoint != null) {
                     addRecentSummary("休息锚点优化 Raw#" + rawPoint.rawPointId
                             + " acc=" + String.format(Locale.US, "%.1fm", rawPoint.accuracyMeters));
                 }
-            } else if ("accept".equals(outcome.result) || "anchor".equals(outcome.result)) {
-                if (outcome.startsNewSegment && previousTrackPoint != null) {
+            } else if (shouldRecordTrustedTrackPoint(outcome)) {
+                if (shouldStartNewSegment(outcome) && exportedPreviousTrackPoint != null) {
                     segmentId++;
-                    if ("gap_recovery".equals(outcome.reason)) {
+                    if (shouldIncrementGapCount(outcome)) {
                         stats.incrementGapCount();
                         addRecentSummary("定位恢复，新开 Segment#" + segmentId);
                     } else if ("transport_recovery".equals(outcome.reason)) {
@@ -258,6 +278,7 @@ public class BasicTrackSession implements Closeable {
                 trackPoints.add(trackPoint);
                 decisionTrackPoint = trackPoint;
                 acceptedDecisionIds.add(decisionId);
+                decisionReferenceTrackPoint = trackPoint;
                 stats.addAcceptedMovement(outcome);
             } else if ("weak".equals(outcome.result)) {
                 long decisionId = decisionSeq + 1L;
@@ -283,6 +304,48 @@ public class BasicTrackSession implements Closeable {
         } catch (IOException | JSONException e) {
             markIntegrityError("diagnostic_log_append_failed", e);
         }
+    }
+
+    static boolean shouldRecordTrustedTrackPoint(TrackDecisionResult outcome) {
+        return outcome != null
+                && ("accept".equals(outcome.result) || "anchor".equals(outcome.result));
+    }
+
+    static boolean shouldStartNewSegment(TrackDecisionResult outcome) {
+        return shouldRecordTrustedTrackPoint(outcome) && outcome.startsNewSegment;
+    }
+
+    static boolean shouldIncrementGapCount(TrackDecisionResult outcome) {
+        return shouldStartNewSegment(outcome) && "gap_recovery".equals(outcome.reason);
+    }
+
+    static boolean shouldAdvanceDecisionReference(TrackDecisionResult outcome) {
+        return outcome != null
+                && RestAnchorRefiner.REASON_STATIONARY_GAP_RECOVERY.equals(outcome.reason);
+    }
+
+    static TrackPoint restAnchorReferenceTrackPoint(TrackDecisionResult outcome,
+                                                    TrackPoint exportedPreviousTrackPoint,
+                                                    TrackPoint hiddenReferenceTrackPoint) {
+        if (isGapRecovery(outcome) && hiddenReferenceTrackPoint != null) {
+            return hiddenReferenceTrackPoint;
+        }
+        return exportedPreviousTrackPoint;
+    }
+
+    static TrackPoint restAnchorExportedTrackPoint(TrackDecisionResult outcome,
+                                                   TrackPoint exportedPreviousTrackPoint,
+                                                   TrackPoint hiddenReferenceTrackPoint) {
+        if (isGapRecovery(outcome) && hiddenReferenceTrackPoint != null) {
+            return exportedPreviousTrackPoint;
+        }
+        return null;
+    }
+
+    static boolean isGapRecovery(TrackDecisionResult outcome) {
+        return outcome != null
+                && "accept".equals(outcome.result)
+                && "gap_recovery".equals(outcome.reason);
     }
 
     private void rememberMotionSummary(MotionSummary summary) {

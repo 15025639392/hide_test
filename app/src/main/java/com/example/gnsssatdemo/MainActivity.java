@@ -3482,6 +3482,7 @@ public class MainActivity extends Activity {
             case "stationary_jitter":
             case "stationary_anchor_refined":
             case "stationary_accel_supported_jitter":
+            case "stationary_gap_recovery":
                 return "静止，不累计距离";
             case "accuracy_too_large":
             case "first_fix_accuracy_too_large":
@@ -3534,6 +3535,8 @@ public class MainActivity extends Activity {
                 return "加速度计支持静止，当前点质量更好，作为休息锚点优化候选但不累计距离。";
             case "stationary_accel_supported_jitter":
                 return "加速度计支持静止，当前点未优于休息点，作为定位漂移丢弃。";
+            case "stationary_gap_recovery":
+                return "长时间无定位后仍在休息点附近且加速度计支持静止，不新开轨迹段。";
             case "impossible_speed":
                 return "两点之间需要的速度不合理，疑似跳点。";
             case "transport_suspected":
