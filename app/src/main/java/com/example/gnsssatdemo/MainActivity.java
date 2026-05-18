@@ -101,6 +101,7 @@ public class MainActivity extends Activity {
     private static final double DEFAULT_MAP_CENTER_LONGITUDE = 106.49655175d;
     private static final long UI_RENDER_MIN_INTERVAL_MILLIS = 250L;
     private static final long SATELLITE_TILE_INVALIDATE_COALESCE_MILLIS = 250L;
+    private static final long TRACK_TIME_MARKER_INTERVAL_NANOS = 10L * 60L * 1_000_000_000L;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final DecimalFormat one = new DecimalFormat("0.0");
@@ -2810,6 +2811,47 @@ public class MainActivity extends Activity {
             paint.setColor(Color.rgb(216, 180, 254));
             canvas.drawPath(trackPath, paint);
             paint.setStrokeCap(Paint.Cap.BUTT);
+            drawReferenceTimeMarkers(canvas);
+        }
+
+        private void drawReferenceTimeMarkers(Canvas canvas) {
+            ReferenceTrackPoint previous = null;
+            long nextMarkerTimeMillis = 0L;
+            for (ReferenceTrackPoint point : referencePoints) {
+                if (point.timeMillis <= 0L) {
+                    continue;
+                }
+                if (previous == null || point.segmentIndex != previous.segmentIndex) {
+                    previous = point;
+                    nextMarkerTimeMillis = point.timeMillis
+                            + TRACK_TIME_MARKER_INTERVAL_NANOS / 1_000_000L;
+                    continue;
+                }
+                if (point.timeMillis <= previous.timeMillis) {
+                    previous = point;
+                    continue;
+                }
+                while (nextMarkerTimeMillis <= point.timeMillis) {
+                    if (nextMarkerTimeMillis >= previous.timeMillis) {
+                        drawReferenceTimeMarker(canvas, previous, point, nextMarkerTimeMillis);
+                    }
+                    nextMarkerTimeMillis += TRACK_TIME_MARKER_INTERVAL_NANOS / 1_000_000L;
+                }
+                previous = point;
+            }
+        }
+
+        private void drawReferenceTimeMarker(Canvas canvas, ReferenceTrackPoint from,
+                                             ReferenceTrackPoint to, long markerTimeMillis) {
+            double fraction = (double) (markerTimeMillis - from.timeMillis)
+                    / (double) (to.timeMillis - from.timeMillis);
+            fraction = Math.max(0d, Math.min(1d, fraction));
+            double latitude = from.latitude + (to.latitude - from.latitude) * fraction;
+            double longitude = from.longitude + (to.longitude - from.longitude) * fraction;
+            PointF screen = toScreen(latitude, longitude);
+            drawTimeMarkerLabel(canvas, screen.x, screen.y,
+                    timeFormat.format(new Date(markerTimeMillis)),
+                    Color.rgb(168, 85, 247));
         }
 
         private void drawTrack(Canvas canvas) {
@@ -2822,6 +2864,7 @@ public class MainActivity extends Activity {
             drawTrackSegments(canvas, true);
             drawWeakTrackPoints(canvas);
             drawTransportTrackPoints(canvas);
+            drawTrackTimeMarkers(canvas);
         }
 
         private void drawTrackSegments(Canvas canvas, boolean transport) {
@@ -2883,6 +2926,96 @@ public class MainActivity extends Activity {
                 PointF screen = toScreen(point.latitude, point.longitude);
                 canvas.drawCircle(screen.x, screen.y, dp(3), paint);
             }
+        }
+
+        private void drawTrackTimeMarkers(Canvas canvas) {
+            TrackPoint previousTrustedPoint = null;
+            long firstTrackTimeNanos = 0L;
+            long nextMarkerTimeNanos = 0L;
+            for (TrackPoint point : points) {
+                if (!isTrustedTimeMarkerPoint(point)) {
+                    continue;
+                }
+                long pointTimeNanos = markerTimelineNanos(point);
+                if (pointTimeNanos <= 0L) {
+                    continue;
+                }
+                if (previousTrustedPoint == null) {
+                    firstTrackTimeNanos = pointTimeNanos;
+                    nextMarkerTimeNanos = firstTrackTimeNanos + TRACK_TIME_MARKER_INTERVAL_NANOS;
+                    previousTrustedPoint = point;
+                    continue;
+                }
+                long previousTimeNanos = markerTimelineNanos(previousTrustedPoint);
+                if (previousTimeNanos <= 0L || pointTimeNanos <= previousTimeNanos) {
+                    previousTrustedPoint = point;
+                    continue;
+                }
+                while (nextMarkerTimeNanos <= pointTimeNanos) {
+                    if (nextMarkerTimeNanos >= previousTimeNanos) {
+                        drawTrackTimeMarker(canvas, previousTrustedPoint, point,
+                                previousTimeNanos, pointTimeNanos, nextMarkerTimeNanos);
+                    }
+                    nextMarkerTimeNanos += TRACK_TIME_MARKER_INTERVAL_NANOS;
+                }
+                previousTrustedPoint = point;
+            }
+        }
+
+        private boolean isTrustedTimeMarkerPoint(TrackPoint point) {
+            return !isWeakTrackPoint(point) && !isTransportTravelPoint(point);
+        }
+
+        private long markerTimelineNanos(TrackPoint point) {
+            if (point.elapsedRealtimeNanos > 0L) {
+                return point.elapsedRealtimeNanos;
+            }
+            return point.timeMillis > 0L ? point.timeMillis * 1_000_000L : 0L;
+        }
+
+        private void drawTrackTimeMarker(Canvas canvas, TrackPoint from, TrackPoint to,
+                                         long fromTimeNanos, long toTimeNanos,
+                                         long markerTimeNanos) {
+            double fraction = (double) (markerTimeNanos - fromTimeNanos)
+                    / (double) (toTimeNanos - fromTimeNanos);
+            fraction = Math.max(0d, Math.min(1d, fraction));
+            double latitude = from.latitude + (to.latitude - from.latitude) * fraction;
+            double longitude = from.longitude + (to.longitude - from.longitude) * fraction;
+            PointF screen = toScreen(latitude, longitude);
+            long markerWallTimeMillis = from.timeMillis
+                    + Math.round((to.timeMillis - from.timeMillis) * fraction);
+            String label = timeFormat.format(new Date(markerWallTimeMillis));
+            drawTimeMarkerLabel(canvas, screen.x, screen.y, label, Color.rgb(14, 165, 233));
+        }
+
+        private void drawTimeMarkerLabel(Canvas canvas, float x, float y, String label,
+                                         int markerColor) {
+            float radius = dp(5);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.argb(235, 255, 255, 255));
+            canvas.drawCircle(x, y, radius, paint);
+            paint.setColor(markerColor);
+            canvas.drawCircle(x, y, dp(3), paint);
+
+            paint.setTextSize(dp(10));
+            float textWidth = paint.measureText(label);
+            float paddingX = dp(5);
+            float paddingY = dp(3);
+            float labelHeight = dp(16);
+            float labelLeft = clamp(x - textWidth / 2f - paddingX, dp(4),
+                    Math.max(dp(4), getWidth() - textWidth - paddingX * 2f - dp(4)));
+            float labelTop = y - radius - dp(5) - labelHeight;
+            if (labelTop < pageTopPadding() + dp(4)) {
+                labelTop = y + radius + dp(5);
+            }
+            viewBounds.set(labelLeft, labelTop,
+                    labelLeft + textWidth + paddingX * 2f, labelTop + labelHeight);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.argb(205, 15, 23, 42));
+            canvas.drawRoundRect(viewBounds, dp(4), dp(4), paint);
+            paint.setColor(Color.rgb(226, 232, 240));
+            canvas.drawText(label, labelLeft + paddingX, labelTop + labelHeight - paddingY - dp(2),
+                    paint);
         }
 
         private int trustedPointCount() {

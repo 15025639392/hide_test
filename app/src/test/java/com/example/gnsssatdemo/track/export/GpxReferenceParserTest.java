@@ -60,6 +60,34 @@ public class GpxReferenceParserTest {
         assertEquals(106.3, points.get(0).longitude, 0.0);
     }
 
+    @Test
+    public void parse_readsTrackPointTime() throws Exception {
+        String gpx = "<gpx><trk><trkseg>"
+                + "<trkpt lat=\"29.0\" lon=\"106.0\">"
+                + "<time>2026-05-18T01:02:03Z</time>"
+                + "</trkpt>"
+                + "</trkseg></trk></gpx>";
+
+        List<ReferenceTrackPoint> points = parse(gpx);
+
+        assertEquals(1, points.size());
+        assertEquals(1779066123000L, points.get(0).timeMillis);
+    }
+
+    @Test
+    public void parse_readsTrackPointTimeWithOffset() throws Exception {
+        String gpx = "<gpx><trk><trkseg>"
+                + "<trkpt lat=\"29.0\" lon=\"106.0\">"
+                + "<time>2026-05-18T09:02:03+08:00</time>"
+                + "</trkpt>"
+                + "</trkseg></trk></gpx>";
+
+        List<ReferenceTrackPoint> points = parse(gpx);
+
+        assertEquals(1, points.size());
+        assertEquals(1779066123000L, points.get(0).timeMillis);
+    }
+
     private List<ReferenceTrackPoint> parse(String gpx) throws Exception {
         return new GpxReferenceParser().parse(new ByteArrayInputStream(
                 gpx.getBytes(StandardCharsets.UTF_8)));
