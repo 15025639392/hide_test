@@ -46,6 +46,18 @@ public class HikingSampleReport {
     public final double averageLowCn0VisibleCount;
     public final double averageWeakUsedCount;
     public final int dualFrequencySnapshotCount;
+    public final int weakGnssExplainableDecisionCount;
+    public final double averageWeakDecisionUsedAvgCn0;
+    public final double averageWeakDecisionAllAvgCn0;
+    public final double averageWeakDecisionTop4AvgCn0;
+    public final double averageWeakDecisionLowCn0VisibleCount;
+    public final double averageWeakDecisionWeakUsedCount;
+    public final int rejectGnssExplainableDecisionCount;
+    public final double averageRejectDecisionUsedAvgCn0;
+    public final double averageRejectDecisionAllAvgCn0;
+    public final double averageRejectDecisionTop4AvgCn0;
+    public final double averageRejectDecisionLowCn0VisibleCount;
+    public final double averageRejectDecisionWeakUsedCount;
     public final Map<String, Integer> samplingRequestCounts;
     public final Map<String, Double> samplingDurationSeconds;
     public final Map<String, Integer> decisionReasonCounts;
@@ -70,6 +82,18 @@ public class HikingSampleReport {
                               double averageUsedAvgCn0, double averageAllAvgCn0,
                               double averageTop4AvgCn0, double averageLowCn0VisibleCount,
                               double averageWeakUsedCount, int dualFrequencySnapshotCount,
+                              int weakGnssExplainableDecisionCount,
+                              double averageWeakDecisionUsedAvgCn0,
+                              double averageWeakDecisionAllAvgCn0,
+                              double averageWeakDecisionTop4AvgCn0,
+                              double averageWeakDecisionLowCn0VisibleCount,
+                              double averageWeakDecisionWeakUsedCount,
+                              int rejectGnssExplainableDecisionCount,
+                              double averageRejectDecisionUsedAvgCn0,
+                              double averageRejectDecisionAllAvgCn0,
+                              double averageRejectDecisionTop4AvgCn0,
+                              double averageRejectDecisionLowCn0VisibleCount,
+                              double averageRejectDecisionWeakUsedCount,
                               Map<String, Integer> samplingRequestCounts,
                               Map<String, Double> samplingDurationSeconds,
                               Map<String, Integer> decisionReasonCounts,
@@ -108,6 +132,18 @@ public class HikingSampleReport {
         this.averageLowCn0VisibleCount = averageLowCn0VisibleCount;
         this.averageWeakUsedCount = averageWeakUsedCount;
         this.dualFrequencySnapshotCount = dualFrequencySnapshotCount;
+        this.weakGnssExplainableDecisionCount = weakGnssExplainableDecisionCount;
+        this.averageWeakDecisionUsedAvgCn0 = averageWeakDecisionUsedAvgCn0;
+        this.averageWeakDecisionAllAvgCn0 = averageWeakDecisionAllAvgCn0;
+        this.averageWeakDecisionTop4AvgCn0 = averageWeakDecisionTop4AvgCn0;
+        this.averageWeakDecisionLowCn0VisibleCount = averageWeakDecisionLowCn0VisibleCount;
+        this.averageWeakDecisionWeakUsedCount = averageWeakDecisionWeakUsedCount;
+        this.rejectGnssExplainableDecisionCount = rejectGnssExplainableDecisionCount;
+        this.averageRejectDecisionUsedAvgCn0 = averageRejectDecisionUsedAvgCn0;
+        this.averageRejectDecisionAllAvgCn0 = averageRejectDecisionAllAvgCn0;
+        this.averageRejectDecisionTop4AvgCn0 = averageRejectDecisionTop4AvgCn0;
+        this.averageRejectDecisionLowCn0VisibleCount = averageRejectDecisionLowCn0VisibleCount;
+        this.averageRejectDecisionWeakUsedCount = averageRejectDecisionWeakUsedCount;
         this.samplingRequestCounts = Collections.unmodifiableMap(samplingRequestCounts);
         this.samplingDurationSeconds = Collections.unmodifiableMap(samplingDurationSeconds);
         this.decisionReasonCounts = Collections.unmodifiableMap(decisionReasonCounts);
@@ -150,6 +186,18 @@ public class HikingSampleReport {
         json.put("averageLowCn0VisibleCount", averageLowCn0VisibleCount);
         json.put("averageWeakUsedCount", averageWeakUsedCount);
         json.put("dualFrequencySnapshotCount", dualFrequencySnapshotCount);
+        json.put("weakGnssExplainableDecisionCount", weakGnssExplainableDecisionCount);
+        json.put("averageWeakDecisionUsedAvgCn0", averageWeakDecisionUsedAvgCn0);
+        json.put("averageWeakDecisionAllAvgCn0", averageWeakDecisionAllAvgCn0);
+        json.put("averageWeakDecisionTop4AvgCn0", averageWeakDecisionTop4AvgCn0);
+        json.put("averageWeakDecisionLowCn0VisibleCount", averageWeakDecisionLowCn0VisibleCount);
+        json.put("averageWeakDecisionWeakUsedCount", averageWeakDecisionWeakUsedCount);
+        json.put("rejectGnssExplainableDecisionCount", rejectGnssExplainableDecisionCount);
+        json.put("averageRejectDecisionUsedAvgCn0", averageRejectDecisionUsedAvgCn0);
+        json.put("averageRejectDecisionAllAvgCn0", averageRejectDecisionAllAvgCn0);
+        json.put("averageRejectDecisionTop4AvgCn0", averageRejectDecisionTop4AvgCn0);
+        json.put("averageRejectDecisionLowCn0VisibleCount", averageRejectDecisionLowCn0VisibleCount);
+        json.put("averageRejectDecisionWeakUsedCount", averageRejectDecisionWeakUsedCount);
         json.put("samplingRequestCounts", integerMapToJson(samplingRequestCounts));
         json.put("samplingDurationSeconds", doubleMapToJson(samplingDurationSeconds));
         json.put("decisionReasonCounts", integerMapToJson(decisionReasonCounts));
@@ -201,7 +249,28 @@ public class HikingSampleReport {
                     .append(" dB-Hz\n");
             sb.append("- 平均低 C/N0 可见星=").append(oneDecimal(averageLowCn0VisibleCount))
                     .append(" 平均弱 used 星=").append(oneDecimal(averageWeakUsedCount))
-                    .append("\n\n");
+                    .append('\n');
+            if (weakGnssExplainableDecisionCount > 0) {
+                sb.append("- weak 决策关联 Snapshot=").append(weakGnssExplainableDecisionCount)
+                        .append(" usedAvg=").append(oneDecimal(averageWeakDecisionUsedAvgCn0))
+                        .append(" allAvg=").append(oneDecimal(averageWeakDecisionAllAvgCn0))
+                        .append(" top4Avg=").append(oneDecimal(averageWeakDecisionTop4AvgCn0))
+                        .append(" lowVisible=")
+                        .append(oneDecimal(averageWeakDecisionLowCn0VisibleCount))
+                        .append(" weakUsed=")
+                        .append(oneDecimal(averageWeakDecisionWeakUsedCount)).append('\n');
+            }
+            if (rejectGnssExplainableDecisionCount > 0) {
+                sb.append("- reject 决策关联 Snapshot=").append(rejectGnssExplainableDecisionCount)
+                        .append(" usedAvg=").append(oneDecimal(averageRejectDecisionUsedAvgCn0))
+                        .append(" allAvg=").append(oneDecimal(averageRejectDecisionAllAvgCn0))
+                        .append(" top4Avg=").append(oneDecimal(averageRejectDecisionTop4AvgCn0))
+                        .append(" lowVisible=")
+                        .append(oneDecimal(averageRejectDecisionLowCn0VisibleCount))
+                        .append(" weakUsed=")
+                        .append(oneDecimal(averageRejectDecisionWeakUsedCount)).append('\n');
+            }
+            sb.append('\n');
         }
 
         appendIntegerMap(sb, "## 采样策略请求", samplingRequestCounts);

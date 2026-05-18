@@ -207,6 +207,53 @@ public class HikingSampleReportGeneratorTest {
     }
 
     @Test
+    public void generate_correlatesWeakAndRejectDecisionsWithGnssSnapshots() throws Exception {
+        File dir = Files.createTempDirectory("hiking-sample-report-decision-gnss").toFile();
+        String diagnostic = ""
+                + event(1, "session_metadata", 1_000_000_000L,
+                "\"createdElapsedRealtimeNanos\":1000000000")
+                + event(2, "config_snapshot", 1_000_000_000L,
+                "\"locationRequestMinDistanceMeters\":0")
+                + event(3, "sampling_policy", 1_000_000_000L,
+                "\"state\":\"STARTING\",\"locationRequestMinDistanceMeters\":0")
+                + gnss(4, 1, 1_500_000_000L, 32.0, 28.0, 38.0, 1, 0, true)
+                + raw(5, 1, 2_000_000_000L, false)
+                + decisionWithSnapshot(6, 1, 1, 1, 1, 2_000_000_000L,
+                "anchor", "first_fix_good", 0.0, 0.0, 1)
+                + gnss(7, 2, 11_000_000_000L, 18.0, 16.0, 22.0, 5, 3, false)
+                + raw(8, 2, 12_000_000_000L, false)
+                + decisionWithSnapshot(9, 2, 2, 2, 1, 12_000_000_000L,
+                "weak", "weak_signal_stage1", 0.0, 0.0, 2)
+                + gnss(10, 3, 21_000_000_000L, 12.0, 10.0, 14.0, 7, 4, false)
+                + raw(11, 3, 22_000_000_000L, false)
+                + decisionWithSnapshot(12, 3, 3, 0, 1, 22_000_000_000L,
+                "reject", "impossible_speed", 0.0, 0.0, 3)
+                + event(13, "session_event", 1_822_000_000_000L,
+                "\"eventType\":\"finish_recording\"");
+        Files.write(new File(dir, "diagnostic.jsonl").toPath(),
+                diagnostic.getBytes(StandardCharsets.UTF_8));
+        Files.write(new File(dir, "track.gpx").toPath(),
+                "<gpx/>".getBytes(StandardCharsets.UTF_8));
+        writeSessionJson(dir, 13, 3, 1, 1, 0, 0.0, 0.0);
+
+        SessionManifest manifest = new SessionManifestReader(new SessionFileStore(dir.getParentFile()))
+                .read(dir);
+        HikingSampleReport report = new HikingSampleReportGenerator().generate(manifest);
+
+        assertEquals(1, report.weakGnssExplainableDecisionCount);
+        assertEquals(18.0, report.averageWeakDecisionUsedAvgCn0, 0.0);
+        assertEquals(16.0, report.averageWeakDecisionAllAvgCn0, 0.0);
+        assertEquals(22.0, report.averageWeakDecisionTop4AvgCn0, 0.0);
+        assertEquals(5.0, report.averageWeakDecisionLowCn0VisibleCount, 0.0);
+        assertEquals(3.0, report.averageWeakDecisionWeakUsedCount, 0.0);
+        assertEquals(1, report.rejectGnssExplainableDecisionCount);
+        assertEquals(12.0, report.averageRejectDecisionUsedAvgCn0, 0.0);
+        assertEquals(7.0, report.averageRejectDecisionLowCn0VisibleCount, 0.0);
+        assertTrue(report.toText().contains("weak 决策关联 Snapshot=1"));
+        assertEquals(1, report.toJson().getInt("rejectGnssExplainableDecisionCount"));
+    }
+
+    @Test
     public void generate_toleratesLegacyGnssSnapshotsWithoutPhase6Metrics() throws Exception {
         File dir = Files.createTempDirectory("hiking-sample-report-legacy-gnss").toFile();
         String diagnostic = ""
@@ -321,6 +368,22 @@ public class HikingSampleReportGeneratorTest {
                         + ",\"reason\":\"" + reason + "\""
                         + ",\"distanceDeltaMeters\":" + distanceDelta
                         + ",\"movingTimeDeltaSeconds\":" + movingDelta);
+    }
+
+    private String decisionWithSnapshot(int seq, int decisionId, int rawPointId, int trackPointId,
+                                        int segmentId, long elapsedRealtimeNanos, String result,
+                                        String reason, double distanceDelta, double movingDelta,
+                                        long sourceGnssSnapshotId) {
+        return event(seq, "decision", elapsedRealtimeNanos,
+                "\"decisionId\":" + decisionId
+                        + ",\"rawPointId\":" + rawPointId
+                        + ",\"trackPointId\":" + trackPointId
+                        + ",\"segmentId\":" + segmentId
+                        + ",\"result\":\"" + result + "\""
+                        + ",\"reason\":\"" + reason + "\""
+                        + ",\"distanceDeltaMeters\":" + distanceDelta
+                        + ",\"movingTimeDeltaSeconds\":" + movingDelta
+                        + ",\"sourceGnssSnapshotId\":" + sourceGnssSnapshotId);
     }
 
     private String gnss(int seq, int snapshotId, long elapsedRealtimeNanos,

@@ -170,6 +170,18 @@ public class HikingSampleReportGenerator {
                 accumulator.averageLowCn0VisibleCount(),
                 accumulator.averageWeakUsedCount(),
                 accumulator.dualFrequencySnapshotCount,
+                accumulator.weakDecisionGnssMetrics.count,
+                accumulator.weakDecisionGnssMetrics.averageUsedAvgCn0(),
+                accumulator.weakDecisionGnssMetrics.averageAllAvgCn0(),
+                accumulator.weakDecisionGnssMetrics.averageTop4AvgCn0(),
+                accumulator.weakDecisionGnssMetrics.averageLowCn0VisibleCount(),
+                accumulator.weakDecisionGnssMetrics.averageWeakUsedCount(),
+                accumulator.rejectDecisionGnssMetrics.count,
+                accumulator.rejectDecisionGnssMetrics.averageUsedAvgCn0(),
+                accumulator.rejectDecisionGnssMetrics.averageAllAvgCn0(),
+                accumulator.rejectDecisionGnssMetrics.averageTop4AvgCn0(),
+                accumulator.rejectDecisionGnssMetrics.averageLowCn0VisibleCount(),
+                accumulator.rejectDecisionGnssMetrics.averageWeakUsedCount(),
                 accumulator.samplingRequestCounts,
                 accumulator.samplingDurationSeconds,
                 accumulator.decisionReasonCounts,
@@ -265,6 +277,9 @@ public class HikingSampleReportGenerator {
         double totalRawIntervalSeconds;
         double maxRawIntervalSeconds;
         double maxNoLocationTimeoutSeconds;
+        final Map<Long, GnssMetricSnapshot> gnssMetricsBySnapshotId = new LinkedHashMap<>();
+        final GnssMetricTotals weakDecisionGnssMetrics = new GnssMetricTotals();
+        final GnssMetricTotals rejectDecisionGnssMetrics = new GnssMetricTotals();
         final Map<String, Integer> samplingRequestCounts = new LinkedHashMap<>();
         final Map<String, Double> samplingDurationSeconds = new LinkedHashMap<>();
         final Map<String, Integer> decisionReasonCounts = new LinkedHashMap<>();
@@ -301,14 +316,15 @@ public class HikingSampleReportGenerator {
                     || !event.has(GnssSnapshotDiagnosticFields.TOP4_AVG_CN0)) {
                 return;
             }
+            GnssMetricSnapshot snapshot = GnssMetricSnapshot.fromEvent(event);
+            gnssMetricsBySnapshotId.put(event.optLong(GnssSnapshotDiagnosticFields.SNAPSHOT_ID),
+                    snapshot);
             gnssQualityMetricSnapshotCount++;
-            usedAvgCn0Total += event.optDouble(GnssSnapshotDiagnosticFields.USED_AVG_CN0, 0.0);
-            allAvgCn0Total += event.optDouble(GnssSnapshotDiagnosticFields.ALL_AVG_CN0, 0.0);
-            top4AvgCn0Total += event.optDouble(GnssSnapshotDiagnosticFields.TOP4_AVG_CN0, 0.0);
-            lowCn0VisibleCountTotal += event.optDouble(
-                    GnssSnapshotDiagnosticFields.LOW_CN0_VISIBLE_COUNT, 0.0);
-            weakUsedCountTotal += event.optDouble(
-                    GnssSnapshotDiagnosticFields.WEAK_USED_COUNT, 0.0);
+            usedAvgCn0Total += snapshot.usedAvgCn0;
+            allAvgCn0Total += snapshot.allAvgCn0;
+            top4AvgCn0Total += snapshot.top4AvgCn0;
+            lowCn0VisibleCountTotal += snapshot.lowCn0VisibleCount;
+            weakUsedCountTotal += snapshot.weakUsedCount;
             if (event.optBoolean(GnssSnapshotDiagnosticFields.HAS_DUAL_FREQUENCY, false)) {
                 dualFrequencySnapshotCount++;
             }
@@ -353,8 +369,10 @@ public class HikingSampleReportGenerator {
                 trustedDecisionCount++;
             } else if ("weak".equals(result)) {
                 weakDecisionCount++;
+                addDecisionGnssMetrics(event, weakDecisionGnssMetrics);
             } else if ("reject".equals(result)) {
                 rejectDecisionCount++;
+                addDecisionGnssMetrics(event, rejectDecisionGnssMetrics);
             }
             if ("gap_recovery".equals(reason)) {
                 gapRecoveryCount++;
@@ -371,6 +389,17 @@ public class HikingSampleReportGenerator {
                             + " distanceDelta=" + distanceDelta
                             + " movingTimeDelta=" + movingDelta);
                 }
+            }
+        }
+
+        void addDecisionGnssMetrics(JSONObject event, GnssMetricTotals totals) {
+            if (!event.has("sourceGnssSnapshotId")) {
+                return;
+            }
+            GnssMetricSnapshot snapshot = gnssMetricsBySnapshotId.get(
+                    event.optLong("sourceGnssSnapshotId"));
+            if (snapshot != null) {
+                totals.add(snapshot);
             }
         }
 
@@ -451,6 +480,74 @@ public class HikingSampleReportGenerator {
         double averageGnssMetric(double total) {
             return gnssQualityMetricSnapshotCount == 0
                     ? 0.0 : total / gnssQualityMetricSnapshotCount;
+        }
+    }
+
+    private static class GnssMetricSnapshot {
+        final double usedAvgCn0;
+        final double allAvgCn0;
+        final double top4AvgCn0;
+        final double lowCn0VisibleCount;
+        final double weakUsedCount;
+
+        GnssMetricSnapshot(double usedAvgCn0, double allAvgCn0, double top4AvgCn0,
+                           double lowCn0VisibleCount, double weakUsedCount) {
+            this.usedAvgCn0 = usedAvgCn0;
+            this.allAvgCn0 = allAvgCn0;
+            this.top4AvgCn0 = top4AvgCn0;
+            this.lowCn0VisibleCount = lowCn0VisibleCount;
+            this.weakUsedCount = weakUsedCount;
+        }
+
+        static GnssMetricSnapshot fromEvent(JSONObject event) {
+            return new GnssMetricSnapshot(
+                    event.optDouble(GnssSnapshotDiagnosticFields.USED_AVG_CN0, 0.0),
+                    event.optDouble(GnssSnapshotDiagnosticFields.ALL_AVG_CN0, 0.0),
+                    event.optDouble(GnssSnapshotDiagnosticFields.TOP4_AVG_CN0, 0.0),
+                    event.optDouble(GnssSnapshotDiagnosticFields.LOW_CN0_VISIBLE_COUNT, 0.0),
+                    event.optDouble(GnssSnapshotDiagnosticFields.WEAK_USED_COUNT, 0.0));
+        }
+    }
+
+    private static class GnssMetricTotals {
+        int count;
+        double usedAvgCn0Total;
+        double allAvgCn0Total;
+        double top4AvgCn0Total;
+        double lowCn0VisibleCountTotal;
+        double weakUsedCountTotal;
+
+        void add(GnssMetricSnapshot snapshot) {
+            count++;
+            usedAvgCn0Total += snapshot.usedAvgCn0;
+            allAvgCn0Total += snapshot.allAvgCn0;
+            top4AvgCn0Total += snapshot.top4AvgCn0;
+            lowCn0VisibleCountTotal += snapshot.lowCn0VisibleCount;
+            weakUsedCountTotal += snapshot.weakUsedCount;
+        }
+
+        double averageUsedAvgCn0() {
+            return average(usedAvgCn0Total);
+        }
+
+        double averageAllAvgCn0() {
+            return average(allAvgCn0Total);
+        }
+
+        double averageTop4AvgCn0() {
+            return average(top4AvgCn0Total);
+        }
+
+        double averageLowCn0VisibleCount() {
+            return average(lowCn0VisibleCountTotal);
+        }
+
+        double averageWeakUsedCount() {
+            return average(weakUsedCountTotal);
+        }
+
+        double average(double total) {
+            return count == 0 ? 0.0 : total / count;
         }
     }
 }

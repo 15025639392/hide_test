@@ -396,6 +396,34 @@ gradle testDebugUnitTest
 gradle :app:runReplay
 ```
 
+### Phase 9: Weak/Reject GNSS Correlation In Reports
+
+Goal: make generated sample reports explain weak and rejected decisions with
+their linked GNSS snapshot metrics, without changing trusted track policy.
+
+Suggested extraction order:
+
+1. Correlate `decision.sourceGnssSnapshotId` with Phase 6 `gnss_snapshot`
+   metrics inside `HikingSampleReportGenerator`.
+2. Add report JSON and text output for weak/reject decision GNSS averages.
+3. Add compatibility tests for decisions without `sourceGnssSnapshotId` and old
+   `gnss_snapshot` events that do not contain Phase 6 fields.
+
+Rules:
+
+- Missing `sourceGnssSnapshotId` must not fail report generation.
+- Missing Phase 6 fields must not fail report generation.
+- GNSS quality metrics remain explanatory only.
+- Do not alter decision, distance, moving-time, segment, GPX, or replay
+  expectations.
+
+Validation:
+
+```bash
+gradle testDebugUnitTest
+gradle :app:runReplay
+```
+
 ## Stop Conditions
 
 Stop and report instead of continuing if:
@@ -473,11 +501,17 @@ Completed:
   `gnss_snapshot` compatibility; validation passed:
   - `source scripts/use-jdk17.sh && ./gradlew testDebugUnitTest`
   - `source scripts/use-jdk17.sh && ./gradlew :app:runReplay`
+- Phase 9 / Task 1: correlated weak/reject decisions with linked Phase 6
+  `gnss_snapshot` metrics in `HikingSampleReportGenerator`.
+- Phase 9 / Task 2: exposed weak/reject GNSS explanation fields in report JSON
+  and text.
+- Phase 9 / Task 3: added sample-report coverage for weak/reject decision GNSS
+  correlation while preserving legacy compatibility.
 
 The current governance cursor is:
 
 ```text
-Phase 8 complete / next phase not defined
+Phase 9 complete
 ```
 
 Move the cursor only after completing a task and validating it according to the
