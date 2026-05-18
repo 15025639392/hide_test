@@ -85,7 +85,7 @@ public class RestAnchorRefinerTest {
     }
 
     @Test
-    public void refine_rejectsNearbyGapRecoveryWhenDeviceIsStill() {
+    public void refine_keepsNearbyGapRecoveryWithoutRecentStationaryDriftReference() {
         RestAnchorRefiner.Decision decision = refiner.refine(gapRecovery(),
                 raw(2L, 10f, 29.00005, 106.0, 6_000_000_000L, true, 0f, 2L),
                 previousTrackPoint(12f, 1L),
@@ -93,13 +93,11 @@ public class RestAnchorRefinerTest {
                 snapshot(1L, 14, 24f),
                 stillSummaries());
 
-        assertTrue(decision.handled);
-        assertFalse(decision.refineAnchor);
-        assertEquals(RestAnchorRefiner.REASON_STATIONARY_GAP_RECOVERY, decision.reason);
+        assertFalse(decision.handled);
     }
 
     @Test
-    public void refine_rejectsNearbyGapRecoveryWithoutStillEvidenceWhenGpsDoesNotMove() {
+    public void refine_keepsNearbyGapRecoveryWithoutStillEvidenceOrRecentStationaryDriftReference() {
         RestAnchorRefiner.Decision decision = refiner.refine(gapRecovery(),
                 raw(2L, 10f, 29.00005, 106.0, 6_000_000_000L, true, 0f, 2L),
                 previousTrackPoint(12f, 1L),
@@ -107,9 +105,7 @@ public class RestAnchorRefinerTest {
                 snapshot(1L, 14, 24f),
                 Collections.<MotionSummary>emptyList());
 
-        assertTrue(decision.handled);
-        assertFalse(decision.refineAnchor);
-        assertEquals(RestAnchorRefiner.REASON_STATIONARY_GAP_RECOVERY, decision.reason);
+        assertFalse(decision.handled);
     }
 
     @Test
@@ -144,19 +140,6 @@ public class RestAnchorRefinerTest {
                 snapshot(2L, 14, 24f),
                 snapshot(1L, 14, 24f),
                 Collections.<MotionSummary>emptyList());
-
-        assertFalse(decision.handled);
-    }
-
-    @Test
-    public void refine_keepsGapRecoveryWhenHiddenReferenceDriftsFromExportedAnchor() {
-        RestAnchorRefiner.Decision decision = refiner.refine(gapRecovery(),
-                raw(2L, 10f, 29.00027, 106.0, 6_000_000_000L, true, 0f, 2L),
-                trackPoint(1L, 29.00014, 106.0, 12f, 1L),
-                trackPoint(1L, 29.0, 106.0, 12f, 1L),
-                snapshot(2L, 14, 24f),
-                snapshot(1L, 14, 24f),
-                stillSummaries());
 
         assertFalse(decision.handled);
     }

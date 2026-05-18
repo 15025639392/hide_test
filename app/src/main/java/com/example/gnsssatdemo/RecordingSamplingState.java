@@ -20,7 +20,10 @@ final class RecordingSamplingState {
         if ("stationary_jitter".equals(reason)
                 || "stationary_anchor_refined".equals(reason)
                 || "stationary_accel_supported_jitter".equals(reason)
-                || "stationary_gap_recovery".equals(reason)) {
+                || "rest_candidate".equals(reason)
+                || "rest_paused_keepalive".equals(reason)
+                || "rest_probing_stationary".equals(reason)
+                || "rest_probing_confirming_moving".equals(reason)) {
             consecutiveStationaryJitterCount++;
             return;
         }

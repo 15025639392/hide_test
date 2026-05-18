@@ -36,7 +36,7 @@ import java.util.Set;
 import java.util.UUID;
 
 public class BasicTrackSession implements Closeable {
-    private static final String STRATEGY_VERSION = "stage1-gnss-track-v1";
+    private static final String STRATEGY_VERSION = "stage1-gnss-track-v2-rest-state";
     private static final int RECENT_SUMMARY_LIMIT = 8;
     private static final long WEAK_TRACK_POINT_ID_OFFSET = 1_000_000_000L;
     private static final long TRANSPORT_DISPLAY_POINT_ID_OFFSET = 2_000_000_000L;
@@ -50,6 +50,7 @@ public class BasicTrackSession implements Closeable {
     private final GnssSnapshotBuffer gnssSnapshotBuffer = new GnssSnapshotBuffer();
     private final TrackStatsAccumulator stats = new TrackStatsAccumulator();
     private final RestAnchorRefiner restAnchorRefiner = new RestAnchorRefiner();
+    private final RestStateMachine restStateMachine = new RestStateMachine();
     private final SessionJournalWriter journalWriter;
     private final SessionLifecycleState lifecycle = new SessionLifecycleState();
     private final GnssSnapshotDiagnosticFields gnssSnapshotDiagnosticFields =
@@ -81,7 +82,6 @@ public class BasicTrackSession implements Closeable {
     private final List<TrackPoint> transportTrackPoints = new ArrayList<>();
     private final List<MotionSummary> recentMotionSummaries = new ArrayList<>();
     private final Set<Long> acceptedDecisionIds = new HashSet<>();
-    private TrackPoint decisionReferenceTrackPoint;
     private final List<String> recentSummaries = new ArrayList<>();
 
     public BasicTrackSession(Context context) {
@@ -121,13 +121,13 @@ public class BasicTrackSession implements Closeable {
         stats.reset();
         lastGnssSnapshot = null;
         decisionCoordinator.reset();
+        restStateMachine.reset();
         gnssSnapshotBuffer.clear();
         trackPoints.clear();
         weakTrackPoints.clear();
         transportTrackPoints.clear();
         recentMotionSummaries.clear();
         acceptedDecisionIds.clear();
-        decisionReferenceTrackPoint = null;
         recentSummaries.clear();
 
         sessionDir = fileStore.createSessionDir(sessionId);
@@ -183,6 +183,7 @@ public class BasicTrackSession implements Closeable {
             return;
         }
         rememberMotionSummary(summary);
+        boolean restStateChanged = restStateMachine.onMotionSummary(summary);
         try {
             JSONObject event = new JSONObject();
             event.put("event", "motion_summary");
@@ -194,7 +195,11 @@ public class BasicTrackSession implements Closeable {
             event.put("stillScore", summary.stillScore);
             event.put("isDeviceStill", summary.deviceStill);
             event.put("sourceSensorType", summary.sourceSensorType);
+            event.put("restStateAfter", restStateMachine.stateName());
             appendDiagnostic(event, summary.lastElapsedRealtimeNanos);
+            if (restStateChanged) {
+                addRecentSummary("加速度变化，进入 REST_PROBING");
+            }
         } catch (IOException | JSONException e) {
             markIntegrityError("diagnostic_log_append_failed", e);
         }
@@ -225,43 +230,30 @@ public class BasicTrackSession implements Closeable {
                     exportedPreviousTrackPoint, lastStationaryKeepaliveElapsedRealtimeNanos,
                     forcedWeakFirstFixEnabled);
             TrackDecisionResult outcome = decision.outcome;
-            TrackPoint restAnchorPreviousTrackPoint = restAnchorReferenceTrackPoint(outcome,
-                    exportedPreviousTrackPoint, decisionReferenceTrackPoint);
-            TrackPoint restAnchorExportedTrackPoint = restAnchorExportedTrackPoint(outcome,
-                    exportedPreviousTrackPoint, decisionReferenceTrackPoint);
             RestAnchorRefiner.Decision restAnchorDecision = restAnchorRefiner.refine(outcome,
-                    rawPoint, restAnchorPreviousTrackPoint, restAnchorExportedTrackPoint,
+                    rawPoint, exportedPreviousTrackPoint,
                     gnssSnapshotBuffer.findById(rawPoint.sourceGnssSnapshotId),
-                    restAnchorPreviousTrackPoint == null ? null
+                    exportedPreviousTrackPoint == null ? null
                             : gnssSnapshotBuffer.findById(
-                                    restAnchorPreviousTrackPoint.sourceGnssSnapshotId),
+                                    exportedPreviousTrackPoint.sourceGnssSnapshotId),
                     recentMotionSummaries);
             TrackPoint trackPoint = null;
             TrackPoint decisionTrackPoint = null;
-            String decisionState = decision.wasTransportMode ? "TRANSPORT"
-                    : (trackPoints.isEmpty() ? "WAITING_FIRST_FIX" : "TRACKING");
             if (restAnchorDecision.handled) {
                 outcome = new TrackDecisionResult("reject", restAnchorDecision.reason,
                         0.0, 0.0, lastStationaryKeepaliveElapsedRealtimeNanos,
                         0, 1);
-                if (shouldAdvanceDecisionReference(outcome)
-                        && restAnchorPreviousTrackPoint != null) {
-                    decisionReferenceTrackPoint = new TrackPoint(
-                            restAnchorPreviousTrackPoint.trackPointId,
-                            rawPoint.rawPointId, decisionSeq + 1L,
-                            restAnchorPreviousTrackPoint.segmentId,
-                            rawPoint.latitude, rawPoint.longitude, rawPoint.hasAltitude,
-                            rawPoint.altitude, rawPoint.accuracyMeters, rawPoint.hasSpeed,
-                            rawPoint.speedMetersPerSecond, rawPoint.hasBearing,
-                            rawPoint.bearingDegrees, rawPoint.timeMillis,
-                            rawPoint.elapsedRealtimeNanos, outcome.result, outcome.reason,
-                            0.0, 0.0, rawPoint.sourceGnssSnapshotId);
-                }
-                if (restAnchorDecision.refineAnchor && restAnchorPreviousTrackPoint != null) {
+                if (restAnchorDecision.refineAnchor && exportedPreviousTrackPoint != null) {
                     addRecentSummary("休息锚点优化 Raw#" + rawPoint.rawPointId
                             + " acc=" + String.format(Locale.US, "%.1fm", rawPoint.accuracyMeters));
                 }
-            } else if (shouldRecordTrustedTrackPoint(outcome)) {
+            }
+            RestStateMachine.Decision restDecision = restStateMachine.apply(outcome, rawPoint,
+                    exportedPreviousTrackPoint, recentMotionSummaries);
+            outcome = restDecision.outcome;
+            String decisionState = decision.wasTransportMode ? "TRANSPORT"
+                    : restDecision.state;
+            if (shouldRecordTrustedTrackPoint(outcome)) {
                 if (shouldStartNewSegment(outcome) && exportedPreviousTrackPoint != null) {
                     segmentId++;
                     if (shouldIncrementGapCount(outcome)) {
@@ -269,6 +261,8 @@ public class BasicTrackSession implements Closeable {
                         addRecentSummary("定位恢复，新开 Segment#" + segmentId);
                     } else if ("transport_recovery".equals(outcome.reason)) {
                         addRecentSummary("交通工具移动后恢复徒步，新开 Segment#" + segmentId);
+                    } else if (RestStateMachine.REASON_REST_MOVING_RECOVERY.equals(outcome.reason)) {
+                        addRecentSummary("REST 探测确认移动，新开 Segment#" + segmentId);
                     }
                 }
                 long decisionId = decisionSeq + 1L;
@@ -278,7 +272,6 @@ public class BasicTrackSession implements Closeable {
                 trackPoints.add(trackPoint);
                 decisionTrackPoint = trackPoint;
                 acceptedDecisionIds.add(decisionId);
-                decisionReferenceTrackPoint = trackPoint;
                 stats.addAcceptedMovement(outcome);
             } else if ("weak".equals(outcome.result)) {
                 long decisionId = decisionSeq + 1L;
@@ -317,29 +310,6 @@ public class BasicTrackSession implements Closeable {
 
     static boolean shouldIncrementGapCount(TrackDecisionResult outcome) {
         return shouldStartNewSegment(outcome) && "gap_recovery".equals(outcome.reason);
-    }
-
-    static boolean shouldAdvanceDecisionReference(TrackDecisionResult outcome) {
-        return outcome != null
-                && RestAnchorRefiner.REASON_STATIONARY_GAP_RECOVERY.equals(outcome.reason);
-    }
-
-    static TrackPoint restAnchorReferenceTrackPoint(TrackDecisionResult outcome,
-                                                    TrackPoint exportedPreviousTrackPoint,
-                                                    TrackPoint hiddenReferenceTrackPoint) {
-        if (isGapRecovery(outcome) && hiddenReferenceTrackPoint != null) {
-            return hiddenReferenceTrackPoint;
-        }
-        return exportedPreviousTrackPoint;
-    }
-
-    static TrackPoint restAnchorExportedTrackPoint(TrackDecisionResult outcome,
-                                                   TrackPoint exportedPreviousTrackPoint,
-                                                   TrackPoint hiddenReferenceTrackPoint) {
-        if (isGapRecovery(outcome) && hiddenReferenceTrackPoint != null) {
-            return exportedPreviousTrackPoint;
-        }
-        return null;
     }
 
     static boolean isGapRecovery(TrackDecisionResult outcome) {
@@ -466,6 +436,9 @@ public class BasicTrackSession implements Closeable {
                 strategyConfig.transportRecoveryMaxSpeedMetersPerSecond);
         event.put("transportRecoveryStableNanos",
                 strategyConfig.transportRecoveryStableNanos);
+        event.put("restStateMachineEnabled", true);
+        event.put("restPausedDoesNotAccumulateDistance", true);
+        event.put("restProbingDoesNotBackfillDistance", true);
         appendDiagnostic(event, recordStartElapsedRealtimeNanos);
     }
 
@@ -793,6 +766,18 @@ public class BasicTrackSession implements Closeable {
 
     public String getLastDecisionResult() {
         return lastDecisionResult;
+    }
+
+    public String getRestStateName() {
+        return restStateMachine.stateName();
+    }
+
+    public boolean isRestPaused() {
+        return restStateMachine.isPaused();
+    }
+
+    public boolean isRestProbing() {
+        return restStateMachine.isProbing();
     }
 
     public float getLastRawAccuracyMeters() {

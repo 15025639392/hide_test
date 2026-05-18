@@ -2,7 +2,12 @@
 
 设计日期：2026-05-18
 
-本文是收敛后的第一版方案。目标很小：**当系统已经判出 `stationary_jitter` / `stationary_keepalive` 时，用加速度计补充“设备接近静止”的证据，帮助解释休息点附近 GPS 漂移。**
+本文是 2026-05-18 的第一版加速度计证据 MVP 方案。它已经被
+`system-gnss-track-recording-plan.md` 中的显式 REST 状态机策略升级覆盖；
+当前代码已允许加速度计证据参与 REST_CANDIDATE / REST_PAUSED /
+REST_PROBING 的休息状态判断。
+
+第一版目标很小：**当系统已经判出 `stationary_jitter` / `stationary_keepalive` 时，用加速度计补充“设备接近静止”的证据，帮助解释休息点附近 GPS 漂移。**
 
 第一版只做诊断和报告，不改变 `TrackDecisionEngine` 的 `result` / `reason`，不改变 `track.gpx`，不改变可信距离。
 

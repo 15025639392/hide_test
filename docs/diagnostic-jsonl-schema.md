@@ -89,14 +89,18 @@ Compatibility rules:
 - The sample report may correlate `motion_summary` with
   `stationary_jitter` / `stationary_keepalive` decisions for explanation only.
 
-## Rest Anchor Refinement Decision Reasons
+## Stationary and REST Decision Reasons
 
-These reasons are emitted when rest-anchor refinement downgrades an otherwise
-accepted point: either a nearby `moving_good_fix` with still accelerometer
-evidence, or a nearby `gap_recovery` without enough GPS movement evidence:
+These reasons are emitted when rest-anchor refinement or the explicit REST state
+machine keeps a point out of distance accumulation, or writes a zero-distance
+movement recovery anchor:
 
 | Reason | Result | Notes |
 | --- | --- | --- |
 | `stationary_anchor_refined` | `reject` | The current raw point had better rest-anchor quality and was kept as diagnostic evidence instead of adding movement distance. |
 | `stationary_accel_supported_jitter` | `reject` | The current raw point stayed near the rest anchor but did not improve anchor quality, so it was discarded as stationary drift. |
-| `stationary_gap_recovery` | `reject` | A long-location-gap recovery point stayed near the rest anchor without enough GPS speed or displacement evidence to prove movement, so it did not create a new segment. |
+| `rest_candidate` | `reject` | REST candidate evidence is being collected; the point is not counted as distance. |
+| `rest_paused_keepalive` | `reject` | REST_PAUSED GPS keepalive near the anchor; the point may refine the anchor but does not count distance. |
+| `rest_probing_stationary` | `reject` | REST_PROBING found the point still near the anchor, so the machine returns to REST_PAUSED without distance. |
+| `rest_probing_confirming_moving` | `reject` | REST_PROBING is gathering movement confirmation; probing points do not backfill distance. |
+| `rest_moving_recovery` | `accept` | Consecutive REST_PROBING evidence confirmed movement. A new segment anchor is written with zero distance delta. |

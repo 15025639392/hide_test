@@ -11,8 +11,6 @@ public class RestAnchorRefiner {
     public static final String REASON_ANCHOR_REFINED = "stationary_anchor_refined";
     public static final String REASON_ACCEL_SUPPORTED_JITTER =
             "stationary_accel_supported_jitter";
-    public static final String REASON_STATIONARY_GAP_RECOVERY =
-            "stationary_gap_recovery";
 
     private static final double REST_ANCHOR_RADIUS_METERS = 15.0;
     private static final double MAX_REST_SPEED_METERS_PER_SECOND = 0.5;
@@ -30,21 +28,8 @@ public class RestAnchorRefiner {
                            GnssQualitySnapshot currentSnapshot,
                            GnssQualitySnapshot previousSnapshot,
                            List<MotionSummary> recentMotionSummaries) {
-        return refine(outcome, rawPoint, previousTrackPoint, null, currentSnapshot,
-                previousSnapshot, recentMotionSummaries);
-    }
-
-    public Decision refine(TrackDecisionResult outcome, RawPoint rawPoint,
-                           TrackPoint previousTrackPoint,
-                           TrackPoint exportedRestAnchorTrackPoint,
-                           GnssQualitySnapshot currentSnapshot,
-                           GnssQualitySnapshot previousSnapshot,
-                           List<MotionSummary> recentMotionSummaries) {
         if (outcome == null || rawPoint == null || previousTrackPoint == null) {
             return Decision.noop();
-        }
-        if (isGapRecovery(outcome)) {
-            return refineGapRecovery(rawPoint, previousTrackPoint, exportedRestAnchorTrackPoint);
         }
         if (outcome.distanceDeltaMeters > REST_ANCHOR_RADIUS_METERS) {
             return Decision.noop();
@@ -70,31 +55,6 @@ public class RestAnchorRefiner {
         return outcome != null
                 && "accept".equals(outcome.result)
                 && "moving_good_fix".equals(outcome.reason);
-    }
-
-    private boolean isGapRecovery(TrackDecisionResult outcome) {
-        return "accept".equals(outcome.result)
-                && "gap_recovery".equals(outcome.reason);
-    }
-
-    private Decision refineGapRecovery(RawPoint rawPoint, TrackPoint previousTrackPoint,
-                                       TrackPoint exportedRestAnchorTrackPoint) {
-        if (rawPoint.hasSpeed
-                && rawPoint.speedMetersPerSecond > MAX_REST_SPEED_METERS_PER_SECOND) {
-            return Decision.noop();
-        }
-        double distanceMeters = distanceMeters(previousTrackPoint.latitude,
-                previousTrackPoint.longitude, rawPoint.latitude, rawPoint.longitude);
-        if (distanceMeters > REST_ANCHOR_RADIUS_METERS) {
-            return Decision.noop();
-        }
-        if (exportedRestAnchorTrackPoint != null
-                && distanceMeters(exportedRestAnchorTrackPoint.latitude,
-                exportedRestAnchorTrackPoint.longitude,
-                rawPoint.latitude, rawPoint.longitude) > REST_ANCHOR_RADIUS_METERS) {
-            return Decision.noop();
-        }
-        return Decision.rejectStationaryGap();
     }
 
     private boolean hasStationaryEvidence(long elapsedRealtimeNanos,
@@ -188,10 +148,6 @@ public class RestAnchorRefiner {
 
         static Decision rejectJitter() {
             return new Decision(true, false, REASON_ACCEL_SUPPORTED_JITTER);
-        }
-
-        static Decision rejectStationaryGap() {
-            return new Decision(true, false, REASON_STATIONARY_GAP_RECOVERY);
         }
     }
 }

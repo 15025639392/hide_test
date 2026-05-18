@@ -76,6 +76,8 @@ public class RecordingForegroundService extends Service {
     private static final float MOVING_DISTANCE_METERS = 0f;
     private static final long PAUSED_INTERVAL_MILLIS = 10_000L;
     private static final float PAUSED_DISTANCE_METERS = 0f;
+    private static final long REST_PROBING_INTERVAL_MILLIS = 1_000L;
+    private static final float REST_PROBING_DISTANCE_METERS = 0f;
     private static final long SIGNAL_WEAK_INTERVAL_MILLIS = 2_000L;
     private static final float SIGNAL_WEAK_DISTANCE_METERS = 0f;
 
@@ -101,6 +103,7 @@ public class RecordingForegroundService extends Service {
                 public void onMotionSummary(MotionSummary summary) {
                     if (trackSession != null && trackSession.isActive()) {
                         trackSession.onMotionSummary(summary);
+                        updateLocationRequestForCurrentPolicy(false);
                     }
                 }
             });
@@ -395,6 +398,14 @@ public class RecordingForegroundService extends Service {
         if (trackSession.getTrackPointCount() <= 0) {
             return new SamplingPolicy("STARTING", STARTING_INTERVAL_MILLIS,
                     STARTING_DISTANCE_METERS);
+        }
+        if (trackSession.isRestProbing()) {
+            return new SamplingPolicy("REST_PROBING", REST_PROBING_INTERVAL_MILLIS,
+                    REST_PROBING_DISTANCE_METERS);
+        }
+        if (trackSession.isRestPaused()) {
+            return new SamplingPolicy("REST_PAUSED", PAUSED_INTERVAL_MILLIS,
+                    PAUSED_DISTANCE_METERS);
         }
         if (samplingState.shouldUsePausedPolicy()) {
             return new SamplingPolicy("PAUSED", PAUSED_INTERVAL_MILLIS,

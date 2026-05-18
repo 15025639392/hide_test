@@ -1021,6 +1021,7 @@ public class MainActivity extends Activity {
                     .append("s\n");
             sb.append("静止保活点=").append(trackSession.getStationaryKeepaliveCount())
                     .append(" 静止抖动点=").append(trackSession.getStationaryJitterCount()).append('\n');
+            sb.append("REST 状态=").append(trackSession.getRestStateName()).append('\n');
             if (trackSession.getLastRawAccuracyMeters() > 0f) {
                 sb.append("最近 RawPoint 精度=")
                         .append(one.format(trackSession.getLastRawAccuracyMeters()))
@@ -3569,8 +3570,13 @@ public class MainActivity extends Activity {
             case "stationary_jitter":
             case "stationary_anchor_refined":
             case "stationary_accel_supported_jitter":
-            case "stationary_gap_recovery":
+            case "rest_candidate":
+            case "rest_paused_keepalive":
+            case "rest_probing_stationary":
+            case "rest_probing_confirming_moving":
                 return "静止，不累计距离";
+            case "rest_moving_recovery":
+                return "恢复移动，重新锚定";
             case "accuracy_too_large":
             case "first_fix_accuracy_too_large":
             case "weak_signal_stage1":
@@ -3622,8 +3628,16 @@ public class MainActivity extends Activity {
                 return "加速度计支持静止，当前点质量更好，作为休息锚点优化候选但不累计距离。";
             case "stationary_accel_supported_jitter":
                 return "加速度计支持静止，当前点未优于休息点，作为定位漂移丢弃。";
-            case "stationary_gap_recovery":
-                return "长时间无定位后仍在休息点附近且加速度计支持静止，不新开轨迹段。";
+            case "rest_candidate":
+                return "连续低速、位移小且加速度静止，进入休息候选确认；当前点不累计距离。";
+            case "rest_paused_keepalive":
+                return "已进入休息暂停，GPS 保活点只用于更新休息锚点，不累计距离。";
+            case "rest_probing_stationary":
+                return "休息探测后仍在锚点附近，回到休息暂停，不累计距离。";
+            case "rest_probing_confirming_moving":
+                return "休息探测中，当前点只用于确认是否恢复移动，不累计距离。";
+            case "rest_moving_recovery":
+                return "休息探测已连续确认移动，重新锚定轨迹；探测阶段距离不回补。";
             case "impossible_speed":
                 return "两点之间需要的速度不合理，疑似跳点。";
             case "transport_suspected":

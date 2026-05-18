@@ -415,23 +415,20 @@ public class HikingSampleReportGeneratorTest {
                 + raw(7, 3, 4_000_000_000L, false)
                 + decision(8, 3, 3, 1, 1, 4_000_000_000L,
                 "reject", "stationary_accel_supported_jitter", 0.0, 0.0)
-                + raw(9, 4, 5_000_000_000L, false)
-                + decision(10, 4, 4, 1, 1, 5_000_000_000L,
-                "reject", "stationary_gap_recovery", 0.0, 0.0)
-                + event(11, "session_event", 6_000_000_000L,
+                + event(9, "session_event", 6_000_000_000L,
                 "\"eventType\":\"finish_recording\"");
         Files.write(new File(dir, "diagnostic.jsonl").toPath(),
                 diagnostic.getBytes(StandardCharsets.UTF_8));
         Files.write(new File(dir, "track.gpx").toPath(),
                 "<gpx/>".getBytes(StandardCharsets.UTF_8));
-        writeSessionJson(dir, 11, 4, 1, 0, 0, 0.0, 0.0);
+        writeSessionJson(dir, 9, 3, 1, 0, 0, 0.0, 0.0);
 
         SessionManifest manifest = new SessionManifestReader(new SessionFileStore(dir.getParentFile()))
                 .read(dir);
         HikingSampleReport report = new HikingSampleReportGenerator().generate(manifest);
 
-        assertEquals(3, report.stationaryDecisionCount);
-        assertEquals(3, report.stationarySupportedByAccelCount);
+        assertEquals(2, report.stationaryDecisionCount);
+        assertEquals(2, report.stationarySupportedByAccelCount);
         assertEquals(0, report.stationaryMissingMotionSummaryCount);
     }
 
