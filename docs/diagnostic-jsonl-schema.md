@@ -66,9 +66,11 @@ Phase 6 diagnostic fields:
 
 ## `motion_summary`
 
-Motion summary events are diagnostic evidence only. They explain whether the
-device was close to still near existing stationary decisions; they must not
-change trusted-track accept/reject results in the MVP phase.
+Motion summary events explain whether the device was close to still near
+stationary decisions and rest-anchor refinement decisions. Starting with the
+rest-anchor refinement phase, recent still summaries may suppress a nearby
+`moving_good_fix` from becoming a new trusted track point. Non-still summaries
+are evidence absence only; they must not by themselves prove user movement.
 
 | Field | Type | Notes |
 | --- | --- | --- |
@@ -84,7 +86,16 @@ change trusted-track accept/reject results in the MVP phase.
 Compatibility rules:
 
 - Treat `motion_summary` as optional when reading old logs.
-- Do not infer trusted distance, moving time, segment id, or GPX output from
-  `motion_summary`.
 - The sample report may correlate `motion_summary` with
   `stationary_jitter` / `stationary_keepalive` decisions for explanation only.
+
+## Rest Anchor Refinement Decision Reasons
+
+These reasons are emitted only when the base GNSS decision would have accepted a
+nearby `moving_good_fix`, but recent accelerometer summaries support that the
+device is still:
+
+| Reason | Result | Notes |
+| --- | --- | --- |
+| `stationary_anchor_refined` | `reject` | The current raw point had better rest-anchor quality and was kept as diagnostic evidence instead of adding movement distance. |
+| `stationary_accel_supported_jitter` | `reject` | The current raw point stayed near the rest anchor but did not improve anchor quality, so it was discarded as stationary drift. |

@@ -35,4 +35,14 @@ public class RecordingSamplingStateTest {
 
         assertTrue(state.shouldUsePausedPolicy());
     }
+
+    @Test
+    public void shouldUsePausedPolicy_treatsRestAnchorRefinementAsStationary() {
+        RecordingSamplingState state = new RecordingSamplingState();
+
+        state.onDecisionReason("stationary_anchor_refined");
+        state.onDecisionReason("stationary_accel_supported_jitter");
+
+        assertEquals(2, state.consecutiveStationaryJitterCount());
+    }
 }

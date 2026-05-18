@@ -10,6 +10,13 @@ public class TrackExportValidator {
     public String trustedGpxReferenceError(List<TrackPoint> trackPoints,
                                            long rawPointCount,
                                            long decisionCount) {
+        return trustedGpxReferenceError(trackPoints, rawPointCount, decisionCount, null);
+    }
+
+    public String trustedGpxReferenceError(List<TrackPoint> trackPoints,
+                                           long rawPointCount,
+                                           long decisionCount,
+                                           Set<Long> acceptedDecisionIds) {
         Set<Long> sourceDecisionIds = new HashSet<>();
         long previousDecisionId = 0L;
         long expectedTrackPointId = 1L;
@@ -31,6 +38,10 @@ public class TrackExportValidator {
             }
             if (!"anchor".equals(point.decisionResult) && !"accept".equals(point.decisionResult)) {
                 return "TrackPoint 指向非接受决策: " + point.decisionResult;
+            }
+            if (acceptedDecisionIds != null
+                    && !acceptedDecisionIds.contains(point.sourceDecisionId)) {
+                return "sourceDecisionId 未指向接受决策: " + point.sourceDecisionId;
             }
             if (point.decisionReason == null || point.decisionReason.isEmpty()) {
                 return "decisionReason 为空";

@@ -298,7 +298,7 @@ public class HikingSampleReport {
                     .append(oneDecimal(stationarySupportedByAccelRatio() * 100.0))
                     .append("%\n");
             if (stationarySupportedByAccelCount > 0) {
-                sb.append("- 解释=部分 stationary_jitter / stationary_keepalive 同时具备设备静止证据，")
+                sb.append("- 解释=部分静止/休息锚点决策同时具备设备静止证据，")
                         .append("更像休息或静止时的定位漂移。\n");
             }
             sb.append('\n');

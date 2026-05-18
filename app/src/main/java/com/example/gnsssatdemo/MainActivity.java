@@ -3480,6 +3480,8 @@ public class MainActivity extends Activity {
                 return "有效移动点";
             case "stationary_keepalive":
             case "stationary_jitter":
+            case "stationary_anchor_refined":
+            case "stationary_accel_supported_jitter":
                 return "静止，不累计距离";
             case "accuracy_too_large":
             case "first_fix_accuracy_too_large":
@@ -3528,6 +3530,10 @@ public class MainActivity extends Activity {
                 return "判断用户基本静止，保留诊断点，但不增加距离。";
             case "stationary_jitter":
                 return "静止时的定位抖动，避免把漂移算成行走距离。";
+            case "stationary_anchor_refined":
+                return "加速度计支持静止，当前点质量更好，作为休息锚点优化候选但不累计距离。";
+            case "stationary_accel_supported_jitter":
+                return "加速度计支持静止，当前点未优于休息点，作为定位漂移丢弃。";
             case "impossible_speed":
                 return "两点之间需要的速度不合理，疑似跳点。";
             case "transport_suspected":

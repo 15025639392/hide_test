@@ -17,7 +17,9 @@ final class RecordingSamplingState {
             consecutiveStationaryKeepaliveCount++;
             return;
         }
-        if ("stationary_jitter".equals(reason)) {
+        if ("stationary_jitter".equals(reason)
+                || "stationary_anchor_refined".equals(reason)
+                || "stationary_accel_supported_jitter".equals(reason)) {
             consecutiveStationaryJitterCount++;
             return;
         }

@@ -46,7 +46,7 @@ public class DiagnosticTrackPointReader {
                 if ("raw_location".equals(eventName)) {
                     RawPoint rawPoint = rawPointFromEvent(event);
                     rawPoints.put(rawPoint.rawPointId, rawPoint);
-                } else if ("decision".equals(eventName) && event.has("trackPointId")) {
+                } else if ("decision".equals(eventName) && isRecordedTrackPointDecision(event)) {
                     RawPoint rawPoint = rawPoints.get(event.optLong("rawPointId", -1L));
                     if (rawPoint != null) {
                         trackPoints.add(trackPointFromEvent(event, rawPoint));
@@ -123,5 +123,13 @@ public class DiagnosticTrackPointReader {
         String reason = event.optString("reason", "");
         return "transport_suspected".equals(reason)
                 || "transport_confirmed".equals(reason);
+    }
+
+    private boolean isRecordedTrackPointDecision(JSONObject event) {
+        if (!event.has("trackPointId")) {
+            return false;
+        }
+        String result = event.optString("result", "");
+        return "anchor".equals(result) || "accept".equals(result) || "weak".equals(result);
     }
 }

@@ -399,6 +399,39 @@ public class HikingSampleReportGeneratorTest {
         assertEquals(0, report.stationaryMissingMotionSummaryCount);
     }
 
+    @Test
+    public void generate_countsRestAnchorRefinementAsStationaryMotionEvidence() throws Exception {
+        File dir = Files.createTempDirectory("hiking-sample-report-rest-anchor-motion").toFile();
+        String diagnostic = ""
+                + event(1, "session_metadata", 1_000_000_000L,
+                "\"createdElapsedRealtimeNanos\":1000000000")
+                + raw(2, 1, 2_000_000_000L, false)
+                + decision(3, 1, 1, 1, 1, 2_000_000_000L,
+                "anchor", "first_fix_good", 0.0, 0.0)
+                + motionWindow(4, 1, 2_000_000_000L, 3_000_000_000L, true)
+                + raw(5, 2, 3_000_000_000L, false)
+                + decision(6, 2, 2, 1, 1, 3_000_000_000L,
+                "reject", "stationary_anchor_refined", 0.0, 0.0)
+                + raw(7, 3, 4_000_000_000L, false)
+                + decision(8, 3, 3, 1, 1, 4_000_000_000L,
+                "reject", "stationary_accel_supported_jitter", 0.0, 0.0)
+                + event(9, "session_event", 5_000_000_000L,
+                "\"eventType\":\"finish_recording\"");
+        Files.write(new File(dir, "diagnostic.jsonl").toPath(),
+                diagnostic.getBytes(StandardCharsets.UTF_8));
+        Files.write(new File(dir, "track.gpx").toPath(),
+                "<gpx/>".getBytes(StandardCharsets.UTF_8));
+        writeSessionJson(dir, 9, 3, 1, 0, 0, 0.0, 0.0);
+
+        SessionManifest manifest = new SessionManifestReader(new SessionFileStore(dir.getParentFile()))
+                .read(dir);
+        HikingSampleReport report = new HikingSampleReportGenerator().generate(manifest);
+
+        assertEquals(2, report.stationaryDecisionCount);
+        assertEquals(2, report.stationarySupportedByAccelCount);
+        assertEquals(0, report.stationaryMissingMotionSummaryCount);
+    }
+
     private String event(int seq, String eventName, long elapsedRealtimeNanos, String fields) {
         return "{\"event\":\"" + eventName + "\",\"sessionId\":\"S1\",\"eventSeq\":" + seq
                 + ",\"schemaVersion\":1,\"eventElapsedRealtimeNanos\":" + elapsedRealtimeNanos

@@ -29,8 +29,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 
 public class BasicTrackSession implements Closeable {
@@ -47,6 +49,7 @@ public class BasicTrackSession implements Closeable {
             new TrackDecisionCoordinator(strategyConfig);
     private final GnssSnapshotBuffer gnssSnapshotBuffer = new GnssSnapshotBuffer();
     private final TrackStatsAccumulator stats = new TrackStatsAccumulator();
+    private final RestAnchorRefiner restAnchorRefiner = new RestAnchorRefiner();
     private final SessionJournalWriter journalWriter;
     private final SessionLifecycleState lifecycle = new SessionLifecycleState();
     private final GnssSnapshotDiagnosticFields gnssSnapshotDiagnosticFields =
@@ -76,6 +79,8 @@ public class BasicTrackSession implements Closeable {
     private final List<TrackPoint> trackPoints = new ArrayList<>();
     private final List<TrackPoint> weakTrackPoints = new ArrayList<>();
     private final List<TrackPoint> transportTrackPoints = new ArrayList<>();
+    private final List<MotionSummary> recentMotionSummaries = new ArrayList<>();
+    private final Set<Long> acceptedDecisionIds = new HashSet<>();
     private final List<String> recentSummaries = new ArrayList<>();
 
     public BasicTrackSession(Context context) {
@@ -119,6 +124,8 @@ public class BasicTrackSession implements Closeable {
         trackPoints.clear();
         weakTrackPoints.clear();
         transportTrackPoints.clear();
+        recentMotionSummaries.clear();
+        acceptedDecisionIds.clear();
         recentSummaries.clear();
 
         sessionDir = fileStore.createSessionDir(sessionId);
@@ -173,6 +180,7 @@ public class BasicTrackSession implements Closeable {
                 || summary == null) {
             return;
         }
+        rememberMotionSummary(summary);
         try {
             JSONObject event = new JSONObject();
             event.put("event", "motion_summary");
@@ -215,10 +223,25 @@ public class BasicTrackSession implements Closeable {
                     previousTrackPoint, lastStationaryKeepaliveElapsedRealtimeNanos,
                     forcedWeakFirstFixEnabled);
             TrackDecisionResult outcome = decision.outcome;
+            RestAnchorRefiner.Decision restAnchorDecision = restAnchorRefiner.refine(outcome,
+                    rawPoint, previousTrackPoint,
+                    gnssSnapshotBuffer.findById(rawPoint.sourceGnssSnapshotId),
+                    previousTrackPoint == null ? null
+                            : gnssSnapshotBuffer.findById(previousTrackPoint.sourceGnssSnapshotId),
+                    recentMotionSummaries);
             TrackPoint trackPoint = null;
+            TrackPoint decisionTrackPoint = null;
             String decisionState = decision.wasTransportMode ? "TRANSPORT"
                     : (trackPoints.isEmpty() ? "WAITING_FIRST_FIX" : "TRACKING");
-            if ("accept".equals(outcome.result) || "anchor".equals(outcome.result)) {
+            if (restAnchorDecision.handled) {
+                outcome = new TrackDecisionResult("reject", restAnchorDecision.reason,
+                        0.0, 0.0, lastStationaryKeepaliveElapsedRealtimeNanos,
+                        0, 1);
+                if (restAnchorDecision.refineAnchor && previousTrackPoint != null) {
+                    addRecentSummary("休息锚点优化 Raw#" + rawPoint.rawPointId
+                            + " acc=" + String.format(Locale.US, "%.1fm", rawPoint.accuracyMeters));
+                }
+            } else if ("accept".equals(outcome.result) || "anchor".equals(outcome.result)) {
                 if (outcome.startsNewSegment && previousTrackPoint != null) {
                     segmentId++;
                     if ("gap_recovery".equals(outcome.reason)) {
@@ -233,6 +256,8 @@ public class BasicTrackSession implements Closeable {
                         outcome.result, outcome.reason,
                         outcome.distanceDeltaMeters, outcome.movingTimeDeltaSeconds);
                 trackPoints.add(trackPoint);
+                decisionTrackPoint = trackPoint;
+                acceptedDecisionIds.add(decisionId);
                 stats.addAcceptedMovement(outcome);
             } else if ("weak".equals(outcome.result)) {
                 long decisionId = decisionSeq + 1L;
@@ -240,6 +265,7 @@ public class BasicTrackSession implements Closeable {
                         decisionId, segmentId, rawPoint,
                         outcome.result, outcome.reason, 0.0, 0.0);
                 weakTrackPoints.add(trackPoint);
+                decisionTrackPoint = trackPoint;
             }
             if (decision.shouldAddTransportDisplayPoint) {
                 addTransportDisplayPoint(rawPoint, outcome.reason);
@@ -251,11 +277,18 @@ public class BasicTrackSession implements Closeable {
             lastStationaryKeepaliveElapsedRealtimeNanos =
                     outcome.nextStationaryKeepaliveElapsedRealtimeNanos;
             stats.addStationaryDecision(outcome);
-            appendDecision(rawPoint, trackPoint, outcome.result, outcome.reason,
+            appendDecision(rawPoint, decisionTrackPoint, outcome.result, outcome.reason,
                     outcome.distanceDeltaMeters, outcome.movingTimeDeltaSeconds, decisionState);
             writeSessionJson();
         } catch (IOException | JSONException e) {
             markIntegrityError("diagnostic_log_append_failed", e);
+        }
+    }
+
+    private void rememberMotionSummary(MotionSummary summary) {
+        recentMotionSummaries.add(summary);
+        while (recentMotionSummaries.size() > RECENT_SUMMARY_LIMIT) {
+            recentMotionSummaries.remove(0);
         }
     }
 
@@ -753,7 +786,8 @@ public class BasicTrackSession implements Closeable {
     }
 
     private String trustedGpxReferenceError() {
-        return exportValidator.trustedGpxReferenceError(trackPoints, rawPointSeq, decisionSeq);
+        return exportValidator.trustedGpxReferenceError(trackPoints, rawPointSeq, decisionSeq,
+                acceptedDecisionIds);
     }
 
     private void markIntegrityError(String errorCode, Exception e) {

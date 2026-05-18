@@ -56,6 +56,18 @@ public class GnssSnapshotBuffer {
         return Match.stale();
     }
 
+    public GnssQualitySnapshot findById(Long snapshotId) {
+        if (snapshotId == null) {
+            return null;
+        }
+        for (GnssQualitySnapshot snapshot : snapshots) {
+            if (snapshot.snapshotId == snapshotId) {
+                return snapshot;
+            }
+        }
+        return null;
+    }
+
     public static class Match {
         public final Long snapshotId;
         public final boolean matchedFromFuture;

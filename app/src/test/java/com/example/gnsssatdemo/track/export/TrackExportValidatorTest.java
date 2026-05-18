@@ -5,6 +5,8 @@ import com.example.gnsssatdemo.track.model.TrackPoint;
 import org.junit.Test;
 
 import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
@@ -60,6 +62,16 @@ public class TrackExportValidatorTest {
                 validator.trustedGpxReferenceError(Arrays.asList(
                         point(1L, 1L, 1L, "reject", "weak_signal_stage1")
                 ), 1L, 1L));
+    }
+
+    @Test
+    public void trustedGpxReferenceError_rejectsSourceDecisionThatWasNotAccepted() {
+        Set<Long> acceptedDecisionIds = new HashSet<>(Arrays.asList(1L));
+
+        assertEquals("sourceDecisionId 未指向接受决策: 2",
+                validator.trustedGpxReferenceError(Arrays.asList(
+                        point(1L, 2L, 2L, "anchor", "stationary_anchor_refined")
+                ), 2L, 2L, acceptedDecisionIds));
     }
 
     @Test
