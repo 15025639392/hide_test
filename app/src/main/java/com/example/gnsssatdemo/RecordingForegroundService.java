@@ -11,6 +11,10 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.location.GnssStatus;
 import android.location.Location;
 import android.location.LocationListener;
@@ -24,6 +28,7 @@ import android.os.SystemClock;
 
 import com.example.gnsssatdemo.track.engine.BasicTrackSession;
 import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
+import com.example.gnsssatdemo.track.model.MotionSummary;
 import com.example.gnsssatdemo.track.model.TrackPoint;
 
 import org.json.JSONException;
@@ -76,15 +81,39 @@ public class RecordingForegroundService extends Service {
     private final GnssQualitySnapshotFactory gnssQualitySnapshotFactory =
             new GnssQualitySnapshotFactory();
     private LocationManager locationManager;
+    private SensorManager sensorManager;
+    private Sensor motionSensor;
     private BasicTrackSession trackSession;
     private Location lastLocation;
     private long lastLocationReceivedElapsedRealtimeMillis;
     private boolean noLocationTimeoutLogged;
     private boolean listening;
     private boolean gnssStatusRegistered;
+    private boolean motionSensorRegistered;
     private boolean stopRequested;
     private SamplingPolicy currentSamplingPolicy;
     private final RecordingSamplingState samplingState = new RecordingSamplingState();
+    private final AccelerometerMotionSampler motionSampler =
+            new AccelerometerMotionSampler(new AccelerometerMotionSampler.Listener() {
+                @Override
+                public void onMotionSummary(MotionSummary summary) {
+                    if (trackSession != null && trackSession.isActive()) {
+                        trackSession.onMotionSummary(summary);
+                    }
+                }
+            });
+
+    private final SensorEventListener motionSensorListener = new SensorEventListener() {
+        @Override
+        public void onSensorChanged(SensorEvent event) {
+            motionSampler.onSensorChanged(event);
+        }
+
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) {
+            // Motion evidence is diagnostic-only; no action needed on accuracy changes.
+        }
+    };
 
     private final BroadcastReceiver statusQueryReceiver = new BroadcastReceiver() {
         @Override
@@ -152,6 +181,13 @@ public class RecordingForegroundService extends Service {
     public void onCreate() {
         super.onCreate();
         locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+        sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+        if (sensorManager != null) {
+            motionSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
+            if (motionSensor == null) {
+                motionSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+            }
+        }
         trackSession = new BasicTrackSession(this);
         createNotificationChannel();
         registerStatusQueryReceiver();
@@ -179,6 +215,7 @@ public class RecordingForegroundService extends Service {
 
     @Override
     public void onDestroy() {
+        stopMotionCallbacks();
         stopLocationCallbacks();
         mainHandler.removeCallbacks(noLocationTimeoutRunnable);
         if (!stopRequested && trackSession != null && trackSession.isActive()) {
@@ -212,7 +249,9 @@ public class RecordingForegroundService extends Service {
         }
         try {
             samplingState.reset();
+            motionSampler.reset();
             trackSession.start(isGpsProviderEnabled(), true, forceWeakFirstFix, true);
+            startMotionCallbacks();
             startLocationCallbacks();
             lastLocationReceivedElapsedRealtimeMillis = SystemClock.elapsedRealtime();
             noLocationTimeoutLogged = false;
@@ -232,6 +271,7 @@ public class RecordingForegroundService extends Service {
     private void stopRecordingAndSelf() {
         stopRequested = true;
         mainHandler.removeCallbacks(noLocationTimeoutRunnable);
+        stopMotionCallbacks();
         stopLocationCallbacks();
         if (trackSession != null && trackSession.isActive()) {
             try {
@@ -281,6 +321,24 @@ public class RecordingForegroundService extends Service {
         listening = false;
         gnssStatusRegistered = false;
         currentSamplingPolicy = null;
+    }
+
+    private void startMotionCallbacks() {
+        if (motionSensorRegistered || sensorManager == null || motionSensor == null) {
+            return;
+        }
+        motionSampler.reset();
+        motionSensorRegistered = sensorManager.registerListener(motionSensorListener, motionSensor,
+                100_000, mainHandler);
+    }
+
+    private void stopMotionCallbacks() {
+        if (sensorManager == null || !motionSensorRegistered) {
+            return;
+        }
+        motionSampler.flush();
+        sensorManager.unregisterListener(motionSensorListener);
+        motionSensorRegistered = false;
     }
 
     private void updateLocationRequestForCurrentPolicy(boolean force) {

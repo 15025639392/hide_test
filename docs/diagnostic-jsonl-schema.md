@@ -63,3 +63,28 @@ Phase 6 diagnostic fields:
 - Do not infer trusted distance, moving time, segment id, or GPX output from
   `gnss_snapshot`.
 - Keep field names in `GnssSnapshotDiagnosticFields` aligned with this document.
+
+## `motion_summary`
+
+Motion summary events are diagnostic evidence only. They explain whether the
+device was close to still near existing stationary decisions; they must not
+change trusted-track accept/reject results in the MVP phase.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `motionSummaryId` | long | Monotonic summary id generated per recording session. |
+| `firstElapsedRealtimeNanos` | long | First sensor sample timestamp in the summary window. |
+| `lastElapsedRealtimeNanos` | long | Last sensor sample timestamp in the summary window. |
+| `sampleCount` | int | Number of accelerometer samples in the summary window. |
+| `dynamicAccelRmsMps2` | double | RMS dynamic acceleration in meters per second squared. |
+| `stillScore` | double | Diagnostic score from 0.0 to 1.0; higher means closer to still. |
+| `isDeviceStill` | boolean | True when the window has enough low-motion samples. |
+| `sourceSensorType` | string | `TYPE_LINEAR_ACCELERATION` or `TYPE_ACCELEROMETER`. |
+
+Compatibility rules:
+
+- Treat `motion_summary` as optional when reading old logs.
+- Do not infer trusted distance, moving time, segment id, or GPX output from
+  `motion_summary`.
+- The sample report may correlate `motion_summary` with
+  `stationary_jitter` / `stationary_keepalive` decisions for explanation only.

@@ -10,6 +10,7 @@ import com.example.gnsssatdemo.track.export.SessionFileStore;
 import com.example.gnsssatdemo.track.export.TrackExportValidator;
 import com.example.gnsssatdemo.track.model.GnssSnapshotDiagnosticFields;
 import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
+import com.example.gnsssatdemo.track.model.MotionSummary;
 import com.example.gnsssatdemo.track.model.RawPoint;
 import com.example.gnsssatdemo.track.model.TrackPoint;
 import com.example.gnsssatdemo.track.model.ValidationResult;
@@ -162,6 +163,28 @@ public class BasicTrackSession implements Closeable {
             JSONObject event = gnssSnapshotDiagnosticFields.toEvent(snapshot);
             appendDiagnostic(event, snapshot.receivedElapsedRealtimeNanos);
             writeSessionJson();
+        } catch (IOException | JSONException e) {
+            markIntegrityError("diagnostic_log_append_failed", e);
+        }
+    }
+
+    public void onMotionSummary(MotionSummary summary) {
+        if (!lifecycle.isActive() || !journalWriter.isDiagnosticLoggerOpen()
+                || summary == null) {
+            return;
+        }
+        try {
+            JSONObject event = new JSONObject();
+            event.put("event", "motion_summary");
+            event.put("motionSummaryId", summary.motionSummaryId);
+            event.put("firstElapsedRealtimeNanos", summary.firstElapsedRealtimeNanos);
+            event.put("lastElapsedRealtimeNanos", summary.lastElapsedRealtimeNanos);
+            event.put("sampleCount", summary.sampleCount);
+            event.put("dynamicAccelRmsMps2", summary.dynamicAccelRmsMps2);
+            event.put("stillScore", summary.stillScore);
+            event.put("isDeviceStill", summary.deviceStill);
+            event.put("sourceSensorType", summary.sourceSensorType);
+            appendDiagnostic(event, summary.lastElapsedRealtimeNanos);
         } catch (IOException | JSONException e) {
             markIntegrityError("diagnostic_log_append_failed", e);
         }

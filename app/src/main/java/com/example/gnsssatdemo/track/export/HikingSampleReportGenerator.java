@@ -22,6 +22,7 @@ public class HikingSampleReportGenerator {
     private static final double MAX_REVIEW_DURATION_SECONDS = 65.0 * 60.0;
     private static final double MAX_RAW_INTERVAL_REVIEW_SECONDS = 60.0;
     private static final double MAX_AVERAGE_RAW_INTERVAL_REVIEW_SECONDS = 15.0;
+    private static final long MOTION_SUMMARY_MATCH_WINDOW_NANOS = 3_000_000_000L;
 
     public HikingSampleReport generate(SessionManifest manifest) throws IOException, JSONException {
         File diagnosticFile = new File(manifest.sessionDir, manifest.diagnosticLogFileName);
@@ -182,6 +183,10 @@ public class HikingSampleReportGenerator {
                 accumulator.rejectDecisionGnssMetrics.averageTop4AvgCn0(),
                 accumulator.rejectDecisionGnssMetrics.averageLowCn0VisibleCount(),
                 accumulator.rejectDecisionGnssMetrics.averageWeakUsedCount(),
+                accumulator.motionSummaryCount,
+                accumulator.stationaryDecisionCount,
+                accumulator.stationarySupportedByAccelCount,
+                accumulator.stationaryMissingMotionSummaryCount,
                 accumulator.samplingRequestCounts,
                 accumulator.samplingDurationSeconds,
                 accumulator.decisionReasonCounts,
@@ -269,6 +274,10 @@ public class HikingSampleReportGenerator {
         int staleGnssRawCount;
         int gnssQualityMetricSnapshotCount;
         int dualFrequencySnapshotCount;
+        int motionSummaryCount;
+        int stationaryDecisionCount;
+        int stationarySupportedByAccelCount;
+        int stationaryMissingMotionSummaryCount;
         double usedAvgCn0Total;
         double allAvgCn0Total;
         double top4AvgCn0Total;
@@ -278,12 +287,14 @@ public class HikingSampleReportGenerator {
         double maxRawIntervalSeconds;
         double maxNoLocationTimeoutSeconds;
         final Map<Long, GnssMetricSnapshot> gnssMetricsBySnapshotId = new LinkedHashMap<>();
+        final List<MotionMetricSnapshot> motionSummaries = new ArrayList<>();
         final GnssMetricTotals weakDecisionGnssMetrics = new GnssMetricTotals();
         final GnssMetricTotals rejectDecisionGnssMetrics = new GnssMetricTotals();
         final Map<String, Integer> samplingRequestCounts = new LinkedHashMap<>();
         final Map<String, Double> samplingDurationSeconds = new LinkedHashMap<>();
         final Map<String, Integer> decisionReasonCounts = new LinkedHashMap<>();
         final List<String> gapSummaries = new ArrayList<>();
+        final List<StationaryDecisionSnapshot> stationaryDecisions = new ArrayList<>();
 
         void onEvent(JSONObject event) {
             long eventTime = event.optLong("eventElapsedRealtimeNanos", -1L);
@@ -307,6 +318,16 @@ public class HikingSampleReportGenerator {
                 onSessionEvent(event);
             } else if ("gnss_snapshot".equals(eventName)) {
                 onGnssSnapshot(event);
+            } else if ("motion_summary".equals(eventName)) {
+                onMotionSummary(event);
+            }
+        }
+
+        void onMotionSummary(JSONObject event) {
+            motionSummaryCount++;
+            MotionMetricSnapshot snapshot = MotionMetricSnapshot.fromEvent(event);
+            if (snapshot != null) {
+                motionSummaries.add(snapshot);
             }
         }
 
@@ -390,6 +411,51 @@ public class HikingSampleReportGenerator {
                             + " movingTimeDelta=" + movingDelta);
                 }
             }
+            if (isStationaryReason(reason)) {
+                stationaryDecisions.add(new StationaryDecisionSnapshot(
+                        event.optLong("eventElapsedRealtimeNanos", -1L)));
+            }
+        }
+
+        boolean isStationaryReason(String reason) {
+            return "stationary_jitter".equals(reason)
+                    || "stationary_keepalive".equals(reason);
+        }
+
+        MotionMetricSnapshot recentMotionSummary(long decisionElapsedRealtimeNanos) {
+            if (decisionElapsedRealtimeNanos <= 0L) {
+                return null;
+            }
+            MotionMetricSnapshot best = null;
+            long bestAge = Long.MAX_VALUE;
+            for (MotionMetricSnapshot summary : motionSummaries) {
+                if (summary.contains(decisionElapsedRealtimeNanos)) {
+                    return summary;
+                }
+                long age = decisionElapsedRealtimeNanos - summary.lastElapsedRealtimeNanos;
+                if (age < 0L || age > MOTION_SUMMARY_MATCH_WINDOW_NANOS) {
+                    continue;
+                }
+                if (age < bestAge) {
+                    bestAge = age;
+                    best = summary;
+                }
+            }
+            return best;
+        }
+
+        void correlateStationaryDecisionsWithMotion() {
+            stationaryDecisionCount = stationaryDecisions.size();
+            stationarySupportedByAccelCount = 0;
+            stationaryMissingMotionSummaryCount = 0;
+            for (StationaryDecisionSnapshot decision : stationaryDecisions) {
+                MotionMetricSnapshot motion = recentMotionSummary(decision.elapsedRealtimeNanos);
+                if (motion == null) {
+                    stationaryMissingMotionSummaryCount++;
+                } else if (motion.deviceStill) {
+                    stationarySupportedByAccelCount++;
+                }
+            }
         }
 
         void addDecisionGnssMetrics(JSONObject event, GnssMetricTotals totals) {
@@ -428,6 +494,7 @@ public class HikingSampleReportGenerator {
 
         void closeSamplingDuration() {
             closeSamplingDuration(lastEventNanos);
+            correlateStationaryDecisionsWithMotion();
         }
 
         void closeSamplingDuration(long endNanos) {
@@ -506,6 +573,47 @@ public class HikingSampleReportGenerator {
                     event.optDouble(GnssSnapshotDiagnosticFields.TOP4_AVG_CN0, 0.0),
                     event.optDouble(GnssSnapshotDiagnosticFields.LOW_CN0_VISIBLE_COUNT, 0.0),
                     event.optDouble(GnssSnapshotDiagnosticFields.WEAK_USED_COUNT, 0.0));
+        }
+    }
+
+    private static class MotionMetricSnapshot {
+        final long firstElapsedRealtimeNanos;
+        final long lastElapsedRealtimeNanos;
+        final boolean deviceStill;
+
+        MotionMetricSnapshot(long firstElapsedRealtimeNanos,
+                             long lastElapsedRealtimeNanos,
+                             boolean deviceStill) {
+            this.firstElapsedRealtimeNanos = firstElapsedRealtimeNanos;
+            this.lastElapsedRealtimeNanos = lastElapsedRealtimeNanos;
+            this.deviceStill = deviceStill;
+        }
+
+        static MotionMetricSnapshot fromEvent(JSONObject event) {
+            long firstElapsedRealtimeNanos = event.optLong("firstElapsedRealtimeNanos", -1L);
+            long lastElapsedRealtimeNanos = event.optLong("lastElapsedRealtimeNanos",
+                    event.optLong("eventElapsedRealtimeNanos", -1L));
+            if (lastElapsedRealtimeNanos <= 0L) {
+                return null;
+            }
+            if (firstElapsedRealtimeNanos <= 0L) {
+                firstElapsedRealtimeNanos = lastElapsedRealtimeNanos;
+            }
+            return new MotionMetricSnapshot(firstElapsedRealtimeNanos, lastElapsedRealtimeNanos,
+                    event.optBoolean("isDeviceStill", false));
+        }
+
+        boolean contains(long elapsedRealtimeNanos) {
+            return elapsedRealtimeNanos >= firstElapsedRealtimeNanos
+                    && elapsedRealtimeNanos <= lastElapsedRealtimeNanos;
+        }
+    }
+
+    private static class StationaryDecisionSnapshot {
+        final long elapsedRealtimeNanos;
+
+        StationaryDecisionSnapshot(long elapsedRealtimeNanos) {
+            this.elapsedRealtimeNanos = elapsedRealtimeNanos;
         }
     }
 
