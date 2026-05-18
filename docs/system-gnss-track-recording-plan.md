@@ -1,6 +1,16 @@
 # 系统 GNSS 徒步轨迹记录方案
 
-本文是当前实现的权威短版。旧版长文已归档到 `docs/system-gnss-track-recording-plan-archive.md`，后续日常开发以本文为准。
+本文是当前实现的权威短版，后续日常开发以本文为准。
+
+当前策略版本：
+
+```text
+stage1-gnss-track-v1
+```
+
+技术债治理、AI 执行顺序、策略不变量和 replay fixture 分类见
+`docs/technical-debt-governance-plan.md`。治理时应优先遵守该文档中的
+Non-Negotiable Invariants、Change Checklist 和 Governance Phases。
 
 ## 当前目标
 

@@ -5,10 +5,10 @@ import android.location.Location;
 import android.os.Build;
 import android.os.SystemClock;
 
-import com.example.gnsssatdemo.track.export.DiagnosticLogger;
 import com.example.gnsssatdemo.track.export.GpxExporter;
 import com.example.gnsssatdemo.track.export.SessionFileStore;
 import com.example.gnsssatdemo.track.export.TrackExportValidator;
+import com.example.gnsssatdemo.track.model.GnssSnapshotDiagnosticFields;
 import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
 import com.example.gnsssatdemo.track.model.RawPoint;
 import com.example.gnsssatdemo.track.model.TrackPoint;
@@ -37,18 +37,22 @@ public class BasicTrackSession implements Closeable {
     private static final int RECENT_SUMMARY_LIMIT = 8;
     private static final long WEAK_TRACK_POINT_ID_OFFSET = 1_000_000_000L;
     private static final long TRANSPORT_DISPLAY_POINT_ID_OFFSET = 2_000_000_000L;
-    private static final long GNSS_SNAPSHOT_MATCH_WINDOW_NANOS = 3_000_000_000L;
-    private static final long GNSS_SNAPSHOT_RETENTION_NANOS = 300_000_000_000L;
-    private static final int GNSS_SNAPSHOT_RETENTION_COUNT = 300;
 
     private final Context appContext;
     private final SessionFileStore fileStore;
-    private final LocationValidator validator = new LocationValidator();
-    private final TrackDecisionEngine decisionEngine = new TrackDecisionEngine();
+    private final TrackStrategyConfig strategyConfig = TrackStrategyConfig.defaultStage1();
+    private final LocationValidator validator = new LocationValidator(strategyConfig);
+    private final TrackDecisionCoordinator decisionCoordinator =
+            new TrackDecisionCoordinator(strategyConfig);
+    private final GnssSnapshotBuffer gnssSnapshotBuffer = new GnssSnapshotBuffer();
+    private final TrackStatsAccumulator stats = new TrackStatsAccumulator();
+    private final SessionJournalWriter journalWriter;
+    private final SessionLifecycleState lifecycle = new SessionLifecycleState();
+    private final GnssSnapshotDiagnosticFields gnssSnapshotDiagnosticFields =
+            new GnssSnapshotDiagnosticFields();
     private final GpxExporter gpxExporter = new GpxExporter();
     private final TrackExportValidator exportValidator = new TrackExportValidator();
 
-    private DiagnosticLogger logger;
     private File sessionDir;
     private String sessionId;
     private long createdWallTimeMillis;
@@ -56,44 +60,27 @@ public class BasicTrackSession implements Closeable {
     private long rawPointSeq;
     private long decisionSeq;
     private long eventIdSeq;
-    private long lastEventSeq;
-    private long lastUpdatedWallTimeMillis;
     private long trackPointSeq;
     private long weakTrackPointSeq;
     private long transportDisplayPointSeq;
     private long gnssSnapshotSeq;
     private long samplingPolicySeq;
     private long segmentId = 1L;
-    private boolean active;
-    private boolean finished;
     private boolean forcedWeakFirstFixEnabled;
-    private String integrityState = "OK";
-    private String completionState = "ACTIVE";
     private String lastDecisionResult = "";
     private String lastDecisionReason = "";
-    private String lastErrorCode = "";
     private float lastRawAccuracyMeters = -1f;
     private long lastStationaryKeepaliveElapsedRealtimeNanos;
-    private int stationaryKeepaliveCount;
-    private int stationaryJitterCount;
-    private int gapCount;
-    private int transportCount;
-    private double totalDistanceMeters;
-    private double movingTimeSeconds;
     private GnssQualitySnapshot lastGnssSnapshot;
-    private boolean transportMode;
-    private RawPoint lastTransportRawPoint;
-    private RawPoint transportRecoveryCandidateRawPoint;
-    private long transportRecoveryCandidateStartElapsedRealtimeNanos;
     private final List<TrackPoint> trackPoints = new ArrayList<>();
     private final List<TrackPoint> weakTrackPoints = new ArrayList<>();
     private final List<TrackPoint> transportTrackPoints = new ArrayList<>();
-    private final List<GnssQualitySnapshot> recentGnssSnapshots = new ArrayList<>();
     private final List<String> recentSummaries = new ArrayList<>();
 
     public BasicTrackSession(Context context) {
         this.appContext = context.getApplicationContext();
         this.fileStore = new SessionFileStore(appContext);
+        this.journalWriter = new SessionJournalWriter(fileStore);
     }
 
     public void start(boolean gpsProviderEnabled, boolean preciseLocationGranted,
@@ -112,63 +99,48 @@ public class BasicTrackSession implements Closeable {
         rawPointSeq = 0L;
         decisionSeq = 0L;
         eventIdSeq = 0L;
-        lastEventSeq = 0L;
-        lastUpdatedWallTimeMillis = createdWallTimeMillis;
         trackPointSeq = 0L;
         weakTrackPointSeq = 0L;
         transportDisplayPointSeq = 0L;
         gnssSnapshotSeq = 0L;
         samplingPolicySeq = 0L;
         segmentId = 1L;
-        active = false;
-        finished = false;
         this.forcedWeakFirstFixEnabled = forcedWeakFirstFixEnabled;
-        integrityState = "OK";
-        completionState = "ACTIVE";
+        lifecycle.resetForStart();
         lastDecisionResult = "";
         lastDecisionReason = "";
-        lastErrorCode = "";
         lastRawAccuracyMeters = -1f;
         lastStationaryKeepaliveElapsedRealtimeNanos = 0L;
-        stationaryKeepaliveCount = 0;
-        stationaryJitterCount = 0;
-        gapCount = 0;
-        transportCount = 0;
-        totalDistanceMeters = 0.0;
-        movingTimeSeconds = 0.0;
+        stats.reset();
         lastGnssSnapshot = null;
-        transportMode = false;
-        lastTransportRawPoint = null;
-        transportRecoveryCandidateRawPoint = null;
-        transportRecoveryCandidateStartElapsedRealtimeNanos = 0L;
+        decisionCoordinator.reset();
+        gnssSnapshotBuffer.clear();
         trackPoints.clear();
         weakTrackPoints.clear();
         transportTrackPoints.clear();
-        recentGnssSnapshots.clear();
         recentSummaries.clear();
 
         sessionDir = fileStore.createSessionDir(sessionId);
+        journalWriter.reset(sessionDir, createdWallTimeMillis);
         writeSessionJson();
-        logger = new DiagnosticLogger(fileStore.diagnosticJsonl(sessionDir));
+        journalWriter.openDiagnosticLogger();
 
         appendSessionMetadata();
         appendConfigSnapshot();
         appendRuntimeSnapshot(gpsProviderEnabled, preciseLocationGranted, foregroundServiceActive);
         appendSessionEvent("start_recording", "IDLE", "RECORDING", "WAITING_FIRST_FIX");
         addRecentSummary("开始记录，等待首个可信 GNSS 点");
-        active = true;
+        lifecycle.markActive();
         writeSessionJson();
     }
 
     public void finish() throws IOException, JSONException {
-        if (!active || finished) {
+        if (!lifecycle.isActive() || lifecycle.isFinished()) {
             return;
         }
         appendSessionEvent("finish_recording", "RECORDING", "FINISHED", "FIX_READY");
         addRecentSummary("结束记录，TrackPoint=" + trackPoints.size());
-        completionState = "FINISHED";
-        active = false;
-        finished = true;
+        lifecycle.markFinished();
         writeSessionJson();
         closeLoggerQuietly();
         try {
@@ -182,23 +154,12 @@ public class BasicTrackSession implements Closeable {
 
     public void onGnssSnapshot(GnssQualitySnapshot snapshot) {
         lastGnssSnapshot = snapshot;
-        rememberGnssSnapshot(snapshot);
-        if (!active || logger == null) {
+        gnssSnapshotBuffer.remember(snapshot);
+        if (!lifecycle.isActive() || !journalWriter.isDiagnosticLoggerOpen()) {
             return;
         }
         try {
-            JSONObject event = new JSONObject();
-            event.put("event", "gnss_snapshot");
-            event.put("snapshotId", snapshot.snapshotId);
-            event.put("receivedElapsedRealtimeNanos", snapshot.receivedElapsedRealtimeNanos);
-            event.put("visibleTotal", snapshot.visibleTotal);
-            event.put("usedInFixTotal", snapshot.usedInFixTotal);
-            event.put("usedAvgCn0", snapshot.usedAvgCn0);
-            event.put("gpsUsed", snapshot.gpsUsed);
-            event.put("beidouUsed", snapshot.beidouUsed);
-            event.put("galileoUsed", snapshot.galileoUsed);
-            event.put("glonassUsed", snapshot.glonassUsed);
-            event.put("qzssUsed", snapshot.qzssUsed);
+            JSONObject event = gnssSnapshotDiagnosticFields.toEvent(snapshot);
             appendDiagnostic(event, snapshot.receivedElapsedRealtimeNanos);
             writeSessionJson();
         } catch (IOException | JSONException e) {
@@ -207,11 +168,13 @@ public class BasicTrackSession implements Closeable {
     }
 
     public void onLocation(Location location) {
-        if (!active || finished || logger == null || location == null) {
+        if (!lifecycle.isActive() || lifecycle.isFinished()
+                || !journalWriter.isDiagnosticLoggerOpen() || location == null) {
             return;
         }
 
-        GnssSnapshotMatch snapshotMatch = matchGnssSnapshot(location.getElapsedRealtimeNanos());
+        GnssSnapshotBuffer.Match snapshotMatch =
+                gnssSnapshotBuffer.match(location.getElapsedRealtimeNanos());
         RawPoint rawPoint = new RawPoint(++rawPointSeq, location, snapshotMatch.snapshotId);
         lastRawAccuracyMeters = rawPoint.hasAccuracy ? rawPoint.accuracyMeters : -1f;
         try {
@@ -225,18 +188,18 @@ public class BasicTrackSession implements Closeable {
 
             TrackPoint previousTrackPoint = trackPoints.isEmpty()
                     ? null : trackPoints.get(trackPoints.size() - 1);
-            TrackDecisionResult outcome = transportMode
-                    ? decideWhileInTransportMode(rawPoint)
-                    : decisionEngine.decide(rawPoint, previousTrackPoint,
-                    lastStationaryKeepaliveElapsedRealtimeNanos, forcedWeakFirstFixEnabled);
+            TrackDecisionCoordinator.Decision decision = decisionCoordinator.decide(rawPoint,
+                    previousTrackPoint, lastStationaryKeepaliveElapsedRealtimeNanos,
+                    forcedWeakFirstFixEnabled);
+            TrackDecisionResult outcome = decision.outcome;
             TrackPoint trackPoint = null;
-            String decisionState = transportMode ? "TRANSPORT"
+            String decisionState = decision.wasTransportMode ? "TRANSPORT"
                     : (trackPoints.isEmpty() ? "WAITING_FIRST_FIX" : "TRACKING");
             if ("accept".equals(outcome.result) || "anchor".equals(outcome.result)) {
                 if (outcome.startsNewSegment && previousTrackPoint != null) {
                     segmentId++;
                     if ("gap_recovery".equals(outcome.reason)) {
-                        gapCount++;
+                        stats.incrementGapCount();
                         addRecentSummary("定位恢复，新开 Segment#" + segmentId);
                     } else if ("transport_recovery".equals(outcome.reason)) {
                         addRecentSummary("交通工具移动后恢复徒步，新开 Segment#" + segmentId);
@@ -247,8 +210,7 @@ public class BasicTrackSession implements Closeable {
                         outcome.result, outcome.reason,
                         outcome.distanceDeltaMeters, outcome.movingTimeDeltaSeconds);
                 trackPoints.add(trackPoint);
-                totalDistanceMeters += outcome.distanceDeltaMeters;
-                movingTimeSeconds += outcome.movingTimeDeltaSeconds;
+                stats.addAcceptedMovement(outcome);
             } else if ("weak".equals(outcome.result)) {
                 long decisionId = decisionSeq + 1L;
                 trackPoint = new TrackPoint(WEAK_TRACK_POINT_ID_OFFSET + ++weakTrackPointSeq,
@@ -256,19 +218,16 @@ public class BasicTrackSession implements Closeable {
                         outcome.result, outcome.reason, 0.0, 0.0);
                 weakTrackPoints.add(trackPoint);
             }
-            if ("transport_suspected".equals(outcome.reason)) {
+            if (decision.shouldAddTransportDisplayPoint) {
                 addTransportDisplayPoint(rawPoint, outcome.reason);
-                enterTransportMode(rawPoint);
-            } else if ("transport_recovery".equals(outcome.reason)) {
-                leaveTransportMode();
-            } else if (transportMode && "transport_confirmed".equals(outcome.reason)) {
-                addTransportDisplayPoint(rawPoint, outcome.reason);
-                lastTransportRawPoint = rawPoint;
+            }
+            if (decision.enteredTransportMode) {
+                stats.incrementTransportCount();
+                addRecentSummary("检测到疑似交通工具移动，暂停累计徒步距离");
             }
             lastStationaryKeepaliveElapsedRealtimeNanos =
                     outcome.nextStationaryKeepaliveElapsedRealtimeNanos;
-            stationaryKeepaliveCount += outcome.stationaryKeepaliveIncrement;
-            stationaryJitterCount += outcome.stationaryJitterIncrement;
+            stats.addStationaryDecision(outcome);
             appendDecision(rawPoint, trackPoint, outcome.result, outcome.reason,
                     outcome.distanceDeltaMeters, outcome.movingTimeDeltaSeconds, decisionState);
             writeSessionJson();
@@ -278,7 +237,8 @@ public class BasicTrackSession implements Closeable {
     }
 
     public void onNoLocationTimeout(long elapsedSinceLastLocationMillis) {
-        if (!active || finished || logger == null) {
+        if (!lifecycle.isActive() || lifecycle.isFinished()
+                || !journalWriter.isDiagnosticLoggerOpen()) {
             return;
         }
         try {
@@ -289,61 +249,6 @@ public class BasicTrackSession implements Closeable {
         } catch (IOException | JSONException e) {
             markIntegrityError("diagnostic_log_append_failed", e);
         }
-    }
-
-    private TrackDecisionResult decideWhileInTransportMode(RawPoint rawPoint) {
-        if (lastTransportRawPoint == null) {
-            lastTransportRawPoint = rawPoint;
-            resetTransportRecoveryCandidate();
-            return transportConfirmed();
-        }
-        if (!decisionEngine.isTransportRecoveryCandidate(lastTransportRawPoint, rawPoint)) {
-            resetTransportRecoveryCandidate();
-            return transportConfirmed();
-        }
-        if (transportRecoveryCandidateRawPoint == null) {
-            transportRecoveryCandidateRawPoint = lastTransportRawPoint;
-            transportRecoveryCandidateStartElapsedRealtimeNanos =
-                    lastTransportRawPoint.elapsedRealtimeNanos;
-        }
-        long stableNanos = rawPoint.elapsedRealtimeNanos
-                - transportRecoveryCandidateStartElapsedRealtimeNanos;
-        double stableDistanceMeters = decisionEngine.rawDistanceMeters(
-                transportRecoveryCandidateRawPoint, rawPoint);
-        if (stableNanos >= TrackDecisionEngine.TRANSPORT_RECOVERY_STABLE_NANOS
-                && stableDistanceMeters >= TrackDecisionEngine.TRANSPORT_RECOVERY_MIN_DISTANCE_METERS) {
-            return new TrackDecisionResult("accept", "transport_recovery",
-                    0.0, 0.0, lastStationaryKeepaliveElapsedRealtimeNanos,
-                    0, 0, true);
-        }
-        return transportConfirmed();
-    }
-
-    private TrackDecisionResult transportConfirmed() {
-        return new TrackDecisionResult("reject", "transport_confirmed",
-                0.0, 0.0, lastStationaryKeepaliveElapsedRealtimeNanos,
-                0, 0, false);
-    }
-
-    private void enterTransportMode(RawPoint rawPoint) {
-        if (!transportMode) {
-            transportCount++;
-            addRecentSummary("检测到疑似交通工具移动，暂停累计徒步距离");
-        }
-        transportMode = true;
-        lastTransportRawPoint = rawPoint;
-        resetTransportRecoveryCandidate();
-    }
-
-    private void leaveTransportMode() {
-        transportMode = false;
-        lastTransportRawPoint = null;
-        resetTransportRecoveryCandidate();
-    }
-
-    private void resetTransportRecoveryCandidate() {
-        transportRecoveryCandidateRawPoint = null;
-        transportRecoveryCandidateStartElapsedRealtimeNanos = 0L;
     }
 
     private void addTransportDisplayPoint(RawPoint rawPoint, String reason) {
@@ -361,7 +266,8 @@ public class BasicTrackSession implements Closeable {
     }
 
     public void onSamplingPolicyChanged(String state, long intervalMillis, float distanceMeters) {
-        if (!active || finished || logger == null) {
+        if (!lifecycle.isActive() || lifecycle.isFinished()
+                || !journalWriter.isDiagnosticLoggerOpen()) {
             return;
         }
         try {
@@ -385,15 +291,15 @@ public class BasicTrackSession implements Closeable {
     }
 
     public void onInterrupted(String eventType) {
-        if (!active || finished || logger == null) {
+        if (!lifecycle.isActive() || lifecycle.isFinished()
+                || !journalWriter.isDiagnosticLoggerOpen()) {
             return;
         }
         try {
             appendSessionEvent(eventType, "RECORDING", "INTERRUPTED",
                     trackPoints.isEmpty() ? "WAITING_FIRST_FIX" : "FIX_READY");
             addRecentSummary("记录被中断: " + eventType);
-            completionState = "INTERRUPTED";
-            active = false;
+            lifecycle.markInterrupted();
             writeSessionJson();
             writePartialGpxQuietly();
             closeLoggerQuietly();
@@ -409,7 +315,7 @@ public class BasicTrackSession implements Closeable {
         event.put("createdElapsedRealtimeNanos", recordStartElapsedRealtimeNanos);
         event.put("diagnosticLogFileName", "diagnostic.jsonl");
         event.put("gpxFileName", "track.gpx");
-        event.put("completionState", completionState);
+        event.put("completionState", lifecycle.getCompletionState());
         event.put("strategyVersion", STRATEGY_VERSION);
         appendDiagnostic(event, recordStartElapsedRealtimeNanos);
     }
@@ -422,25 +328,25 @@ public class BasicTrackSession implements Closeable {
         event.put("locationRequestProvider", "gps");
         event.put("locationRequestMinTimeMs", 1000);
         event.put("locationRequestMinDistanceMeters", 0);
-        event.put("maxLocationAgeNanos", LocationValidator.MAX_LOCATION_AGE_NANOS);
-        event.put("firstFixGoodAccuracyMeters", 20);
-        event.put("firstFixRelaxedAccuracyMeters", 30);
+        event.put("maxLocationAgeNanos", strategyConfig.maxLocationAgeNanos);
+        event.put("firstFixGoodAccuracyMeters", strategyConfig.firstFixGoodAccuracyMeters);
+        event.put("firstFixRelaxedAccuracyMeters", strategyConfig.firstFixRelaxedAccuracyMeters);
         event.put("forcedWeakFirstFixEnabled", forcedWeakFirstFixEnabled);
-        event.put("ordinaryGoodAccuracyMeters", 30);
-        event.put("weakAccuracyMaxMeters", LocationValidator.MAX_ACCURACY_METERS);
+        event.put("ordinaryGoodAccuracyMeters", strategyConfig.ordinaryGoodAccuracyMeters);
+        event.put("weakAccuracyMaxMeters", strategyConfig.maxAccuracyMeters);
         event.put("dynamicSamplingEnabled", true);
         event.put("dynamicSamplingKeepsDistanceFilterZero", true);
-        event.put("gapLineBreakNanos", TrackDecisionEngine.GAP_LINE_BREAK_NANOS);
+        event.put("gapLineBreakNanos", strategyConfig.gapLineBreakNanos);
         event.put("impossibleSpeedMetersPerSecond",
-                TrackDecisionEngine.IMPOSSIBLE_SPEED_METERS_PER_SECOND);
+                strategyConfig.impossibleSpeedMetersPerSecond);
         event.put("transportSuspectedSpeedMetersPerSecond",
-                TrackDecisionEngine.TRANSPORT_SUSPECTED_SPEED_METERS_PER_SECOND);
+                strategyConfig.transportSuspectedSpeedMetersPerSecond);
         event.put("transportSuspectedMaxReasonableSpeedMetersPerSecond",
-                TrackDecisionEngine.TRANSPORT_SUSPECTED_MAX_REASONABLE_SPEED_METERS_PER_SECOND);
+                strategyConfig.transportSuspectedMaxReasonableSpeedMetersPerSecond);
         event.put("transportRecoveryMaxSpeedMetersPerSecond",
-                TrackDecisionEngine.TRANSPORT_RECOVERY_MAX_SPEED_METERS_PER_SECOND);
+                strategyConfig.transportRecoveryMaxSpeedMetersPerSecond);
         event.put("transportRecoveryStableNanos",
-                TrackDecisionEngine.TRANSPORT_RECOVERY_STABLE_NANOS);
+                strategyConfig.transportRecoveryStableNanos);
         appendDiagnostic(event, recordStartElapsedRealtimeNanos);
     }
 
@@ -484,7 +390,7 @@ public class BasicTrackSession implements Closeable {
         }
     }
 
-    private void appendRawLocation(RawPoint rawPoint, GnssSnapshotMatch snapshotMatch)
+    private void appendRawLocation(RawPoint rawPoint, GnssSnapshotBuffer.Match snapshotMatch)
             throws IOException, JSONException {
         JSONObject event = new JSONObject();
         event.put("event", "raw_location");
@@ -560,36 +466,27 @@ public class BasicTrackSession implements Closeable {
         json.put("sessionId", sessionId);
         json.put("createdWallTimeMillis", createdWallTimeMillis);
         json.put("createdElapsedRealtimeNanos", recordStartElapsedRealtimeNanos);
-        json.put("completionState", completionState);
-        json.put("integrityState", integrityState);
+        json.put("completionState", lifecycle.getCompletionState());
+        json.put("integrityState", lifecycle.getIntegrityState());
         json.put("schemaVersion", 1);
         json.put("strategyVersion", STRATEGY_VERSION);
         json.put("diagnosticLogFileName", "diagnostic.jsonl");
         json.put("trustedGpxFileName", "track.gpx");
         json.put("partialGpxFileName", "partial.gpx");
-        json.put("lastEventSeq", lastEventSeq);
-        json.put("lastUpdatedWallTimeMillis", lastUpdatedWallTimeMillis);
+        json.put("lastEventSeq", journalWriter.getLastEventSeq());
+        json.put("lastUpdatedWallTimeMillis", journalWriter.getLastUpdatedWallTimeMillis());
         json.put("trackPointCount", trackPoints.size());
         json.put("weakTrackPointCount", weakTrackPoints.size());
         json.put("rawPointCount", rawPointSeq);
-        json.put("stationaryKeepaliveCount", stationaryKeepaliveCount);
-        json.put("stationaryJitterCount", stationaryJitterCount);
-        json.put("gapCount", gapCount);
-        json.put("transportCount", transportCount);
-        json.put("totalDistanceMeters", totalDistanceMeters);
-        json.put("movingTimeSeconds", movingTimeSeconds);
+        json.put("stationaryKeepaliveCount", stats.getStationaryKeepaliveCount());
+        json.put("stationaryJitterCount", stats.getStationaryJitterCount());
+        json.put("gapCount", stats.getGapCount());
+        json.put("transportCount", stats.getTransportCount());
+        json.put("totalDistanceMeters", stats.getTotalDistanceMeters());
+        json.put("movingTimeSeconds", stats.getMovingTimeSeconds());
         json.put("segmentCount", trackPoints.isEmpty() ? 0 : segmentId);
-        json.put("lastKnownErrorCode", lastErrorCode);
-        File finalFile = fileStore.sessionJson(sessionDir);
-        File tmpFile = fileStore.sessionJsonTmp(sessionDir);
-        try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
-                new FileOutputStream(tmpFile), StandardCharsets.UTF_8))) {
-            writer.write(json.toString(2));
-            writer.write('\n');
-        }
-        if (!tmpFile.renameTo(finalFile)) {
-            throw new IOException("session.json rename 失败");
-        }
+        json.put("lastKnownErrorCode", lifecycle.getLastErrorCode());
+        journalWriter.writeSessionJson(json);
     }
 
     private void writeInternalGpx() throws IOException {
@@ -619,7 +516,7 @@ public class BasicTrackSession implements Closeable {
         try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
                 new FileOutputStream(tmpFile), StandardCharsets.UTF_8))) {
             writer.write(gpxExporter.buildPartialGpx(sessionId, combinedTrackPoints(),
-                    totalDistanceMeters, movingTimeSeconds));
+                    stats.getTotalDistanceMeters(), stats.getMovingTimeSeconds()));
         }
         File finalFile = fileStore.partialGpx(sessionDir);
         if (!tmpFile.renameTo(finalFile)) {
@@ -640,7 +537,7 @@ public class BasicTrackSession implements Closeable {
             throw new IllegalStateException(trustedGpxUnavailableReason());
         }
         return gpxExporter.buildTrustedGpx(sessionId, trackPoints,
-                totalDistanceMeters, movingTimeSeconds);
+                stats.getTotalDistanceMeters(), stats.getMovingTimeSeconds());
     }
 
     public String buildPartialGpx() {
@@ -648,7 +545,7 @@ public class BasicTrackSession implements Closeable {
             throw new IllegalStateException("没有可导出的 partial TrackPoint");
         }
         return gpxExporter.buildPartialGpx(sessionId, combinedTrackPoints(),
-                totalDistanceMeters, movingTimeSeconds);
+                stats.getTotalDistanceMeters(), stats.getMovingTimeSeconds());
     }
 
     private List<TrackPoint> combinedTrackPoints() {
@@ -685,28 +582,24 @@ public class BasicTrackSession implements Closeable {
         }
     }
 
-    public GnssQualitySnapshot nextGnssSnapshot(long receivedElapsedRealtimeNanos, int visibleTotal,
-                                                int usedInFixTotal, float usedAvgCn0,
-                                                int gpsUsed, int beidouUsed, int galileoUsed,
-                                                int glonassUsed, int qzssUsed) {
-        return new GnssQualitySnapshot(++gnssSnapshotSeq, receivedElapsedRealtimeNanos, visibleTotal,
-                usedInFixTotal, usedAvgCn0, gpsUsed, beidouUsed, galileoUsed, glonassUsed, qzssUsed);
+    public long nextGnssSnapshotId() {
+        return ++gnssSnapshotSeq;
     }
 
     public boolean isActive() {
-        return active;
+        return lifecycle.isActive();
     }
 
     public boolean isFinished() {
-        return finished;
+        return lifecycle.isFinished();
     }
 
     public boolean canExportTrustedGpx() {
         return sessionId != null
-                && !active
-                && finished
-                && "FINISHED".equals(completionState)
-                && "OK".equals(integrityState)
+                && !lifecycle.isActive()
+                && lifecycle.isFinished()
+                && "FINISHED".equals(lifecycle.getCompletionState())
+                && "OK".equals(lifecycle.getIntegrityState())
                 && !trackPoints.isEmpty()
                 && trustedGpxReferenceError() == null;
     }
@@ -715,14 +608,15 @@ public class BasicTrackSession implements Closeable {
         if (sessionId == null) {
             return "还没有记录 session";
         }
-        if (active) {
+        if (lifecycle.isActive()) {
             return "记录仍在进行中";
         }
-        if (!finished || !"FINISHED".equals(completionState)) {
+        if (!lifecycle.isFinished()
+                || !"FINISHED".equals(lifecycle.getCompletionState())) {
             return "session 尚未正常结束";
         }
-        if (!"OK".equals(integrityState)) {
-            return "session 完整性异常: " + lastErrorCode;
+        if (!"OK".equals(lifecycle.getIntegrityState())) {
+            return "session 完整性异常: " + lifecycle.getLastErrorCode();
         }
         if (trackPoints.isEmpty()) {
             return "没有正式 TrackPoint";
@@ -735,11 +629,11 @@ public class BasicTrackSession implements Closeable {
     }
 
     public String getIntegrityState() {
-        return integrityState;
+        return lifecycle.getIntegrityState();
     }
 
     public String getCompletionState() {
-        return completionState;
+        return lifecycle.getCompletionState();
     }
 
     public String getSessionId() {
@@ -767,11 +661,11 @@ public class BasicTrackSession implements Closeable {
     }
 
     public long getLastEventSeq() {
-        return lastEventSeq;
+        return journalWriter.getLastEventSeq();
     }
 
     public long getLastUpdatedWallTimeMillis() {
-        return lastUpdatedWallTimeMillis;
+        return journalWriter.getLastUpdatedWallTimeMillis();
     }
 
     public String getLastDecisionReason() {
@@ -791,19 +685,19 @@ public class BasicTrackSession implements Closeable {
     }
 
     public int getStationaryKeepaliveCount() {
-        return stationaryKeepaliveCount;
+        return stats.getStationaryKeepaliveCount();
     }
 
     public int getStationaryJitterCount() {
-        return stationaryJitterCount;
+        return stats.getStationaryJitterCount();
     }
 
     public double getTotalDistanceMeters() {
-        return totalDistanceMeters;
+        return stats.getTotalDistanceMeters();
     }
 
     public double getMovingTimeSeconds() {
-        return movingTimeSeconds;
+        return stats.getMovingTimeSeconds();
     }
 
     public List<String> getRecentSummaries() {
@@ -832,8 +726,7 @@ public class BasicTrackSession implements Closeable {
 
     private void appendDiagnostic(JSONObject event, long eventElapsedRealtimeNanos)
             throws IOException, JSONException {
-        lastEventSeq = logger.append(event, sessionId, eventElapsedRealtimeNanos);
-        lastUpdatedWallTimeMillis = System.currentTimeMillis();
+        journalWriter.appendDiagnostic(event, sessionId, eventElapsedRealtimeNanos);
     }
 
     private String trustedGpxReferenceError() {
@@ -841,10 +734,7 @@ public class BasicTrackSession implements Closeable {
     }
 
     private void markIntegrityError(String errorCode, Exception e) {
-        lastErrorCode = errorCode;
-        integrityState = "ERROR";
-        completionState = "ERROR";
-        active = false;
+        lifecycle.markIntegrityError(errorCode);
         addRecentSummary("记录完整性异常: " + errorCode);
         try {
             writeSessionJson();
@@ -854,82 +744,13 @@ public class BasicTrackSession implements Closeable {
     }
 
     private void closeLoggerQuietly() {
-        if (logger == null) {
-            return;
-        }
-        try {
-            logger.close();
-        } catch (IOException ignored) {
-            // Best effort.
-        }
-        logger = null;
+        journalWriter.closeQuietly();
     }
 
     private void addRecentSummary(String line) {
         recentSummaries.add(line);
         while (recentSummaries.size() > RECENT_SUMMARY_LIMIT) {
             recentSummaries.remove(0);
-        }
-    }
-
-    private void rememberGnssSnapshot(GnssQualitySnapshot snapshot) {
-        if (snapshot == null) {
-            return;
-        }
-        recentGnssSnapshots.add(snapshot);
-        long cutoff = snapshot.receivedElapsedRealtimeNanos - GNSS_SNAPSHOT_RETENTION_NANOS;
-        while (!recentGnssSnapshots.isEmpty()
-                && (recentGnssSnapshots.size() > GNSS_SNAPSHOT_RETENTION_COUNT
-                || recentGnssSnapshots.get(0).receivedElapsedRealtimeNanos < cutoff)) {
-            recentGnssSnapshots.remove(0);
-        }
-    }
-
-    private GnssSnapshotMatch matchGnssSnapshot(long locationElapsedRealtimeNanos) {
-        if (locationElapsedRealtimeNanos <= 0L || recentGnssSnapshots.isEmpty()) {
-            return GnssSnapshotMatch.stale();
-        }
-        GnssQualitySnapshot bestPast = null;
-        long bestPastAge = Long.MAX_VALUE;
-        GnssQualitySnapshot bestFuture = null;
-        long bestFutureAge = Long.MAX_VALUE;
-        for (GnssQualitySnapshot snapshot : recentGnssSnapshots) {
-            long delta = locationElapsedRealtimeNanos - snapshot.receivedElapsedRealtimeNanos;
-            if (delta >= 0L && delta <= GNSS_SNAPSHOT_MATCH_WINDOW_NANOS
-                    && delta < bestPastAge) {
-                bestPast = snapshot;
-                bestPastAge = delta;
-            } else if (delta < 0L && -delta <= GNSS_SNAPSHOT_MATCH_WINDOW_NANOS
-                    && -delta < bestFutureAge) {
-                bestFuture = snapshot;
-                bestFutureAge = -delta;
-            }
-        }
-        if (bestPast != null) {
-            return new GnssSnapshotMatch(bestPast.snapshotId, false, false, bestPastAge);
-        }
-        if (bestFuture != null) {
-            return new GnssSnapshotMatch(bestFuture.snapshotId, true, false, bestFutureAge);
-        }
-        return GnssSnapshotMatch.stale();
-    }
-
-    private static class GnssSnapshotMatch {
-        final Long snapshotId;
-        final boolean matchedFromFuture;
-        final boolean stale;
-        final long snapshotAgeNanos;
-
-        GnssSnapshotMatch(Long snapshotId, boolean matchedFromFuture,
-                          boolean stale, long snapshotAgeNanos) {
-            this.snapshotId = snapshotId;
-            this.matchedFromFuture = matchedFromFuture;
-            this.stale = stale;
-            this.snapshotAgeNanos = snapshotAgeNanos;
-        }
-
-        static GnssSnapshotMatch stale() {
-            return new GnssSnapshotMatch(null, false, true, -1L);
         }
     }
 

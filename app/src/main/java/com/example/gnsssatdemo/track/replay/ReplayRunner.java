@@ -3,8 +3,9 @@ package com.example.gnsssatdemo.track.replay;
 import android.location.LocationManager;
 
 import com.example.gnsssatdemo.track.engine.LocationValidator;
-import com.example.gnsssatdemo.track.engine.TrackDecisionEngine;
+import com.example.gnsssatdemo.track.engine.TrackDecisionCoordinator;
 import com.example.gnsssatdemo.track.engine.TrackDecisionResult;
+import com.example.gnsssatdemo.track.engine.TrackStrategyConfig;
 import com.example.gnsssatdemo.track.model.RawPoint;
 import com.example.gnsssatdemo.track.model.TrackPoint;
 import com.example.gnsssatdemo.track.model.ValidationResult;
@@ -20,8 +21,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class ReplayRunner {
-    private final LocationValidator validator = new LocationValidator();
-    private final TrackDecisionEngine decisionEngine = new TrackDecisionEngine();
+    private final TrackStrategyConfig strategyConfig = TrackStrategyConfig.defaultStage1();
+    private final LocationValidator validator = new LocationValidator(strategyConfig);
 
     public ReplayReport run(InputStream inputStream) throws IOException {
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
@@ -42,10 +43,7 @@ public class ReplayRunner {
         long segmentId = 1L;
         long lastStationaryKeepaliveElapsedRealtimeNanos = 0L;
         TrackPoint previousTrackPoint = null;
-        boolean transportMode = false;
-        RawPoint lastTransportRawPoint = null;
-        RawPoint transportRecoveryCandidateRawPoint = null;
-        long transportRecoveryCandidateStartElapsedRealtimeNanos = 0L;
+        TrackDecisionCoordinator decisionCoordinator = new TrackDecisionCoordinator(strategyConfig);
         List<ReplayDecision> decisions = new ArrayList<>();
 
         String[] lines = jsonl.split("\\r?\\n");
@@ -88,21 +86,9 @@ public class ReplayRunner {
                     actualResult = "reject";
                     actualReason = validationResult.rejectReason;
                 } else {
-                    if (transportMode) {
-                        TransportReplayDecision transportDecision = decideWhileInTransportMode(
-                                lastTransportRawPoint, transportRecoveryCandidateRawPoint,
-                                transportRecoveryCandidateStartElapsedRealtimeNanos, rawPoint,
-                                lastStationaryKeepaliveElapsedRealtimeNanos);
-                        outcome = transportDecision.outcome;
-                        transportRecoveryCandidateRawPoint =
-                                transportDecision.transportRecoveryCandidateRawPoint;
-                        transportRecoveryCandidateStartElapsedRealtimeNanos =
-                                transportDecision.transportRecoveryCandidateStartElapsedRealtimeNanos;
-                    } else {
-                        outcome = decisionEngine.decide(rawPoint, previousTrackPoint,
-                                lastStationaryKeepaliveElapsedRealtimeNanos,
-                                forcedWeakFirstFixEnabled);
-                    }
+                    outcome = decisionCoordinator.decide(rawPoint, previousTrackPoint,
+                            lastStationaryKeepaliveElapsedRealtimeNanos,
+                            forcedWeakFirstFixEnabled).outcome;
                     actualResult = outcome.result;
                     actualReason = outcome.reason;
                 }
@@ -118,19 +104,6 @@ public class ReplayRunner {
                         previousTrackPoint = new TrackPoint(++trackPointSeq, decisionSeq, segmentId,
                                 rawPoint, outcome.result, outcome.reason,
                                 outcome.distanceDeltaMeters, outcome.movingTimeDeltaSeconds);
-                    }
-                    if ("transport_suspected".equals(outcome.reason)) {
-                        transportMode = true;
-                        lastTransportRawPoint = rawPoint;
-                        transportRecoveryCandidateRawPoint = null;
-                        transportRecoveryCandidateStartElapsedRealtimeNanos = 0L;
-                    } else if ("transport_recovery".equals(outcome.reason)) {
-                        transportMode = false;
-                        lastTransportRawPoint = null;
-                        transportRecoveryCandidateRawPoint = null;
-                        transportRecoveryCandidateStartElapsedRealtimeNanos = 0L;
-                    } else if (transportMode && "transport_confirmed".equals(outcome.reason)) {
-                        lastTransportRawPoint = rawPoint;
                     }
                 }
 
@@ -161,60 +134,6 @@ public class ReplayRunner {
                 hasElapsedRealtimeNanos, event.optLong("elapsedRealtimeNanos", 0L),
                 event.optBoolean("mock", false),
                 event.has("sourceGnssSnapshotId") ? event.optLong("sourceGnssSnapshotId") : null);
-    }
-
-    private TransportReplayDecision decideWhileInTransportMode(
-            RawPoint lastTransportRawPoint,
-            RawPoint transportRecoveryCandidateRawPoint,
-            long transportRecoveryCandidateStartElapsedRealtimeNanos,
-            RawPoint rawPoint,
-            long lastStationaryKeepaliveElapsedRealtimeNanos) {
-        if (lastTransportRawPoint == null) {
-            return new TransportReplayDecision(transportConfirmed(
-                    lastStationaryKeepaliveElapsedRealtimeNanos), null, 0L);
-        }
-        if (!decisionEngine.isTransportRecoveryCandidate(lastTransportRawPoint, rawPoint)) {
-            return new TransportReplayDecision(transportConfirmed(
-                    lastStationaryKeepaliveElapsedRealtimeNanos), null, 0L);
-        }
-        RawPoint candidateRawPoint = transportRecoveryCandidateRawPoint;
-        long candidateStartNanos = transportRecoveryCandidateStartElapsedRealtimeNanos;
-        if (candidateRawPoint == null) {
-            candidateRawPoint = lastTransportRawPoint;
-            candidateStartNanos = lastTransportRawPoint.elapsedRealtimeNanos;
-        }
-        long stableNanos = rawPoint.elapsedRealtimeNanos - candidateStartNanos;
-        double stableDistanceMeters = decisionEngine.rawDistanceMeters(candidateRawPoint, rawPoint);
-        if (stableNanos >= TrackDecisionEngine.TRANSPORT_RECOVERY_STABLE_NANOS
-                && stableDistanceMeters >= TrackDecisionEngine.TRANSPORT_RECOVERY_MIN_DISTANCE_METERS) {
-            return new TransportReplayDecision(new TrackDecisionResult(
-                    "accept", "transport_recovery", 0.0, 0.0,
-                    lastStationaryKeepaliveElapsedRealtimeNanos, 0, 0, true),
-                    candidateRawPoint, candidateStartNanos);
-        }
-        return new TransportReplayDecision(transportConfirmed(
-                lastStationaryKeepaliveElapsedRealtimeNanos), candidateRawPoint, candidateStartNanos);
-    }
-
-    private TrackDecisionResult transportConfirmed(long lastStationaryKeepaliveElapsedRealtimeNanos) {
-        return new TrackDecisionResult("reject", "transport_confirmed",
-                0.0, 0.0, lastStationaryKeepaliveElapsedRealtimeNanos,
-                0, 0, false);
-    }
-
-    private static class TransportReplayDecision {
-        final TrackDecisionResult outcome;
-        final RawPoint transportRecoveryCandidateRawPoint;
-        final long transportRecoveryCandidateStartElapsedRealtimeNanos;
-
-        TransportReplayDecision(TrackDecisionResult outcome,
-                                RawPoint transportRecoveryCandidateRawPoint,
-                                long transportRecoveryCandidateStartElapsedRealtimeNanos) {
-            this.outcome = outcome;
-            this.transportRecoveryCandidateRawPoint = transportRecoveryCandidateRawPoint;
-            this.transportRecoveryCandidateStartElapsedRealtimeNanos =
-                    transportRecoveryCandidateStartElapsedRealtimeNanos;
-        }
     }
 
     private String optionalString(JSONObject event, String key) {

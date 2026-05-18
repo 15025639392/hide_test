@@ -7,10 +7,8 @@ import android.app.Dialog;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -37,7 +35,6 @@ import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
-import android.util.LruCache;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.VelocityTracker;
@@ -61,8 +58,6 @@ import com.example.gnsssatdemo.track.export.HikingSampleReportGenerator;
 import com.example.gnsssatdemo.track.export.SessionFileStore;
 import com.example.gnsssatdemo.track.export.SessionManifest;
 import com.example.gnsssatdemo.track.export.SessionManifestReader;
-import com.example.gnsssatdemo.track.export.SessionScanResult;
-import com.example.gnsssatdemo.track.export.SessionScanner;
 import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
 import com.example.gnsssatdemo.track.model.ReferenceTrackPoint;
 import com.example.gnsssatdemo.track.model.TrackPoint;
@@ -76,8 +71,6 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.text.DecimalFormat;
 import java.text.SimpleDateFormat;
@@ -85,15 +78,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
-import java.util.HashSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.RejectedExecutionException;
 
 import javax.xml.parsers.ParserConfigurationException;
 
@@ -110,33 +98,29 @@ public class MainActivity extends Activity {
     private static final double DEFAULT_MAP_CENTER_LONGITUDE = 106.49655175d;
     private static final long UI_RENDER_MIN_INTERVAL_MILLIS = 250L;
     private static final long SATELLITE_TILE_INVALIDATE_COALESCE_MILLIS = 250L;
-    private static final int SATELLITE_TILE_MEMORY_CACHE_KB = 128 * 1024;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final DecimalFormat one = new DecimalFormat("0.0");
     private final DecimalFormat three = new DecimalFormat("0.000");
     private final SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss", Locale.US);
     private final SimpleDateFormat dateTimeFormat = new SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA);
-    private final LruCache<String, Bitmap> satelliteTileCache =
-            new LruCache<String, Bitmap>(SATELLITE_TILE_MEMORY_CACHE_KB) {
-                @Override
-                protected int sizeOf(String key, Bitmap value) {
-                    return Math.max(1, value.getByteCount() / 1024);
-                }
-            };
-    private final Set<String> loadingSatelliteTileKeys = new HashSet<>();
-    private final Map<String, Long> failedSatelliteTileRetryAfterMillis = new HashMap<>();
-    private final ExecutorService satelliteTileExecutor = Executors.newFixedThreadPool(3);
+    private final GnssQualitySnapshotFactory gnssQualitySnapshotFactory =
+            new GnssQualitySnapshotFactory();
     private boolean satelliteMapInvalidateScheduled;
 
     private LocationManager locationManager;
     private SensorManager sensorManager;
     private Sensor rotationVectorSensor;
+    private RecordingServiceController recordingServiceController;
+    private HistorySessionController historySessionController;
+    private SatelliteTileLoader satelliteTileLoader;
+    private final RecordingStatusMapper recordingStatusMapper = new RecordingStatusMapper();
     private TextView status;
     private LinearLayout noticeCard;
     private TextView noticeText;
     private Button recordButton;
     private Button importReferenceButton;
+    private Button locateButton;
     private LinearLayout controlsOverlay;
     private View recordOverlay;
     private LinearLayout historyActionsContainer;
@@ -293,46 +277,27 @@ public class MainActivity extends Activity {
     private final BroadcastReceiver foregroundServiceStatusReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            if (!RecordingForegroundService.ACTION_STATUS.equals(intent.getAction())) {
+            if (!recordingStatusMapper.isStatusIntent(intent)) {
                 return;
             }
-            foregroundServiceRecording = intent.getBooleanExtra(
-                    RecordingForegroundService.EXTRA_ACTIVE, false);
-            foregroundServiceSessionId = intent.getStringExtra(
-                    RecordingForegroundService.EXTRA_SESSION_ID);
-            if (foregroundServiceSessionId == null) {
-                foregroundServiceSessionId = "";
-            }
-            foregroundServiceRawPointCount = intent.getLongExtra(
-                    RecordingForegroundService.EXTRA_RAW_POINT_COUNT, 0L);
-            foregroundServiceTrackPointCount = intent.getIntExtra(
-                    RecordingForegroundService.EXTRA_TRACK_POINT_COUNT, 0);
-            foregroundServiceTotalDistanceMeters = intent.getDoubleExtra(
-                    RecordingForegroundService.EXTRA_TOTAL_DISTANCE_METERS, 0.0);
-            foregroundServiceTotalAscentMeters = intent.getDoubleExtra(
-                    RecordingForegroundService.EXTRA_TOTAL_ASCENT_METERS, -1.0);
-            foregroundServiceStatusText = intent.getStringExtra(
-                    RecordingForegroundService.EXTRA_STATUS_TEXT);
-            if (foregroundServiceStatusText == null) {
-                foregroundServiceStatusText = "";
-            }
-            foregroundServiceHasLocation = intent.getBooleanExtra(
-                    RecordingForegroundService.EXTRA_HAS_LOCATION, false);
+            RecordingServiceStatus serviceStatus = recordingStatusMapper.fromIntent(intent);
+            foregroundServiceRecording = serviceStatus.active;
+            foregroundServiceSessionId = serviceStatus.sessionId;
+            foregroundServiceRawPointCount = serviceStatus.rawPointCount;
+            foregroundServiceTrackPointCount = serviceStatus.trackPointCount;
+            foregroundServiceTotalDistanceMeters = serviceStatus.totalDistanceMeters;
+            foregroundServiceTotalAscentMeters = serviceStatus.totalAscentMeters;
+            foregroundServiceStatusText = serviceStatus.statusText;
+            foregroundServiceHasLocation = serviceStatus.hasLocation;
             if (foregroundServiceHasLocation) {
-                foregroundServiceLatitude = intent.getDoubleExtra(
-                        RecordingForegroundService.EXTRA_LATITUDE, 0.0);
-                foregroundServiceLongitude = intent.getDoubleExtra(
-                        RecordingForegroundService.EXTRA_LONGITUDE, 0.0);
-                foregroundServiceAccuracyMeters = intent.getFloatExtra(
-                        RecordingForegroundService.EXTRA_ACCURACY_METERS, -1f);
-                foregroundServiceHasBearing = intent.getBooleanExtra(
-                        RecordingForegroundService.EXTRA_HAS_BEARING, false);
-                foregroundServiceBearingDegrees = intent.getFloatExtra(
-                        RecordingForegroundService.EXTRA_BEARING_DEGREES, -1f);
+                foregroundServiceLatitude = serviceStatus.latitude;
+                foregroundServiceLongitude = serviceStatus.longitude;
+                foregroundServiceAccuracyMeters = serviceStatus.accuracyMeters;
+                foregroundServiceHasBearing = serviceStatus.hasBearing;
+                foregroundServiceBearingDegrees = serviceStatus.bearingDegrees;
                 appendForegroundServiceLiveRawPoint();
             }
-            updateForegroundServiceTrackPoints(intent.getStringExtra(
-                    RecordingForegroundService.EXTRA_TRACK_POLYLINE));
+            updateForegroundServiceTrackPoints(serviceStatus.trackPolyline);
             updateRecordButtonState();
             if (!foregroundServiceRecording) {
                 scanExistingSessions();
@@ -348,6 +313,10 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
         sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+        recordingServiceController = new RecordingServiceController(this);
+        historySessionController = new HistorySessionController(this);
+        satelliteTileLoader = new SatelliteTileLoader(this,
+                () -> mainHandler.post(this::scheduleSatelliteMapViewsInvalidate));
         if (sensorManager != null) {
             rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
         }
@@ -414,8 +383,8 @@ public class MainActivity extends Activity {
         if (trackSession != null) {
             trackSession.close();
         }
-        unregisterReceiver(foregroundServiceStatusReceiver);
-        satelliteTileExecutor.shutdownNow();
+        recordingServiceController.unregisterStatusReceiver(foregroundServiceStatusReceiver);
+        satelliteTileLoader.shutdownNow();
         super.onDestroy();
     }
 
@@ -449,18 +418,11 @@ public class MainActivity extends Activity {
     }
 
     private void registerForegroundServiceStatusReceiver() {
-        IntentFilter filter = new IntentFilter(RecordingForegroundService.ACTION_STATUS);
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(foregroundServiceStatusReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            registerReceiver(foregroundServiceStatusReceiver, filter);
-        }
+        recordingServiceController.registerStatusReceiver(foregroundServiceStatusReceiver);
     }
 
     private void queryForegroundServiceStatus() {
-        Intent intent = new Intent(RecordingForegroundService.ACTION_QUERY_STATUS);
-        intent.setPackage(getPackageName());
-        sendBroadcast(intent);
+        recordingServiceController.queryStatus();
     }
 
     private void updateForegroundServiceTrackPoints(String polyline) {
@@ -565,6 +527,15 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams importParams = new LinearLayout.LayoutParams(dp(76), dp(38));
         controlsOverlay.addView(importReferenceButton, importParams);
 
+        locateButton = new Button(this);
+        locateButton.setText("定位");
+        locateButton.setContentDescription("定位到当前位置");
+        styleFloatingSecondaryButton(locateButton);
+        locateButton.setOnClickListener(v -> centerMapOnCurrentLocation());
+        LinearLayout.LayoutParams locateParams = new LinearLayout.LayoutParams(dp(52), dp(38));
+        locateParams.setMargins(dp(6), 0, 0, 0);
+        controlsOverlay.addView(locateButton, locateParams);
+
         Button historyButton = new Button(this);
         historyButton.setText("历史");
         historyButton.setContentDescription("历史记录");
@@ -628,6 +599,12 @@ public class MainActivity extends Activity {
         }
         if (recordOverlay != null) {
             recordOverlay.setVisibility(controlsVisible ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    private void centerMapOnCurrentLocation() {
+        if (mapView == null || !mapView.centerOnCurrentLocation()) {
+            setStatus("还没有可定位的当前位置");
         }
     }
 
@@ -1394,14 +1371,7 @@ public class MainActivity extends Activity {
         }
         requestNotificationPermissionIfUseful();
         boolean forceWeakFirstFix = false;
-        Intent intent = new Intent(this, RecordingForegroundService.class);
-        intent.setAction(RecordingForegroundService.ACTION_START);
-        intent.putExtra(RecordingForegroundService.EXTRA_FORCE_WEAK_FIRST_FIX, forceWeakFirstFix);
-        if (Build.VERSION.SDK_INT >= 26) {
-            startForegroundService(intent);
-        } else {
-            startService(intent);
-        }
+        recordingServiceController.startRecording(forceWeakFirstFix);
         foregroundServiceRecording = true;
         updateRecordButtonState();
         updateHistoryActionRows();
@@ -1410,9 +1380,7 @@ public class MainActivity extends Activity {
     }
 
     private void stopForegroundTrackRecording() {
-        Intent intent = new Intent(this, RecordingForegroundService.class);
-        intent.setAction(RecordingForegroundService.ACTION_STOP);
-        startService(intent);
+        recordingServiceController.stopRecording();
         foregroundServiceRecording = false;
         updateRecordButtonState();
         setStatus("已请求结束记录；如刚结束，请稍后刷新或重新打开查看最新 session。");
@@ -1424,47 +1392,17 @@ public class MainActivity extends Activity {
     }
 
     private void scanExistingSessions() {
-        try {
-            SessionFileStore fileStore = new SessionFileStore(this);
-            SessionScanResult result = new SessionScanner(fileStore).scan();
-            lastScanSessionCount = result.manifests.size();
-            lastScanCleanedTmpFileCount = result.cleanedTmpFileCount;
-            invalidateHistoricalMapCache();
-            recentManifests.clear();
-            recentManifests.addAll(result.manifests);
-            reconcileSelectedHistoricalSession();
-            lastScanError = "";
-            updateHistoricalActionButtons();
-            updateHistoryActionRows();
-        } catch (IOException e) {
-            latestManifest = null;
-            recentManifests.clear();
-            selectedHistoricalSessionId = "";
-            invalidateHistoricalMapCache();
-            lastScanSessionCount = 0;
-            lastScanCleanedTmpFileCount = 0;
-            lastScanError = e.getMessage();
-            updateHistoricalActionButtons();
-            updateHistoryActionRows();
-        }
-    }
-
-    private void reconcileSelectedHistoricalSession() {
-        latestManifest = null;
-        if (!selectedHistoricalSessionId.isEmpty()) {
-            for (SessionManifest manifest : recentManifests) {
-                if (selectedHistoricalSessionId.equals(manifest.sessionId)) {
-                    latestManifest = manifest;
-                    return;
-                }
-            }
-        }
-        if (recentManifests.isEmpty()) {
-            selectedHistoricalSessionId = "";
-            return;
-        }
-        latestManifest = recentManifests.get(0);
-        selectedHistoricalSessionId = latestManifest.sessionId;
+        HistorySessionState state = historySessionController.scan(selectedHistoricalSessionId);
+        latestManifest = state.latestManifest;
+        selectedHistoricalSessionId = state.selectedSessionId;
+        lastScanSessionCount = state.sessionCount();
+        lastScanCleanedTmpFileCount = state.cleanedTmpFileCount;
+        lastScanError = state.error;
+        invalidateHistoricalMapCache();
+        recentManifests.clear();
+        recentManifests.addAll(state.manifests);
+        updateHistoricalActionButtons();
+        updateHistoryActionRows();
     }
 
     private void updateHistoricalActionButtons() {
@@ -2171,51 +2109,9 @@ public class MainActivity extends Activity {
         if (trackSession == null || !trackSession.isActive() || gnssStatus == null) {
             return;
         }
-        int visibleTotal = gnssStatus.getSatelliteCount();
-        int usedTotal = 0;
-        int gpsUsed = 0;
-        int beidouUsed = 0;
-        int galileoUsed = 0;
-        int glonassUsed = 0;
-        int qzssUsed = 0;
-        float cn0Total = 0f;
-        for (int i = 0; i < gnssStatus.getSatelliteCount(); i++) {
-            if (!gnssStatus.usedInFix(i)) {
-                continue;
-            }
-            usedTotal++;
-            cn0Total += gnssStatus.getCn0DbHz(i);
-            switch (gnssStatus.getConstellationType(i)) {
-                case GnssStatus.CONSTELLATION_GPS:
-                    gpsUsed++;
-                    break;
-                case GnssStatus.CONSTELLATION_BEIDOU:
-                    beidouUsed++;
-                    break;
-                case GnssStatus.CONSTELLATION_GALILEO:
-                    galileoUsed++;
-                    break;
-                case GnssStatus.CONSTELLATION_GLONASS:
-                    glonassUsed++;
-                    break;
-                case GnssStatus.CONSTELLATION_QZSS:
-                    qzssUsed++;
-                    break;
-                default:
-                    break;
-            }
-        }
-        float usedAvgCn0 = usedTotal == 0 ? 0f : cn0Total / usedTotal;
-        GnssQualitySnapshot snapshot = trackSession.nextGnssSnapshot(
-                SystemClock.elapsedRealtimeNanos(),
-                visibleTotal,
-                usedTotal,
-                usedAvgCn0,
-                gpsUsed,
-                beidouUsed,
-                galileoUsed,
-                glonassUsed,
-                qzssUsed);
+        GnssQualitySnapshot snapshot = gnssQualitySnapshotFactory.fromStatus(
+                trackSession.nextGnssSnapshotId(), SystemClock.elapsedRealtimeNanos(),
+                gnssStatus);
         trackSession.onGnssSnapshot(snapshot);
     }
 
@@ -2245,89 +2141,43 @@ public class MainActivity extends Activity {
 
     private void updateMapPreview() {
         List<TrackPoint> points = mapTrackPoints();
-        TrackPoint trustedPoint = lastTrustedMapTrackPoint(points);
-        MapPoint currentPoint = currentMapPoint(trustedPoint);
-        float accuracyMeters = currentAccuracyMeters(trustedPoint);
-        float heading = effectiveHeadingDegrees(points, trustedPoint);
-        double totalDistanceMeters = currentTotalDistanceMeters(points);
-        double totalAscentMeters = currentTotalAscentMeters(points);
+        TrackMapState mapState = TrackMapState.build(points, mapFallbackState());
         if (mapView != null) {
-            mapView.setMapState(points, referenceTrackPoints, currentPoint, accuracyMeters,
-                    heading, totalDistanceMeters, totalAscentMeters);
+            mapView.setMapState(mapState.points, referenceTrackPoints, mapState.currentPoint,
+                    mapState.accuracyMeters, mapState.headingDegrees,
+                    mapState.totalDistanceMeters, mapState.totalAscentMeters);
         }
     }
 
-    private double currentTotalDistanceMeters(List<TrackPoint> points) {
-        if (foregroundServiceRecording) {
-            return foregroundServiceTotalDistanceMeters;
+    private TrackMapState.Fallback mapFallbackState() {
+        TrackMapState.Fallback fallback = new TrackMapState.Fallback();
+        fallback.foregroundRecording = foregroundServiceRecording;
+        fallback.foregroundTotalDistanceMeters = foregroundServiceTotalDistanceMeters;
+        fallback.foregroundTotalAscentMeters = foregroundServiceTotalAscentMeters;
+        fallback.foregroundHasLocation = foregroundServiceHasLocation;
+        fallback.foregroundLatitude = foregroundServiceLatitude;
+        fallback.foregroundLongitude = foregroundServiceLongitude;
+        fallback.foregroundAccuracyMeters = foregroundServiceAccuracyMeters;
+        fallback.foregroundHasBearing = foregroundServiceHasBearing;
+        fallback.foregroundBearingDegrees = foregroundServiceBearingDegrees;
+        fallback.compassHeadingDegrees = headingDegrees;
+        if (lastLocation != null) {
+            fallback.hasLastLocation = true;
+            fallback.lastLatitude = lastLocation.getLatitude();
+            fallback.lastLongitude = lastLocation.getLongitude();
+            fallback.lastAccuracyMeters = lastLocation.getAccuracy();
+            fallback.lastHasBearing = lastLocation.hasBearing();
+            fallback.lastBearingDegrees = lastLocation.hasBearing() ? lastLocation.getBearing() : -1f;
         }
         if (trackSession != null && trackSession.getSessionId() != null) {
-            return trackSession.getTotalDistanceMeters();
+            fallback.hasSessionTotalDistance = true;
+            fallback.sessionTotalDistanceMeters = trackSession.getTotalDistanceMeters();
         }
         if (latestManifest != null) {
-            return latestManifest.totalDistanceMeters;
+            fallback.hasManifestTotalDistance = true;
+            fallback.manifestTotalDistanceMeters = latestManifest.totalDistanceMeters;
         }
-        double total = 0.0;
-        for (TrackPoint point : points) {
-            if (!isWeakMapPoint(point) && !isTransportMapPoint(point)) {
-                total += point.distanceDeltaMeters;
-            }
-        }
-        return total;
-    }
-
-    private double currentTotalAscentMeters(List<TrackPoint> points) {
-        if (foregroundServiceRecording && foregroundServiceTotalAscentMeters >= 0.0) {
-            return foregroundServiceTotalAscentMeters;
-        }
-        return totalAscentMeters(points);
-    }
-
-    private double totalAscentMeters(List<TrackPoint> points) {
-        double total = 0.0;
-        Double previousAltitude = null;
-        boolean sawTrustedAltitude = false;
-        for (TrackPoint point : points) {
-            if (isWeakMapPoint(point)) {
-                continue;
-            }
-            if (isTransportMapPoint(point)) {
-                previousAltitude = null;
-                continue;
-            }
-            if (isAscentAnchorPoint(point)) {
-                previousAltitude = point.hasAltitude ? point.altitude : null;
-                sawTrustedAltitude = sawTrustedAltitude || point.hasAltitude;
-                continue;
-            }
-            if (!point.hasAltitude) {
-                continue;
-            }
-            if (previousAltitude != null) {
-                double delta = point.altitude - previousAltitude;
-                if (delta > 0.0) {
-                    total += delta;
-                }
-            }
-            sawTrustedAltitude = true;
-            previousAltitude = point.altitude;
-        }
-        return sawTrustedAltitude ? total : -1.0;
-    }
-
-    private boolean isWeakMapPoint(TrackPoint point) {
-        return "weak".equals(point.decisionResult);
-    }
-
-    private boolean isTransportMapPoint(TrackPoint point) {
-        return "transport".equals(point.decisionResult)
-                || "transport_suspected".equals(point.decisionReason)
-                || "transport_confirmed".equals(point.decisionReason);
-    }
-
-    private boolean isAscentAnchorPoint(TrackPoint point) {
-        return "gap_recovery".equals(point.decisionReason)
-                || "transport_recovery".equals(point.decisionReason);
+        return fallback;
     }
 
     private void scheduleSatelliteMapViewsInvalidate() {
@@ -2415,115 +2265,6 @@ public class MainActivity extends Activity {
         });
     }
 
-    private TrackPoint lastTrustedMapTrackPoint(List<TrackPoint> points) {
-        for (int i = points.size() - 1; i >= 0; i--) {
-            TrackPoint point = points.get(i);
-            if (!isWeakMapPoint(point) && !isTransportMapPoint(point)) {
-                return point;
-            }
-        }
-        return null;
-    }
-
-    private MapPoint currentMapPoint(TrackPoint trustedPoint) {
-        if (trustedPoint != null) {
-            return new MapPoint(trustedPoint.latitude, trustedPoint.longitude);
-        }
-        if (foregroundServiceRecording && foregroundServiceHasLocation) {
-            return new MapPoint(foregroundServiceLatitude, foregroundServiceLongitude);
-        }
-        if (lastLocation != null) {
-            return new MapPoint(lastLocation.getLatitude(), lastLocation.getLongitude());
-        }
-        return null;
-    }
-
-    private float currentAccuracyMeters(TrackPoint trustedPoint) {
-        if (trustedPoint != null) {
-            return Math.max(0f, trustedPoint.accuracyMeters);
-        }
-        if (foregroundServiceRecording && foregroundServiceHasLocation) {
-            return Math.max(0f, foregroundServiceAccuracyMeters);
-        }
-        if (lastLocation != null) {
-            return lastLocation.getAccuracy();
-        }
-        return 0f;
-    }
-
-    private float effectiveHeadingDegrees(List<TrackPoint> points, TrackPoint trustedPoint) {
-        if (trustedPoint != null) {
-            if (trustedPoint.hasBearing) {
-                return trustedPoint.bearingDegrees;
-            }
-            float trackHeading = trustedTrackHeadingDegrees(points, trustedPoint);
-            if (!Float.isNaN(trackHeading)) {
-                return trackHeading;
-            }
-        }
-        if (foregroundServiceRecording && foregroundServiceHasBearing) {
-            return foregroundServiceBearingDegrees;
-        }
-        if (lastLocation != null && lastLocation.hasBearing()) {
-            return lastLocation.getBearing();
-        }
-        if (!Float.isNaN(headingDegrees)) {
-            return headingDegrees;
-        }
-        return Float.NaN;
-    }
-
-    private float trustedTrackHeadingDegrees(List<TrackPoint> points, TrackPoint currentPoint) {
-        if (points == null || currentPoint == null) {
-            return Float.NaN;
-        }
-        TrackPoint previousTrustedPoint = null;
-        for (int i = points.size() - 1; i >= 0; i--) {
-            TrackPoint point = points.get(i);
-            if (point == currentPoint) {
-                continue;
-            }
-            if (isWeakMapPoint(point) || isTransportMapPoint(point)) {
-                continue;
-            }
-            if (point.elapsedRealtimeNanos > currentPoint.elapsedRealtimeNanos) {
-                continue;
-            }
-            previousTrustedPoint = point;
-            break;
-        }
-        if (previousTrustedPoint == null
-                || mapDistanceMeters(previousTrustedPoint, currentPoint) < 1.0d) {
-            return Float.NaN;
-        }
-        return bearingBetweenDegrees(previousTrustedPoint.latitude, previousTrustedPoint.longitude,
-                currentPoint.latitude, currentPoint.longitude);
-    }
-
-    private double mapDistanceMeters(TrackPoint from, TrackPoint to) {
-        double lat1 = Math.toRadians(from.latitude);
-        double lat2 = Math.toRadians(to.latitude);
-        double dLat = lat2 - lat1;
-        double dLng = Math.toRadians(to.longitude - from.longitude);
-        double sinLat = Math.sin(dLat / 2d);
-        double sinLng = Math.sin(dLng / 2d);
-        double a = sinLat * sinLat
-                + Math.cos(lat1) * Math.cos(lat2) * sinLng * sinLng;
-        return 6_371_000d * 2d * Math.atan2(Math.sqrt(a), Math.sqrt(1d - a));
-    }
-
-    private float bearingBetweenDegrees(double fromLatitude, double fromLongitude,
-                                        double toLatitude, double toLongitude) {
-        double lat1 = Math.toRadians(fromLatitude);
-        double lat2 = Math.toRadians(toLatitude);
-        double dLng = Math.toRadians(toLongitude - fromLongitude);
-        double y = Math.sin(dLng) * Math.cos(lat2);
-        double x = Math.cos(lat1) * Math.sin(lat2)
-                - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
-        double bearing = Math.toDegrees(Math.atan2(y, x));
-        return (float) ((bearing + 360d) % 360d);
-    }
-
     private class NativeTrackMapView extends View {
         private static final double MAX_MERCATOR_LATITUDE = 85.05112878d;
         private static final double EARTH_CIRCUMFERENCE_METERS = 40_075_016.686d;
@@ -2539,9 +2280,6 @@ public class MainActivity extends Activity {
         private static final int TAP_SLOP_DP = 8;
         private static final double MIN_FRAME_WORLD_RANGE = 0.000006d;
         private static final int FRAME_PADDING_DP = 2;
-        private static final long FAILED_TILE_RETRY_DELAY_MILLIS = 30_000L;
-        private static final String SATELLITE_TILE_URL =
-                "https://webst%02d.is.autonavi.com/appmaptile?style=6&x=%d&y=%d&z=%d";
 
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path trackPath = new Path();
@@ -2551,7 +2289,6 @@ public class MainActivity extends Activity {
         private final List<TrackPoint> points = new ArrayList<>();
         private final List<ReferenceTrackPoint> referencePoints = new ArrayList<>();
         private final OverScroller mapScroller;
-        private final File satelliteTileDiskCacheDir;
 
         private boolean interactive;
         private boolean frameNextUpdate = true;
@@ -2578,7 +2315,6 @@ public class MainActivity extends Activity {
         NativeTrackMapView(Context context) {
             super(context);
             mapScroller = new OverScroller(context);
-            satelliteTileDiskCacheDir = new File(context.getFilesDir(), "satellite_tile_cache");
             setFocusable(false);
         }
 
@@ -2596,10 +2332,24 @@ public class MainActivity extends Activity {
             panX = 0f;
             panY = 0f;
             stopMapFling();
-            synchronized (failedSatelliteTileRetryAfterMillis) {
-                failedSatelliteTileRetryAfterMillis.clear();
-            }
+            satelliteTileLoader.clearFailures();
             invalidate();
+        }
+
+        boolean centerOnCurrentLocation() {
+            if (currentPoint == null) {
+                return false;
+            }
+            MapPoint displayPoint = toDisplayMapPoint(currentPoint.latitude, currentPoint.longitude);
+            centerX = mercatorX(displayPoint.longitude);
+            centerY = mercatorY(displayPoint.latitude);
+            panX = 0f;
+            panY = 0f;
+            hasFrame = true;
+            frameNextUpdate = false;
+            stopMapFling();
+            invalidate();
+            return true;
         }
 
         void setMapState(List<TrackPoint> nextPoints,
@@ -2805,7 +2555,7 @@ public class MainActivity extends Activity {
                     int wrappedX = wrapTileX(tileX, tileCount);
                     RectF tileRect = tileToScreenRect(tileX, tileY, tileCount);
                     String key = tileZoom + "/" + wrappedX + "/" + tileY;
-                    Bitmap bitmap = satelliteTileCache.get(key);
+                    Bitmap bitmap = satelliteTileLoader.get(key);
                     if (bitmap != null && !bitmap.isRecycled()) {
                         canvas.drawBitmap(bitmap, null, tileRect, paint);
                     } else {
@@ -2833,20 +2583,8 @@ public class MainActivity extends Activity {
                 return;
             }
             Collections.sort(missingTiles, Comparator.comparingDouble(tile -> tile.priority));
-            int activeCount;
-            synchronized (loadingSatelliteTileKeys) {
-                activeCount = loadingSatelliteTileKeys.size();
-            }
-            int remainingCapacity = MAX_ACTIVE_SATELLITE_TILE_REQUESTS - activeCount;
-            if (remainingCapacity <= 0) {
-                return;
-            }
-            int count = Math.min(Math.min(MAX_TILE_REQUESTS_PER_DRAW, remainingCapacity),
-                    missingTiles.size());
-            for (int i = 0; i < count; i++) {
-                SatelliteTileRequest request = missingTiles.get(i);
-                requestSatelliteTile(request.zoom, request.tileX, request.tileY, request.key);
-            }
+            satelliteTileLoader.requestVisibleTiles(missingTiles, MAX_TILE_REQUESTS_PER_DRAW,
+                    MAX_ACTIVE_SATELLITE_TILE_REQUESTS);
         }
 
         private boolean drawParentSatelliteTileFallback(Canvas canvas, int zoom, int tileX,
@@ -2864,7 +2602,7 @@ public class MainActivity extends Activity {
                     continue;
                 }
                 String parentKey = parentZoom + "/" + parentX + "/" + parentY;
-                Bitmap parentBitmap = satelliteTileCache.get(parentKey);
+                Bitmap parentBitmap = satelliteTileLoader.get(parentKey);
                 if (parentBitmap == null || parentBitmap.isRecycled()) {
                     continue;
                 }
@@ -2894,7 +2632,7 @@ public class MainActivity extends Activity {
                 return null;
             }
             String parentKey = parentZoom + "/" + parentX + "/" + parentY;
-            Bitmap parentBitmap = satelliteTileCache.get(parentKey);
+            Bitmap parentBitmap = satelliteTileLoader.get(parentKey);
             if (parentBitmap != null && !parentBitmap.isRecycled()) {
                 return null;
             }
@@ -2947,142 +2685,6 @@ public class MainActivity extends Activity {
         private int wrapTileX(int tileX, int tileCount) {
             int wrapped = tileX % tileCount;
             return wrapped < 0 ? wrapped + tileCount : wrapped;
-        }
-
-        private void requestSatelliteTile(int zoom, int tileX, int tileY, String key) {
-            long now = SystemClock.elapsedRealtime();
-            synchronized (failedSatelliteTileRetryAfterMillis) {
-                Long retryAfter = failedSatelliteTileRetryAfterMillis.get(key);
-                if (retryAfter != null && retryAfter > now) {
-                    return;
-                }
-                if (retryAfter != null) {
-                    failedSatelliteTileRetryAfterMillis.remove(key);
-                }
-            }
-            synchronized (loadingSatelliteTileKeys) {
-                if (loadingSatelliteTileKeys.contains(key)) {
-                    return;
-                }
-                loadingSatelliteTileKeys.add(key);
-            }
-            try {
-                satelliteTileExecutor.execute(() -> {
-                    Bitmap bitmap = null;
-                    try {
-                        bitmap = readSatelliteTileFromDisk(key);
-                        if (bitmap == null) {
-                            bitmap = downloadSatelliteTile(zoom, tileX, tileY);
-                            if (bitmap != null) {
-                                writeSatelliteTileToDisk(key, bitmap);
-                            }
-                        }
-                    } finally {
-                        synchronized (loadingSatelliteTileKeys) {
-                            loadingSatelliteTileKeys.remove(key);
-                        }
-                    }
-                    if (bitmap != null) {
-                        synchronized (failedSatelliteTileRetryAfterMillis) {
-                            failedSatelliteTileRetryAfterMillis.remove(key);
-                        }
-                        satelliteTileCache.put(key, bitmap);
-                        mainHandler.post(MainActivity.this::scheduleSatelliteMapViewsInvalidate);
-                    } else {
-                        synchronized (failedSatelliteTileRetryAfterMillis) {
-                            failedSatelliteTileRetryAfterMillis.put(key,
-                                    SystemClock.elapsedRealtime() + FAILED_TILE_RETRY_DELAY_MILLIS);
-                        }
-                    }
-                });
-            } catch (RejectedExecutionException ignored) {
-                synchronized (loadingSatelliteTileKeys) {
-                    loadingSatelliteTileKeys.remove(key);
-                }
-            }
-        }
-
-        private class SatelliteTileRequest {
-            final int zoom;
-            final int tileX;
-            final int tileY;
-            final String key;
-            final double priority;
-
-            SatelliteTileRequest(int zoom, int tileX, int tileY, String key, double priority) {
-                this.zoom = zoom;
-                this.tileX = tileX;
-                this.tileY = tileY;
-                this.key = key;
-                this.priority = priority;
-            }
-        }
-
-        private Bitmap readSatelliteTileFromDisk(String key) {
-            File tileFile = satelliteTileFile(key);
-            if (!tileFile.isFile()) {
-                return null;
-            }
-            Bitmap bitmap = BitmapFactory.decodeFile(tileFile.getAbsolutePath());
-            if (bitmap == null) {
-                // Drop corrupted partial files so a later online attempt can repair the cache.
-                //noinspection ResultOfMethodCallIgnored
-                tileFile.delete();
-            }
-            return bitmap;
-        }
-
-        private void writeSatelliteTileToDisk(String key, Bitmap bitmap) {
-            File tileFile = satelliteTileFile(key);
-            File parent = tileFile.getParentFile();
-            if (parent == null || (!parent.isDirectory() && !parent.mkdirs())) {
-                return;
-            }
-            File tempFile = new File(parent, tileFile.getName() + "."
-                    + SystemClock.elapsedRealtimeNanos() + ".tmp");
-            try (FileOutputStream output = new FileOutputStream(tempFile)) {
-                if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) {
-                    //noinspection ResultOfMethodCallIgnored
-                    tempFile.delete();
-                    return;
-                }
-            } catch (IOException ignored) {
-                //noinspection ResultOfMethodCallIgnored
-                tempFile.delete();
-                return;
-            }
-            if (!tempFile.renameTo(tileFile)) {
-                //noinspection ResultOfMethodCallIgnored
-                tempFile.delete();
-            }
-        }
-
-        private File satelliteTileFile(String key) {
-            return new File(satelliteTileDiskCacheDir, key + ".png");
-        }
-
-        private Bitmap downloadSatelliteTile(int zoom, int tileX, int tileY) {
-            HttpURLConnection connection = null;
-            try {
-                int server = Math.abs(tileX + tileY) % 4 + 1;
-                URL url = new URL(String.format(Locale.US, SATELLITE_TILE_URL,
-                        server, tileX, tileY, zoom));
-                connection = (HttpURLConnection) url.openConnection();
-                connection.setConnectTimeout(5000);
-                connection.setReadTimeout(8000);
-                connection.setRequestProperty("User-Agent",
-                        "Mozilla/5.0 Android GNSS Satellite Demo");
-                if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
-                    return null;
-                }
-                return BitmapFactory.decodeStream(connection.getInputStream());
-            } catch (IOException ignored) {
-                return null;
-            } finally {
-                if (connection != null) {
-                    connection.disconnect();
-                }
-            }
         }
 
         private void drawReferenceTrack(Canvas canvas) {
@@ -3617,16 +3219,6 @@ public class MainActivity extends Activity {
 
         private float clamp(float value, float min, float max) {
             return Math.max(min, Math.min(max, value));
-        }
-    }
-
-    private static class MapPoint {
-        final double latitude;
-        final double longitude;
-
-        MapPoint(double latitude, double longitude) {
-            this.latitude = latitude;
-            this.longitude = longitude;
         }
     }
 

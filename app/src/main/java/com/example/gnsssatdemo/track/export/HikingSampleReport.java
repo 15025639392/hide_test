@@ -39,6 +39,13 @@ public class HikingSampleReport {
     public final double maxNoLocationTimeoutSeconds;
     public final int gnssSnapshotCount;
     public final int staleGnssRawCount;
+    public final int gnssQualityMetricSnapshotCount;
+    public final double averageUsedAvgCn0;
+    public final double averageAllAvgCn0;
+    public final double averageTop4AvgCn0;
+    public final double averageLowCn0VisibleCount;
+    public final double averageWeakUsedCount;
+    public final int dualFrequencySnapshotCount;
     public final Map<String, Integer> samplingRequestCounts;
     public final Map<String, Double> samplingDurationSeconds;
     public final Map<String, Integer> decisionReasonCounts;
@@ -59,6 +66,10 @@ public class HikingSampleReport {
                               int gapRecoveryCount, int gapRecoveryZeroDeltaCount,
                               int noLocationTimeoutCount, double maxNoLocationTimeoutSeconds,
                               int gnssSnapshotCount, int staleGnssRawCount,
+                              int gnssQualityMetricSnapshotCount,
+                              double averageUsedAvgCn0, double averageAllAvgCn0,
+                              double averageTop4AvgCn0, double averageLowCn0VisibleCount,
+                              double averageWeakUsedCount, int dualFrequencySnapshotCount,
                               Map<String, Integer> samplingRequestCounts,
                               Map<String, Double> samplingDurationSeconds,
                               Map<String, Integer> decisionReasonCounts,
@@ -90,6 +101,13 @@ public class HikingSampleReport {
         this.maxNoLocationTimeoutSeconds = maxNoLocationTimeoutSeconds;
         this.gnssSnapshotCount = gnssSnapshotCount;
         this.staleGnssRawCount = staleGnssRawCount;
+        this.gnssQualityMetricSnapshotCount = gnssQualityMetricSnapshotCount;
+        this.averageUsedAvgCn0 = averageUsedAvgCn0;
+        this.averageAllAvgCn0 = averageAllAvgCn0;
+        this.averageTop4AvgCn0 = averageTop4AvgCn0;
+        this.averageLowCn0VisibleCount = averageLowCn0VisibleCount;
+        this.averageWeakUsedCount = averageWeakUsedCount;
+        this.dualFrequencySnapshotCount = dualFrequencySnapshotCount;
         this.samplingRequestCounts = Collections.unmodifiableMap(samplingRequestCounts);
         this.samplingDurationSeconds = Collections.unmodifiableMap(samplingDurationSeconds);
         this.decisionReasonCounts = Collections.unmodifiableMap(decisionReasonCounts);
@@ -125,6 +143,13 @@ public class HikingSampleReport {
         json.put("maxNoLocationTimeoutSeconds", maxNoLocationTimeoutSeconds);
         json.put("gnssSnapshotCount", gnssSnapshotCount);
         json.put("staleGnssRawCount", staleGnssRawCount);
+        json.put("gnssQualityMetricSnapshotCount", gnssQualityMetricSnapshotCount);
+        json.put("averageUsedAvgCn0", averageUsedAvgCn0);
+        json.put("averageAllAvgCn0", averageAllAvgCn0);
+        json.put("averageTop4AvgCn0", averageTop4AvgCn0);
+        json.put("averageLowCn0VisibleCount", averageLowCn0VisibleCount);
+        json.put("averageWeakUsedCount", averageWeakUsedCount);
+        json.put("dualFrequencySnapshotCount", dualFrequencySnapshotCount);
         json.put("samplingRequestCounts", integerMapToJson(samplingRequestCounts));
         json.put("samplingDurationSeconds", doubleMapToJson(samplingDurationSeconds));
         json.put("decisionReasonCounts", integerMapToJson(decisionReasonCounts));
@@ -166,6 +191,18 @@ public class HikingSampleReport {
                 .append(" 最大无回调=").append(secondsText(maxNoLocationTimeoutSeconds)).append('\n');
         sb.append("- GNSS Snapshot=").append(gnssSnapshotCount)
                 .append(" staleRaw=").append(staleGnssRawCount).append("\n\n");
+        if (gnssQualityMetricSnapshotCount > 0) {
+            sb.append("## GNSS 质量解释\n");
+            sb.append("- 可解释 Snapshot=").append(gnssQualityMetricSnapshotCount)
+                    .append(" 双频 Snapshot=").append(dualFrequencySnapshotCount).append('\n');
+            sb.append("- C/N0 usedAvg=").append(oneDecimal(averageUsedAvgCn0))
+                    .append(" allAvg=").append(oneDecimal(averageAllAvgCn0))
+                    .append(" top4Avg=").append(oneDecimal(averageTop4AvgCn0))
+                    .append(" dB-Hz\n");
+            sb.append("- 平均低 C/N0 可见星=").append(oneDecimal(averageLowCn0VisibleCount))
+                    .append(" 平均弱 used 星=").append(oneDecimal(averageWeakUsedCount))
+                    .append("\n\n");
+        }
 
         appendIntegerMap(sb, "## 采样策略请求", samplingRequestCounts);
         appendDoubleMap(sb, "## 采样策略估算时长", samplingDurationSeconds);

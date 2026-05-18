@@ -162,6 +162,83 @@ public class HikingSampleReportGeneratorTest {
         assertTrue(report.blockingFindings.toString().contains("每个 RawPoint"));
     }
 
+    @Test
+    public void generate_summarizesPhase6GnssQualityMetricsWhenPresent() throws Exception {
+        File dir = Files.createTempDirectory("hiking-sample-report-gnss-quality").toFile();
+        String diagnostic = ""
+                + event(1, "session_metadata", 1_000_000_000L,
+                "\"createdElapsedRealtimeNanos\":1000000000")
+                + event(2, "config_snapshot", 1_000_000_000L,
+                "\"locationRequestMinDistanceMeters\":0")
+                + event(3, "sampling_policy", 1_000_000_000L,
+                "\"state\":\"STARTING\",\"locationRequestMinDistanceMeters\":0")
+                + gnss(4, 1, 1_500_000_000L, 30.0, 25.0, 35.0, 2, 1, true)
+                + raw(5, 1, 2_000_000_000L, false)
+                + decision(6, 1, 1, 1, 1, 2_000_000_000L,
+                "anchor", "first_fix_good", 0.0, 0.0)
+                + event(7, "sampling_policy", 10_000_000_000L,
+                "\"state\":\"MOVING\",\"locationRequestMinDistanceMeters\":0")
+                + gnss(8, 2, 11_000_000_000L, 28.0, 24.0, 34.0, 4, 2, false)
+                + raw(9, 2, 12_000_000_000L, false)
+                + decision(10, 2, 2, 2, 1, 12_000_000_000L,
+                "accept", "moving_good_fix", 10.0, 10.0)
+                + event(11, "session_event", 1_812_000_000_000L,
+                "\"eventType\":\"finish_recording\"");
+        Files.write(new File(dir, "diagnostic.jsonl").toPath(),
+                diagnostic.getBytes(StandardCharsets.UTF_8));
+        Files.write(new File(dir, "track.gpx").toPath(),
+                "<gpx/>".getBytes(StandardCharsets.UTF_8));
+        writeSessionJson(dir, 11, 2, 2, 0, 0, 10.0, 10.0);
+
+        SessionManifest manifest = new SessionManifestReader(new SessionFileStore(dir.getParentFile()))
+                .read(dir);
+        HikingSampleReport report = new HikingSampleReportGenerator().generate(manifest);
+
+        assertEquals(2, report.gnssSnapshotCount);
+        assertEquals(2, report.gnssQualityMetricSnapshotCount);
+        assertEquals(29.0, report.averageUsedAvgCn0, 0.0);
+        assertEquals(24.5, report.averageAllAvgCn0, 0.0);
+        assertEquals(34.5, report.averageTop4AvgCn0, 0.0);
+        assertEquals(3.0, report.averageLowCn0VisibleCount, 0.0);
+        assertEquals(1.5, report.averageWeakUsedCount, 0.0);
+        assertEquals(1, report.dualFrequencySnapshotCount);
+        assertTrue(report.toText().contains("GNSS 质量解释"));
+        assertEquals(2, report.toJson().getInt("gnssQualityMetricSnapshotCount"));
+    }
+
+    @Test
+    public void generate_toleratesLegacyGnssSnapshotsWithoutPhase6Metrics() throws Exception {
+        File dir = Files.createTempDirectory("hiking-sample-report-legacy-gnss").toFile();
+        String diagnostic = ""
+                + event(1, "session_metadata", 1_000_000_000L,
+                "\"createdElapsedRealtimeNanos\":1000000000")
+                + event(2, "config_snapshot", 1_000_000_000L,
+                "\"locationRequestMinDistanceMeters\":0")
+                + event(3, "sampling_policy", 1_000_000_000L,
+                "\"state\":\"STARTING\",\"locationRequestMinDistanceMeters\":0")
+                + event(4, "gnss_snapshot", 1_500_000_000L,
+                "\"snapshotId\":1,\"visibleTotal\":8,\"usedInFixTotal\":4,\"usedAvgCn0\":30.0")
+                + raw(5, 1, 2_000_000_000L, false)
+                + decision(6, 1, 1, 1, 1, 2_000_000_000L,
+                "anchor", "first_fix_good", 0.0, 0.0)
+                + event(7, "session_event", 1_802_000_000_000L,
+                "\"eventType\":\"finish_recording\"");
+        Files.write(new File(dir, "diagnostic.jsonl").toPath(),
+                diagnostic.getBytes(StandardCharsets.UTF_8));
+        Files.write(new File(dir, "track.gpx").toPath(),
+                "<gpx/>".getBytes(StandardCharsets.UTF_8));
+        writeSessionJson(dir, 7, 1, 1, 0, 0, 0.0, 0.0);
+
+        SessionManifest manifest = new SessionManifestReader(new SessionFileStore(dir.getParentFile()))
+                .read(dir);
+        HikingSampleReport report = new HikingSampleReportGenerator().generate(manifest);
+
+        assertEquals(1, report.gnssSnapshotCount);
+        assertEquals(0, report.gnssQualityMetricSnapshotCount);
+        assertEquals(0.0, report.averageAllAvgCn0, 0.0);
+        assertTrue(!report.toText().contains("GNSS 质量解释"));
+    }
+
     private String event(int seq, String eventName, long elapsedRealtimeNanos, String fields) {
         return "{\"event\":\"" + eventName + "\",\"sessionId\":\"S1\",\"eventSeq\":" + seq
                 + ",\"schemaVersion\":1,\"eventElapsedRealtimeNanos\":" + elapsedRealtimeNanos
@@ -244,6 +321,22 @@ public class HikingSampleReportGeneratorTest {
                         + ",\"reason\":\"" + reason + "\""
                         + ",\"distanceDeltaMeters\":" + distanceDelta
                         + ",\"movingTimeDeltaSeconds\":" + movingDelta);
+    }
+
+    private String gnss(int seq, int snapshotId, long elapsedRealtimeNanos,
+                        double usedAvgCn0, double allAvgCn0, double top4AvgCn0,
+                        int lowCn0VisibleCount, int weakUsedCount, boolean hasDualFrequency) {
+        return event(seq, "gnss_snapshot", elapsedRealtimeNanos,
+                "\"snapshotId\":" + snapshotId
+                        + ",\"receivedElapsedRealtimeNanos\":" + elapsedRealtimeNanos
+                        + ",\"visibleTotal\":8"
+                        + ",\"usedInFixTotal\":4"
+                        + ",\"usedAvgCn0\":" + usedAvgCn0
+                        + ",\"allAvgCn0\":" + allAvgCn0
+                        + ",\"top4AvgCn0\":" + top4AvgCn0
+                        + ",\"lowCn0VisibleCount\":" + lowCn0VisibleCount
+                        + ",\"weakUsedCount\":" + weakUsedCount
+                        + ",\"hasDualFrequency\":" + hasDualFrequency);
     }
 
     private void writeSessionJson(File dir, long lastEventSeq, int rawPointCount,

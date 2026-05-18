@@ -4,35 +4,57 @@ import com.example.gnsssatdemo.track.model.RawPoint;
 import com.example.gnsssatdemo.track.model.TrackPoint;
 
 public class TrackDecisionEngine {
-    public static final double IMPOSSIBLE_SPEED_METERS_PER_SECOND = 12.0;
-    public static final double TRANSPORT_SUSPECTED_SPEED_METERS_PER_SECOND = 3.5;
-    public static final double TRANSPORT_SUSPECTED_MAX_REASONABLE_SPEED_METERS_PER_SECOND = 45.0;
-    public static final double TRANSPORT_SUSPECTED_MIN_DISTANCE_METERS = 60.0;
-    public static final double TRANSPORT_SUSPECTED_WITH_SPEED_MIN_DISTANCE_METERS = 20.0;
-    public static final double TRANSPORT_SUSPECTED_MIN_DELTA_SECONDS = 10.0;
-    public static final long STATIONARY_KEEPALIVE_INTERVAL_NANOS = 30_000_000_000L;
-    public static final long GAP_LINE_BREAK_NANOS = 120_000_000_000L;
-    public static final long TRANSPORT_RECOVERY_STABLE_NANOS = 15_000_000_000L;
-    public static final double TRANSPORT_RECOVERY_MAX_SPEED_METERS_PER_SECOND = 2.5;
-    public static final double TRANSPORT_RECOVERY_MIN_DISTANCE_METERS = 12.0;
+    private static final TrackStrategyConfig DEFAULT_CONFIG = TrackStrategyConfig.defaultStage1();
+    public static final double IMPOSSIBLE_SPEED_METERS_PER_SECOND =
+            DEFAULT_CONFIG.impossibleSpeedMetersPerSecond;
+    public static final double TRANSPORT_SUSPECTED_SPEED_METERS_PER_SECOND =
+            DEFAULT_CONFIG.transportSuspectedSpeedMetersPerSecond;
+    public static final double TRANSPORT_SUSPECTED_MAX_REASONABLE_SPEED_METERS_PER_SECOND =
+            DEFAULT_CONFIG.transportSuspectedMaxReasonableSpeedMetersPerSecond;
+    public static final double TRANSPORT_SUSPECTED_MIN_DISTANCE_METERS =
+            DEFAULT_CONFIG.transportSuspectedMinDistanceMeters;
+    public static final double TRANSPORT_SUSPECTED_WITH_SPEED_MIN_DISTANCE_METERS =
+            DEFAULT_CONFIG.transportSuspectedWithSpeedMinDistanceMeters;
+    public static final double TRANSPORT_SUSPECTED_MIN_DELTA_SECONDS =
+            DEFAULT_CONFIG.transportSuspectedMinDeltaSeconds;
+    public static final long STATIONARY_KEEPALIVE_INTERVAL_NANOS =
+            DEFAULT_CONFIG.stationaryKeepaliveIntervalNanos;
+    public static final long GAP_LINE_BREAK_NANOS = DEFAULT_CONFIG.gapLineBreakNanos;
+    public static final long TRANSPORT_RECOVERY_STABLE_NANOS =
+            DEFAULT_CONFIG.transportRecoveryStableNanos;
+    public static final double TRANSPORT_RECOVERY_MAX_SPEED_METERS_PER_SECOND =
+            DEFAULT_CONFIG.transportRecoveryMaxSpeedMetersPerSecond;
+    public static final double TRANSPORT_RECOVERY_MIN_DISTANCE_METERS =
+            DEFAULT_CONFIG.transportRecoveryMinDistanceMeters;
+
+    private final TrackStrategyConfig config;
+
+    public TrackDecisionEngine() {
+        this(DEFAULT_CONFIG);
+    }
+
+    public TrackDecisionEngine(TrackStrategyConfig config) {
+        this.config = config;
+    }
 
     public TrackDecisionResult decide(RawPoint rawPoint, TrackPoint previousTrackPoint,
                                       long lastStationaryKeepaliveElapsedRealtimeNanos,
                                       boolean forcedWeakFirstFixEnabled) {
         if (previousTrackPoint == null) {
-            if (rawPoint.accuracyMeters <= 20f) {
+            if (rawPoint.accuracyMeters <= config.firstFixGoodAccuracyMeters) {
                 return result("anchor", "first_fix_good", 0.0, 0.0,
                         lastStationaryKeepaliveElapsedRealtimeNanos, 0, 0);
             }
-            if (rawPoint.accuracyMeters <= 30f) {
+            if (rawPoint.accuracyMeters <= config.firstFixRelaxedAccuracyMeters) {
                 return result("anchor", "first_fix_relaxed", 0.0, 0.0,
                         lastStationaryKeepaliveElapsedRealtimeNanos, 0, 0);
             }
-            if (forcedWeakFirstFixEnabled && rawPoint.accuracyMeters <= 50f) {
+            if (forcedWeakFirstFixEnabled
+                    && rawPoint.accuracyMeters <= config.forcedWeakFirstFixAccuracyMeters) {
                 return result("anchor", "forced_weak_first_fix", 0.0, 0.0,
                         lastStationaryKeepaliveElapsedRealtimeNanos, 0, 0);
             }
-            if (rawPoint.accuracyMeters <= 80f) {
+            if (rawPoint.accuracyMeters <= config.firstFixWeakMaxAccuracyMeters) {
                 return result("weak", "weak_first_fix", 0.0, 0.0,
                         lastStationaryKeepaliveElapsedRealtimeNanos, 0, 0);
             }
@@ -40,7 +62,7 @@ public class TrackDecisionEngine {
                     lastStationaryKeepaliveElapsedRealtimeNanos, 0, 0);
         }
 
-        if (rawPoint.accuracyMeters > 30f) {
+        if (rawPoint.accuracyMeters > config.ordinaryGoodAccuracyMeters) {
             return result("weak", "weak_signal_stage1", 0.0, 0.0,
                     lastStationaryKeepaliveElapsedRealtimeNanos, 0, 0);
         }
@@ -56,13 +78,13 @@ public class TrackDecisionEngine {
         double requiredSpeed = distanceMeters / deltaSeconds;
         boolean reportedSpeedTransportSuspected =
                 isReportedSpeedTransportSuspected(rawPoint, distanceMeters, requiredSpeed);
-        if (requiredSpeed > IMPOSSIBLE_SPEED_METERS_PER_SECOND
+        if (requiredSpeed > config.impossibleSpeedMetersPerSecond
                 && !reportedSpeedTransportSuspected) {
             return result("reject", "impossible_speed", 0.0, 0.0,
                     lastStationaryKeepaliveElapsedRealtimeNanos, 0, 0);
         }
         if (rawPoint.elapsedRealtimeNanos - previousTrackPoint.elapsedRealtimeNanos
-                > GAP_LINE_BREAK_NANOS) {
+                > config.gapLineBreakNanos) {
             return result("accept", "gap_recovery", 0.0, 0.0,
                     lastStationaryKeepaliveElapsedRealtimeNanos, 0, 0, true);
         }
@@ -71,10 +93,11 @@ public class TrackDecisionEngine {
             return result("reject", "transport_suspected", 0.0, 0.0,
                     lastStationaryKeepaliveElapsedRealtimeNanos, 0, 0);
         }
-        if (distanceMeters < Math.max(5.0, rawPoint.accuracyMeters * 1.5)) {
+        if (distanceMeters < Math.max(config.stationaryMinDistanceMeters,
+                rawPoint.accuracyMeters * config.stationaryAccuracyMultiplier)) {
             if (lastStationaryKeepaliveElapsedRealtimeNanos == 0L
                     || rawPoint.elapsedRealtimeNanos - lastStationaryKeepaliveElapsedRealtimeNanos
-                    >= STATIONARY_KEEPALIVE_INTERVAL_NANOS) {
+                    >= config.stationaryKeepaliveIntervalNanos) {
                 return result("reject", "stationary_keepalive", 0.0, 0.0,
                         rawPoint.elapsedRealtimeNanos, 1, 0);
             }
@@ -94,16 +117,17 @@ public class TrackDecisionEngine {
         if (deltaSeconds <= 0.0) {
             return false;
         }
-        if (rawPoint.accuracyMeters > 30f) {
+        if (rawPoint.accuracyMeters > config.ordinaryGoodAccuracyMeters) {
             return false;
         }
         if (rawPoint.hasSpeed
-                && rawPoint.speedMetersPerSecond > TRANSPORT_RECOVERY_MAX_SPEED_METERS_PER_SECOND) {
+                && rawPoint.speedMetersPerSecond
+                > config.transportRecoveryMaxSpeedMetersPerSecond) {
             return false;
         }
         double distanceMeters = distanceMeters(previousRawPoint.latitude, previousRawPoint.longitude,
                 rawPoint.latitude, rawPoint.longitude);
-        return distanceMeters / deltaSeconds <= TRANSPORT_RECOVERY_MAX_SPEED_METERS_PER_SECOND;
+        return distanceMeters / deltaSeconds <= config.transportRecoveryMaxSpeedMetersPerSecond;
     }
 
     public double rawDistanceMeters(RawPoint from, RawPoint to) {
@@ -113,22 +137,23 @@ public class TrackDecisionEngine {
     private boolean isReportedSpeedTransportSuspected(RawPoint rawPoint, double distanceMeters,
                                                       double requiredSpeed) {
         double reportedSpeed = rawPoint.speedMetersPerSecond;
-        boolean reportedSpeedReasonable = reportedSpeed >= TRANSPORT_SUSPECTED_SPEED_METERS_PER_SECOND
-                && reportedSpeed <= TRANSPORT_SUSPECTED_MAX_REASONABLE_SPEED_METERS_PER_SECOND;
+        boolean reportedSpeedReasonable =
+                reportedSpeed >= config.transportSuspectedSpeedMetersPerSecond
+                && reportedSpeed <= config.transportSuspectedMaxReasonableSpeedMetersPerSecond;
         return rawPoint.hasSpeed
                 && reportedSpeedReasonable
-                && requiredSpeed >= TRANSPORT_SUSPECTED_SPEED_METERS_PER_SECOND
-                && requiredSpeed <= TRANSPORT_SUSPECTED_MAX_REASONABLE_SPEED_METERS_PER_SECOND
-                && distanceMeters >= TRANSPORT_SUSPECTED_WITH_SPEED_MIN_DISTANCE_METERS;
+                && requiredSpeed >= config.transportSuspectedSpeedMetersPerSecond
+                && requiredSpeed <= config.transportSuspectedMaxReasonableSpeedMetersPerSecond
+                && distanceMeters >= config.transportSuspectedWithSpeedMinDistanceMeters;
     }
 
     private boolean isSustainedTransportSuspected(double distanceMeters,
                                                   double deltaSeconds,
                                                   double requiredSpeed) {
-        return requiredSpeed >= TRANSPORT_SUSPECTED_SPEED_METERS_PER_SECOND
-                && requiredSpeed <= IMPOSSIBLE_SPEED_METERS_PER_SECOND
-                && distanceMeters >= TRANSPORT_SUSPECTED_MIN_DISTANCE_METERS
-                && deltaSeconds >= TRANSPORT_SUSPECTED_MIN_DELTA_SECONDS;
+        return requiredSpeed >= config.transportSuspectedSpeedMetersPerSecond
+                && requiredSpeed <= config.impossibleSpeedMetersPerSecond
+                && distanceMeters >= config.transportSuspectedMinDistanceMeters
+                && deltaSeconds >= config.transportSuspectedMinDeltaSeconds;
     }
 
     private TrackDecisionResult result(String result, String reason,

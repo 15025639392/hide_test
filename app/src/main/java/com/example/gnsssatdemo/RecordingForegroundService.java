@@ -73,6 +73,8 @@ public class RecordingForegroundService extends Service {
     private static final float SIGNAL_WEAK_DISTANCE_METERS = 0f;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final GnssQualitySnapshotFactory gnssQualitySnapshotFactory =
+            new GnssQualitySnapshotFactory();
     private LocationManager locationManager;
     private BasicTrackSession trackSession;
     private Location lastLocation;
@@ -391,44 +393,9 @@ public class RecordingForegroundService extends Service {
     }
 
     private GnssQualitySnapshot snapshotFromStatus(GnssStatus status) {
-        int visibleTotal = status.getSatelliteCount();
-        int usedInFixTotal = 0;
-        float usedCn0Sum = 0f;
-        int gpsUsed = 0;
-        int beidouUsed = 0;
-        int galileoUsed = 0;
-        int glonassUsed = 0;
-        int qzssUsed = 0;
-        for (int i = 0; i < visibleTotal; i++) {
-            if (!status.usedInFix(i)) {
-                continue;
-            }
-            usedInFixTotal++;
-            usedCn0Sum += status.getCn0DbHz(i);
-            switch (status.getConstellationType(i)) {
-                case GnssStatus.CONSTELLATION_GPS:
-                    gpsUsed++;
-                    break;
-                case GnssStatus.CONSTELLATION_BEIDOU:
-                    beidouUsed++;
-                    break;
-                case GnssStatus.CONSTELLATION_GALILEO:
-                    galileoUsed++;
-                    break;
-                case GnssStatus.CONSTELLATION_GLONASS:
-                    glonassUsed++;
-                    break;
-                case GnssStatus.CONSTELLATION_QZSS:
-                    qzssUsed++;
-                    break;
-                default:
-                    break;
-            }
-        }
-        float usedAvgCn0 = usedInFixTotal == 0 ? 0f : usedCn0Sum / usedInFixTotal;
-        return trackSession.nextGnssSnapshot(SystemClock.elapsedRealtimeNanos(), visibleTotal,
-                usedInFixTotal, usedAvgCn0, gpsUsed, beidouUsed, galileoUsed, glonassUsed,
-                qzssUsed);
+        long receivedElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos();
+        return gnssQualitySnapshotFactory.fromStatus(trackSession.nextGnssSnapshotId(),
+                receivedElapsedRealtimeNanos, status);
     }
 
     private Notification buildNotification(String text) {

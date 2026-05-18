@@ -1,5 +1,7 @@
 package com.example.gnsssatdemo.track.export;
 
+import com.example.gnsssatdemo.track.model.GnssSnapshotDiagnosticFields;
+
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -161,6 +163,13 @@ public class HikingSampleReportGenerator {
                 accumulator.maxNoLocationTimeoutSeconds,
                 accumulator.gnssSnapshotCount,
                 accumulator.staleGnssRawCount,
+                accumulator.gnssQualityMetricSnapshotCount,
+                accumulator.averageUsedAvgCn0(),
+                accumulator.averageAllAvgCn0(),
+                accumulator.averageTop4AvgCn0(),
+                accumulator.averageLowCn0VisibleCount(),
+                accumulator.averageWeakUsedCount(),
+                accumulator.dualFrequencySnapshotCount,
                 accumulator.samplingRequestCounts,
                 accumulator.samplingDurationSeconds,
                 accumulator.decisionReasonCounts,
@@ -246,6 +255,13 @@ public class HikingSampleReportGenerator {
         int longRawIntervalCount;
         int gnssSnapshotCount;
         int staleGnssRawCount;
+        int gnssQualityMetricSnapshotCount;
+        int dualFrequencySnapshotCount;
+        double usedAvgCn0Total;
+        double allAvgCn0Total;
+        double top4AvgCn0Total;
+        double lowCn0VisibleCountTotal;
+        double weakUsedCountTotal;
         double totalRawIntervalSeconds;
         double maxRawIntervalSeconds;
         double maxNoLocationTimeoutSeconds;
@@ -275,7 +291,26 @@ public class HikingSampleReportGenerator {
             } else if ("session_event".equals(eventName)) {
                 onSessionEvent(event);
             } else if ("gnss_snapshot".equals(eventName)) {
-                gnssSnapshotCount++;
+                onGnssSnapshot(event);
+            }
+        }
+
+        void onGnssSnapshot(JSONObject event) {
+            gnssSnapshotCount++;
+            if (!event.has(GnssSnapshotDiagnosticFields.ALL_AVG_CN0)
+                    || !event.has(GnssSnapshotDiagnosticFields.TOP4_AVG_CN0)) {
+                return;
+            }
+            gnssQualityMetricSnapshotCount++;
+            usedAvgCn0Total += event.optDouble(GnssSnapshotDiagnosticFields.USED_AVG_CN0, 0.0);
+            allAvgCn0Total += event.optDouble(GnssSnapshotDiagnosticFields.ALL_AVG_CN0, 0.0);
+            top4AvgCn0Total += event.optDouble(GnssSnapshotDiagnosticFields.TOP4_AVG_CN0, 0.0);
+            lowCn0VisibleCountTotal += event.optDouble(
+                    GnssSnapshotDiagnosticFields.LOW_CN0_VISIBLE_COUNT, 0.0);
+            weakUsedCountTotal += event.optDouble(
+                    GnssSnapshotDiagnosticFields.WEAK_USED_COUNT, 0.0);
+            if (event.optBoolean(GnssSnapshotDiagnosticFields.HAS_DUAL_FREQUENCY, false)) {
+                dualFrequencySnapshotCount++;
             }
         }
 
@@ -391,6 +426,31 @@ public class HikingSampleReportGenerator {
         int reasonCount(String key) {
             Integer count = decisionReasonCounts.get(key);
             return count == null ? 0 : count;
+        }
+
+        double averageUsedAvgCn0() {
+            return averageGnssMetric(usedAvgCn0Total);
+        }
+
+        double averageAllAvgCn0() {
+            return averageGnssMetric(allAvgCn0Total);
+        }
+
+        double averageTop4AvgCn0() {
+            return averageGnssMetric(top4AvgCn0Total);
+        }
+
+        double averageLowCn0VisibleCount() {
+            return averageGnssMetric(lowCn0VisibleCountTotal);
+        }
+
+        double averageWeakUsedCount() {
+            return averageGnssMetric(weakUsedCountTotal);
+        }
+
+        double averageGnssMetric(double total) {
+            return gnssQualityMetricSnapshotCount == 0
+                    ? 0.0 : total / gnssQualityMetricSnapshotCount;
         }
     }
 }
