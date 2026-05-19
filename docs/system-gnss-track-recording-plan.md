@@ -497,16 +497,69 @@ transport mode 中:
 避免多处重复计算出现不同结果。
 
 当前已落地共享 `TrackAscentCalculator`、GNSS 保守爬升路径、气压计采集诊断，
-并已将 3 秒内关联到 TrackPoint 的 pressure sample 作为 BAROMETER 相对高度
-优先参与爬升累计；气压计绝对海拔校准、信息栏来源展示与 DEM 接入仍作为后续增强。
+但现有实现仍把 BAROMETER 样本挂到 TrackPoint 上，并间接受 `moving_good_fix`
+等平面轨迹判定影响。后续方案需要将 GNSS altitude 与 pressure altitude
+拆成两条独立累计爬升解算链路：GNSS 只处理定位点海拔，BAROMETER 只处理手机
+压力传感器在采样时刻的相对高度变化，最后在展示/报告层选择主结果。
+
+海拔语义边界：
+
+```text
+GNSS altitude:
+  来源 = Android Location.getAltitude()
+  对象 = 当前 Location fix 的定位点海拔
+  参考 = WGS84 椭球高度
+  可信条件 = Location fix 本身可信 + verticalAccuracy 可信
+  用途 = 无气压计时的保守累计爬升兜底、气压计绝对显示校准参考
+
+BAROMETER altitude:
+  来源 = Sensor.TYPE_PRESSURE + SensorManager.getAltitude(...)
+  对象 = 手机压力传感器采样时刻的设备当前位置气压高度估计
+  参考 = 标准大气压换算时绝对值不可靠
+  可信条件 = 压力样本连续、传感器状态可用、垂直变化物理合理
+  用途 = 有气压计设备上的主累计爬升来源
+```
+
+累计爬升目标架构：
+
+```text
+AscentResult:
+  totalAscentMeters
+  source = BAROMETER / GNSS / NONE
+  confidence = HIGH / MEDIUM / LOW / NONE
+  sampleCount
+  rejectedSampleCount
+  lastSampleElapsedRealtimeNanos
+
+BarometerAscentEngine:
+  输入 pressure_sample stream
+  输出 barometerAscentResult
+
+GnssAscentEngine:
+  输入 Location/TrackPoint 中的 GNSS altitude stream
+  输出 gnssAscentResult
+
+AscentSelector:
+  if barometerAscentResult reliable:
+    displayedTotalAscent = barometerAscentResult.totalAscentMeters
+    ascentSource = BAROMETER
+  else if gnssAscentResult reliable:
+    displayedTotalAscent = gnssAscentResult.totalAscentMeters
+    ascentSource = GNSS
+  else:
+    displayedTotalAscent = -1
+    ascentSource = NONE
+```
 
 气压计优势落地方案：
 
 ```text
 阶段 1: 相对爬升
-  pressure sample 关联 TrackPoint 后优先作为 BAROMETER elevation sample
-  使用 rawBarometerAltitudeMeters 的短时间相对变化累计爬升
+  pressure_sample 独立进入 BarometerAscentEngine
+  使用 rawBarometerAltitudeMeters 的短时间相对变化累计设备上升
   不要求 GNSS altitude 可信
+  不要求当前 GNSS 点为 moving_good_fix
+  当前不判断这段上升是否属于徒步活动
 
 阶段 2: 绝对海拔校准
   遇到可信 GNSS altitude:
@@ -521,8 +574,8 @@ transport mode 中:
   calibrationOffset 只用于显示/诊断，不反向改写累计爬升趋势
 
 阶段 3: 展示与报告
-  信息栏显示气压计海拔、校准状态、爬升来源 BAROMETER
-  报告输出 barometerCalibrated / calibrationOffset / ascentSource
+  信息栏显示气压计海拔、校准状态、主爬升来源 BAROMETER/GNSS/NONE
+  报告同时输出 barometerAscent / gnssAscent / selectedAscentSource
 ```
 
 海拔源优先级：
@@ -540,7 +593,7 @@ transport mode 中:
 有气压计:
   记录 pressure_sample / pressure_summary 诊断
   用首个可靠 GNSS verticalAccuracy 或后续 DEM 作为绝对海拔校准
-  短时间相对高度变化优先使用气压计
+  短时间相对高度变化由 BarometerAscentEngine 独立累计为设备上升
   信息栏显示“气压计海拔”，并标明爬升来源为 BAROMETER
 无气压计:
   不显示气压计海拔
@@ -556,51 +609,214 @@ GNSS 保守策略：
   verticalAccuracy <= 12m
   horizontal accuracy <= 30m
   decisionReason == moving_good_fix
+  GNSS horizontalDistance >= 5m
 
 不满足时:
   可显示参考海拔
   不参与累计爬升
 ```
 
-爬升计算口径：
+GNSS 爬升计算口径：
 
 ```text
-只在可信 moving_good_fix 段内累计爬升
+只在可信 moving_good_fix 段内累计 GNSS 爬升
 first_fix_good / first_fix_relaxed / forced_weak_first_fix 只设海拔 anchor
 gap_recovery / transport_recovery / rest_moving_recovery / stationary_anchor_refined 只重置海拔 anchor
 weak / transport / stationary / REST_PAUSED / REST_PROBING / reject 不参与爬升
 
 使用滤波后的 altitude，不直接累计原始 altitude
 使用趋势确认，不按单点正差直接累计
-GNSS 阈值随 verticalAccuracy 放大，气压计阈值可更小
+GNSS 阈值随 verticalAccuracy 放大
 ```
 
-`TrackAscentCalculator` 输入模型：
+BAROMETER 爬升计算口径：
 
 ```text
-ElevationSample:
-  elapsedRealtimeNanos
-  altitudeMeters
-  source = BAROMETER / GNSS / DEM
-  verticalAccuracyMeters?  // GNSS/DEM 可有，BAROMETER 可为空
-  horizontalAccuracyMeters?
-  distanceDeltaMeters
-  decisionReason
-  pressureHpa?             // BAROMETER 原始气压，便于诊断
+当前口径:
+  BAROMETER 表示记录期间手机实际位置的气压海拔累计上升
+  暂不判断上升是否属于徒步活动
+  交通工具、电梯、缆车等造成的手机海拔上升也可能进入该统计
+
+不以 moving_good_fix 作为入口条件
+不把 pressure altitude 视为某个 GNSS 定位点的附属海拔
+按 pressure_sample elapsedRealtimeNanos 独立排序累计
+
+允许:
+  recording lifecycle active
+  pressureHpa > 0
+  elapsedRealtimeNanos 单调递增
+  sensorAccuracy 记录用于诊断；当前不因单点 unreliable 直接拒绝
+  与上一压力样本时间间隔在合理范围内
+  垂直速度通过物理门限
+
+重置 anchor:
+  记录开始
+  压力样本长时间断层
+
+拒绝累计:
+  pressure altitude 单点跳变超过物理门限
+  时间倒退或重复样本
+
+仍可使用:
+  weak GNSS 场景下的 pressure_sample
+  stationary_keepalive / stationary_jitter 附近的 pressure_sample
+  低速、短水平距离但垂直变化稳定的 pressure_sample
+
+后续活动归因版本:
+  在 BAROMETER 设备上升之外新增或派生 hikingAscent
+  transport_suspected / transport_confirmed 期间暂停徒步爬升累计
+  GNSS 决策进入/离开 transport mode 时重置徒步爬升 anchor
+  gap_recovery / transport_recovery / rest_moving_recovery 时重置徒步爬升 anchor
+  设备静止锚点被重估时，只重置徒步爬升趋势，不把跨锚点高度差计入徒步爬升
 ```
 
-`TrackAscentCalculator` 状态：
+BAROMETER 气压抖动处理：
+
+```text
+目标:
+  保留徒步过程中的真实相对高度变化
+  抑制手持扰动、气流、短周期压力噪声造成的虚假累计爬升
+
+处理顺序:
+  raw pressure sample
+    -> pressure quality gate
+    -> physical vertical-speed gate
+    -> low-pass filter
+    -> trend confirmation
+
+原则:
+  异常样本先拒绝，再进入滤波
+  不允许坏样本污染 filteredAltitude
+  不按相邻正差直接求和
+  小幅上下抖动必须被 climbThreshold/dropThreshold 吞掉
+```
+
+BAROMETER 样本质量门控：
+
+```text
+接受条件:
+  pressureHpa > 0
+  elapsedRealtimeNanos > lastElapsedRealtimeNanos
+  pressureSampleId 单调递增
+  sample interval 在合理范围内
+  sensorAccuracy 进入诊断统计，不作为当前单点硬拒绝条件
+
+拒绝但不重置:
+  单个 pressureHpa 非法
+  时间重复或倒退
+
+重置 anchor:
+  pressure sample gap 超过阈值
+  记录生命周期暂停/恢复
+
+后续活动归因版本:
+  transport mode 开始或结束
+  recovery anchor 出现
+  连续 unreliable 样本后恢复
+```
+
+BAROMETER 低通滤波：
+
+```text
+filteredAltitude =
+  alpha * rawBarometerAltitudeMeters
+  + (1 - alpha) * previousFilteredAltitude
+
+初始值:
+  第一个通过门控的样本直接作为 filteredAltitude/baseAltitude/peakAltitude
+
+默认 alpha:
+  0.35
+
+原因:
+  alpha 太高会把 0.x-1m 的压力抖动直接送入趋势判断
+  alpha 太低会滞后真实短陡坡/楼梯爬升，导致低估 peak
+  0.35 作为第一版固定值，便于复盘和测试
+
+后续可选动态 alpha:
+  压力稳定且采样频率高时降到 0.25-0.30
+  连续稳定上升时升到 0.40-0.50
+  噪声变大或传感器精度下降时降低 alpha
+```
+
+BAROMETER 趋势确认：
+
+```text
+baseAltitude:
+  当前候选上升段的可信低点
+
+peakAltitude:
+  当前候选上升段的滤波后最高点
+
+上升:
+  altitude >= peakAltitude
+  只更新 peakAltitude
+  不立即增加 totalAscentMeters
+
+回落:
+  drop = peakAltitude - altitude
+  pendingGain = peakAltitude - baseAltitude
+
+  if drop >= 1.5m:
+    if pendingGain >= 3.0m:
+      totalAscentMeters += pendingGain
+    baseAltitude = altitude
+    peakAltitude = altitude
+
+结束:
+  记录结束时，如果 pendingGain >= 3.0m，再结算最后一段
+```
+
+BAROMETER 物理门限：
+
+```text
+verticalSpeed =
+  abs(rawBarometerAltitudeMeters - lastAcceptedRawOrFilteredAltitude)
+  / elapsedSeconds
+
+if verticalSpeed > 2.0m/s:
+  reject sample
+
+说明:
+  2.0m/s 是徒步累计爬升的保守上限
+  电梯、车辆、压力突跳、传感器异常更容易超过该门限
+  被拒绝的单点不进入滤波；若连续出现则重置 anchor
+```
+
+长期输入模型：
+
+```text
+GnssElevationSample:
+  elapsedRealtimeNanos
+  trackPointId / rawPointId
+  altitudeMeters
+  verticalAccuracyMeters
+  horizontalAccuracyMeters
+  distanceDeltaMeters
+  decisionReason
+  segmentId
+
+BarometerElevationSample:
+  pressureSampleId
+  elapsedRealtimeNanos
+  pressureHpa
+  rawBarometerAltitudeMeters
+  sensorAccuracy
+  motion/transport/rest state snapshot  // 仅用于门控与 anchor，不作为定位点海拔
+```
+
+每条 ascent engine 独立状态：
 
 ```text
 totalAscentMeters
-activeSource
 filteredAltitude
 baseAltitude       // 当前可信低点
 peakAltitude       // 当前上升趋势高点
 lastAltitude
 lastElapsedRealtimeNanos
-calibrationOffset  // 气压计绝对海拔校准偏移
 hasReliableAscent
+sampleCount
+rejectedSampleCount
 ```
 
 气压计海拔换算：
@@ -626,15 +842,13 @@ rawBarometerAltitude =
 3. GNSS altitude 且 verticalAccuracy <= 12m
 ```
 
-海拔源选择：
+主结果选择：
 
 ```text
-if hasRecentPressureSample:
+if barometer engine has reliable result:
   source = BAROMETER
-else if gnssAltitudeQualityOk:
+else if gnss engine has reliable result:
   source = GNSS
-else if demElevationAvailable:
-  source = DEM
 else:
   source = NONE
 ```
@@ -642,8 +856,8 @@ else:
 采样时效：
 
 ```text
-BAROMETER pressure sample 距 TrackPoint <= 3s 才可关联
-GNSS altitude 只随当前 TrackPoint 使用
+BAROMETER pressure sample 不要求关联到 TrackPoint 才可累计相对爬升
+GNSS altitude 只随当前 Location/TrackPoint 使用
 DEM 可在结束后按 TrackPoint 经纬度补算
 ```
 
@@ -662,12 +876,17 @@ source == DEM:
 filteredAltitude =
   alpha * currentAltitude + (1 - alpha) * previousFilteredAltitude
 
-source 发生切换、REST/GAP/transport recovery 重置时:
+GNSS source 发生切换、REST/GAP/transport recovery 重置时:
   重置 filteredAltitude/baseAltitude/peakAltitude
   不跨源或跨恢复点延续爬升趋势
+
+BAROMETER:
+  不与 GNSS source 切换共享状态
+  当前只在自身断层和生命周期边界重置设备上升趋势
+  交通模式、恢复锚点用于后续 hikingAscent 活动归因版本
 ```
 
-移动点处理流程：
+GNSS 移动点处理流程：
 
 ```text
 onTrackPoint(point):
@@ -688,6 +907,30 @@ onTrackPoint(point):
   altitude = filter(sample.altitudeMeters)
   updateTrend(altitude, sample)
 ```
+
+BAROMETER 压力样本处理流程（当前设备上升口径）：
+
+```text
+onPressureSample(sample):
+  if !recordingActive:
+    return
+
+  if sampleGapTooLong:
+    resetAltitudeAnchor(sample)
+    return
+
+  if !passesPressureQualityGate(sample):
+    return
+
+  if !passesPhysicalGate(sample):
+    return
+
+  altitude = filter(sample.rawBarometerAltitudeMeters)
+  updateTrend(altitude, sample)
+```
+
+BAROMETER 后续 hikingAscent 活动归因流程会额外读取 stateSnapshot，
+在 transport mode、recovery anchor、静止锚点重估等边界暂停或重置徒步爬升趋势。
 
 锚点 reason：
 

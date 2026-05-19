@@ -102,10 +102,12 @@ post-run analysis. Optional fields must be tolerated when reading older logs.
 
 ## `pressure_sample` and `pressure_summary`
 
-Pressure events are diagnostic evidence for barometer altitude. When a
-TrackPoint has a pressure sample within the configured association window, the
-ascent calculator can use the raw barometer altitude as the preferred relative
-elevation source.
+Pressure events are diagnostic evidence for barometer altitude. The long-term
+ascent model treats pressure samples as their own elevation stream: the raw
+barometer altitude belongs to the phone at the pressure sensor event timestamp,
+not to a GNSS TrackPoint. TrackPoint association may still be written for
+diagnostics and display, but barometer ascent must not depend on
+`moving_good_fix` or GNSS altitude quality.
 
 `pressure_sample` fields:
 
@@ -115,6 +117,18 @@ elevation source.
 | `pressureHpa` | float | Pressure sensor value in hPa. |
 | `sensorAccuracy` | int | Android sensor accuracy value reported with the event. |
 | `rawBarometerAltitudeMeters` | double | `SensorManager.getAltitude(PRESSURE_STANDARD_ATMOSPHERE, pressureHpa)` before absolute calibration. |
+
+`pressure_sample_rejected` records pressure sensor events that were kept for
+BAROMETER ascent rejection accounting but were not valid pressure samples.
+Rejected samples are not included in `pressureSampleCount`.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `barometerSampleId` | long | Monotonic sample id in the barometer ascent stream. |
+| `pressureHpa` | float | Invalid pressure value when it can be represented as JSON. |
+| `pressureHpaText` | string | Invalid pressure value when it is `NaN` or infinite. |
+| `sensorAccuracy` | int | Android sensor accuracy value reported with the event. |
+| `rejectReason` | string | Rejection reason, currently `invalid_pressure`. |
 
 `pressure_summary` fields:
 
@@ -136,7 +150,21 @@ elevation source.
 Decision events for TrackPoints may additionally include
 `pressureSampleElapsedRealtimeNanos`, `pressureHpa`, and
 `rawBarometerAltitudeMeters` when a recent pressure sample was associated with
-that TrackPoint.
+that TrackPoint. These fields are a time association only; they do not mean the
+barometer altitude is part of the GNSS positioning fix.
+
+Future ascent summaries should report the two independent engines separately:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `barometerTotalAscentMeters` | double | Total device ascent from the pressure-sample stream, or `-1` when unavailable. Current BAROMETER ascent is not yet attributed to hiking-only movement. |
+| `barometerAscentSampleCount` | long | Pressure samples accepted by the barometer ascent engine. |
+| `barometerAscentRejectedSampleCount` | long | Pressure samples rejected by pressure quality, time ordering, gap, or physical gates. Transport/activity attribution gates are planned but not part of the current BAROMETER total. |
+| `gnssTotalAscentMeters` | double | Total ascent from GNSS altitude samples, or `-1` when unavailable. |
+| `gnssAscentSampleCount` | long | GNSS altitude samples accepted by the GNSS ascent engine. |
+| `gnssAscentRejectedSampleCount` | long | GNSS altitude samples rejected by accuracy, movement, or physical gates. |
+| `selectedTotalAscentMeters` | double | Value shown as the session's primary total ascent. |
+| `selectedAscentSource` | string | `BAROMETER`, `GNSS`, or `NONE`. |
 
 ## `barometer_calibration`
 

@@ -1,6 +1,7 @@
 package com.example.gnsssatdemo.track.export;
 
 import com.example.gnsssatdemo.track.model.TrackPoint;
+import com.example.gnsssatdemo.track.engine.TrackAscentCalculator;
 
 import org.junit.Test;
 
@@ -157,5 +158,42 @@ public class DiagnosticTrackPointReaderTest {
         assertEquals("transport", displayPoints.get(1).decisionResult);
         assertEquals("transport_suspected", displayPoints.get(1).decisionReason);
         assertEquals(2L, displayPoints.get(1).sourceRawPointId);
+    }
+
+    @Test
+    public void readAscentInputs_reconstructsPressureSamples() throws Exception {
+        File dir = Files.createTempDirectory("diagnostic-track-reader-pressure").toFile();
+        File diagnostic = new File(dir, "diagnostic.jsonl");
+        String jsonl = ""
+                + "{\"event\":\"pressure_sample\",\"eventElapsedRealtimeNanos\":1000,"
+                + "\"pressureSampleId\":1,\"pressureHpa\":1000.0,"
+                + "\"sensorAccuracy\":3,\"rawBarometerAltitudeMeters\":100.0}\n"
+                + "{\"event\":\"pressure_sample_rejected\","
+                + "\"eventElapsedRealtimeNanos\":10000001000,"
+                + "\"barometerSampleId\":2,\"pressureHpa\":0.0,"
+                + "\"sensorAccuracy\":3,\"rejectReason\":\"invalid_pressure\"}\n"
+                + "{\"event\":\"pressure_sample\",\"eventElapsedRealtimeNanos\":30000001000,"
+                + "\"pressureSampleId\":2,\"pressureHpa\":999.0,"
+                + "\"sensorAccuracy\":3,\"rawBarometerAltitudeMeters\":110.0}\n"
+                + "{\"event\":\"raw_location\",\"rawPointId\":1,\"provider\":\"gps\","
+                + "\"lat\":29.0,\"lng\":106.0,\"accuracy\":8.0,\"timeMillis\":1000,"
+                + "\"elapsedRealtimeNanos\":2000}\n"
+                + "{\"event\":\"decision\",\"decisionId\":1,\"rawPointId\":1,"
+                + "\"result\":\"weak\",\"reason\":\"weak_signal_stage1\","
+                + "\"trackPointId\":1000000001,\"segmentId\":1,"
+                + "\"distanceDeltaMeters\":0.0,\"movingTimeDeltaSeconds\":0.0}\n";
+        Files.write(diagnostic.toPath(), jsonl.getBytes(StandardCharsets.UTF_8));
+
+        DiagnosticTrackPointReader.AscentInputs inputs =
+                new DiagnosticTrackPointReader().readAscentInputs(diagnostic);
+        TrackAscentCalculator.Result result = TrackAscentCalculator.ascentResult(
+                inputs.trackPoints, inputs.barometerSamples);
+
+        assertEquals(1, inputs.trackPoints.size());
+        assertEquals(3, inputs.barometerSamples.size());
+        assertEquals("BAROMETER", result.source);
+        assertEquals(3.5, result.totalAscentMeters, 0.0001);
+        assertEquals(2, result.barometerSampleCount);
+        assertEquals(1, result.barometerRejectedSampleCount);
     }
 }

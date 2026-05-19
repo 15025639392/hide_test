@@ -24,6 +24,19 @@ class RecordingStatusMapper {
                 intent.getIntExtra(RecordingForegroundService.EXTRA_TRACK_POINT_COUNT, 0),
                 intent.getDoubleExtra(RecordingForegroundService.EXTRA_TOTAL_DISTANCE_METERS, 0.0),
                 intent.getDoubleExtra(RecordingForegroundService.EXTRA_TOTAL_ASCENT_METERS, -1.0),
+                intent.getDoubleExtra(
+                        RecordingForegroundService.EXTRA_BAROMETER_TOTAL_ASCENT_METERS, -1.0),
+                intent.getDoubleExtra(
+                        RecordingForegroundService.EXTRA_GNSS_TOTAL_ASCENT_METERS, -1.0),
+                intent.getIntExtra(
+                        RecordingForegroundService.EXTRA_BAROMETER_ASCENT_SAMPLE_COUNT, 0),
+                intent.getIntExtra(
+                        RecordingForegroundService.EXTRA_GNSS_ASCENT_SAMPLE_COUNT, 0),
+                intent.getIntExtra(
+                        RecordingForegroundService.EXTRA_BAROMETER_ASCENT_REJECTED_SAMPLE_COUNT,
+                        0),
+                intent.getIntExtra(
+                        RecordingForegroundService.EXTRA_GNSS_ASCENT_REJECTED_SAMPLE_COUNT, 0),
                 statusText,
                 hasLocation,
                 hasLocation ? intent.getDoubleExtra(

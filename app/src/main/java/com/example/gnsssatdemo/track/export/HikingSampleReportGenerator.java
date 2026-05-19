@@ -1,5 +1,6 @@
 package com.example.gnsssatdemo.track.export;
 
+import com.example.gnsssatdemo.track.engine.TrackAscentCalculator;
 import com.example.gnsssatdemo.track.model.GnssSnapshotDiagnosticFields;
 
 import org.json.JSONException;
@@ -34,6 +35,16 @@ public class HikingSampleReportGenerator {
             accumulator = readDiagnostic(diagnosticFile);
         } catch (IOException | JSONException e) {
             diagnosticReadError = e.getMessage();
+        }
+        TrackAscentCalculator.Result ascentResult =
+                TrackAscentCalculator.ascentResult(new ArrayList<>(), new ArrayList<>());
+        try {
+            DiagnosticTrackPointReader.AscentInputs ascentInputs =
+                    new DiagnosticTrackPointReader().readAscentInputs(diagnosticFile);
+            ascentResult = TrackAscentCalculator.ascentResult(
+                    ascentInputs.trackPoints, ascentInputs.barometerSamples);
+        } catch (IOException | JSONException ignored) {
+            // The main diagnostic read error path above already reports parse failures.
         }
 
         List<String> blocking = new ArrayList<>();
@@ -150,6 +161,14 @@ public class HikingSampleReportGenerator {
                 accumulator.averageRawIntervalSeconds(),
                 accumulator.longRawIntervalCount,
                 manifest.totalDistanceMeters,
+                ascentResult.totalAscentMeters,
+                ascentResult.source,
+                ascentResult.barometerTotalAscentMeters,
+                ascentResult.gnssTotalAscentMeters,
+                ascentResult.barometerSampleCount,
+                ascentResult.gnssSampleCount,
+                ascentResult.barometerRejectedSampleCount,
+                ascentResult.gnssRejectedSampleCount,
                 manifest.movingTimeSeconds,
                 manifest.rawPointCount,
                 manifest.trackPointCount,

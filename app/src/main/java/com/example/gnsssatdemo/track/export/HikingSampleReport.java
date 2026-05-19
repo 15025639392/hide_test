@@ -23,6 +23,14 @@ public class HikingSampleReport {
     public final double averageRawIntervalSeconds;
     public final int longRawIntervalCount;
     public final double totalDistanceMeters;
+    public final double selectedTotalAscentMeters;
+    public final String selectedAscentSource;
+    public final double barometerTotalAscentMeters;
+    public final double gnssTotalAscentMeters;
+    public final int barometerAscentSampleCount;
+    public final int gnssAscentSampleCount;
+    public final int barometerAscentRejectedSampleCount;
+    public final int gnssAscentRejectedSampleCount;
     public final double movingTimeSeconds;
     public final int manifestRawPointCount;
     public final int manifestTrackPointCount;
@@ -74,7 +82,13 @@ public class HikingSampleReport {
                               double diagnosticDurationSeconds, double rawDurationSeconds,
                               double maxRawIntervalSeconds, double averageRawIntervalSeconds,
                               int longRawIntervalCount,
-                              double totalDistanceMeters, double movingTimeSeconds,
+                              double totalDistanceMeters,
+                              double selectedTotalAscentMeters, String selectedAscentSource,
+                              double barometerTotalAscentMeters, double gnssTotalAscentMeters,
+                              int barometerAscentSampleCount, int gnssAscentSampleCount,
+                              int barometerAscentRejectedSampleCount,
+                              int gnssAscentRejectedSampleCount,
+                              double movingTimeSeconds,
                               int manifestRawPointCount, int manifestTrackPointCount,
                               int manifestWeakTrackPointCount, int manifestGapCount,
                               int rawLocationCount, int decisionCount, int trustedDecisionCount,
@@ -116,6 +130,14 @@ public class HikingSampleReport {
         this.averageRawIntervalSeconds = averageRawIntervalSeconds;
         this.longRawIntervalCount = longRawIntervalCount;
         this.totalDistanceMeters = totalDistanceMeters;
+        this.selectedTotalAscentMeters = selectedTotalAscentMeters;
+        this.selectedAscentSource = selectedAscentSource;
+        this.barometerTotalAscentMeters = barometerTotalAscentMeters;
+        this.gnssTotalAscentMeters = gnssTotalAscentMeters;
+        this.barometerAscentSampleCount = barometerAscentSampleCount;
+        this.gnssAscentSampleCount = gnssAscentSampleCount;
+        this.barometerAscentRejectedSampleCount = barometerAscentRejectedSampleCount;
+        this.gnssAscentRejectedSampleCount = gnssAscentRejectedSampleCount;
         this.movingTimeSeconds = movingTimeSeconds;
         this.manifestRawPointCount = manifestRawPointCount;
         this.manifestTrackPointCount = manifestTrackPointCount;
@@ -174,6 +196,14 @@ public class HikingSampleReport {
         json.put("averageRawIntervalSeconds", averageRawIntervalSeconds);
         json.put("longRawIntervalCount", longRawIntervalCount);
         json.put("totalDistanceMeters", totalDistanceMeters);
+        json.put("selectedTotalAscentMeters", selectedTotalAscentMeters);
+        json.put("selectedAscentSource", selectedAscentSource);
+        json.put("barometerTotalAscentMeters", barometerTotalAscentMeters);
+        json.put("barometerAscentSampleCount", barometerAscentSampleCount);
+        json.put("barometerAscentRejectedSampleCount", barometerAscentRejectedSampleCount);
+        json.put("gnssTotalAscentMeters", gnssTotalAscentMeters);
+        json.put("gnssAscentSampleCount", gnssAscentSampleCount);
+        json.put("gnssAscentRejectedSampleCount", gnssAscentRejectedSampleCount);
         json.put("movingTimeSeconds", movingTimeSeconds);
         json.put("manifestRawPointCount", manifestRawPointCount);
         json.put("manifestTrackPointCount", manifestTrackPointCount);
@@ -239,7 +269,15 @@ public class HikingSampleReport {
                 .append(" 平均间隔=").append(secondsText(averageRawIntervalSeconds))
                 .append(" 长间隔次数=").append(longRawIntervalCount).append('\n');
         sb.append("- 距离=").append(oneDecimal(totalDistanceMeters)).append("m")
+                .append(" 爬升=").append(ascentText(selectedTotalAscentMeters))
+                .append(" 来源=").append(selectedAscentSource)
                 .append(" 运动时间=").append(secondsText(movingTimeSeconds)).append('\n');
+        sb.append("- 爬升分解 BARO=").append(ascentText(barometerTotalAscentMeters))
+                .append(" 样本=").append(barometerAscentSampleCount)
+                .append(" 拒绝=").append(barometerAscentRejectedSampleCount)
+                .append(" GNSS=").append(ascentText(gnssTotalAscentMeters))
+                .append(" 样本=").append(gnssAscentSampleCount)
+                .append(" 拒绝=").append(gnssAscentRejectedSampleCount).append('\n');
         sb.append("- Manifest RawPoint=").append(manifestRawPointCount)
                 .append(" TrackPoint=").append(manifestTrackPointCount)
                 .append(" WeakPoint=").append(manifestWeakTrackPointCount)
@@ -398,6 +436,13 @@ public class HikingSampleReport {
             return String.format(Locale.US, "%.1fmin", seconds / 60.0);
         }
         return oneDecimal(seconds) + "s";
+    }
+
+    private String ascentText(double meters) {
+        if (meters < 0.0 || Double.isNaN(meters)) {
+            return "-";
+        }
+        return oneDecimal(meters) + "m";
     }
 
     private String oneDecimal(double value) {

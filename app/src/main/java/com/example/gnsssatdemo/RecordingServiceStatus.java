@@ -7,6 +7,12 @@ class RecordingServiceStatus {
     final int trackPointCount;
     final double totalDistanceMeters;
     final double totalAscentMeters;
+    final double barometerTotalAscentMeters;
+    final double gnssTotalAscentMeters;
+    final int barometerAscentSampleCount;
+    final int gnssAscentSampleCount;
+    final int barometerAscentRejectedSampleCount;
+    final int gnssAscentRejectedSampleCount;
     final String statusText;
     final boolean hasLocation;
     final double latitude;
@@ -27,6 +33,10 @@ class RecordingServiceStatus {
     RecordingServiceStatus(boolean active, String sessionId,
                            long rawPointCount, int trackPointCount,
                            double totalDistanceMeters, double totalAscentMeters,
+                           double barometerTotalAscentMeters, double gnssTotalAscentMeters,
+                           int barometerAscentSampleCount, int gnssAscentSampleCount,
+                           int barometerAscentRejectedSampleCount,
+                           int gnssAscentRejectedSampleCount,
                            String statusText, boolean hasLocation,
                            double latitude, double longitude, float accuracyMeters,
                            boolean hasSpeed, float speedMetersPerSecond,
@@ -41,6 +51,12 @@ class RecordingServiceStatus {
         this.trackPointCount = trackPointCount;
         this.totalDistanceMeters = totalDistanceMeters;
         this.totalAscentMeters = totalAscentMeters;
+        this.barometerTotalAscentMeters = barometerTotalAscentMeters;
+        this.gnssTotalAscentMeters = gnssTotalAscentMeters;
+        this.barometerAscentSampleCount = barometerAscentSampleCount;
+        this.gnssAscentSampleCount = gnssAscentSampleCount;
+        this.barometerAscentRejectedSampleCount = barometerAscentRejectedSampleCount;
+        this.gnssAscentRejectedSampleCount = gnssAscentRejectedSampleCount;
         this.statusText = statusText;
         this.hasLocation = hasLocation;
         this.latitude = latitude;

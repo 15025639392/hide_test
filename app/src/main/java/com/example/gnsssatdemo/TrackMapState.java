@@ -28,12 +28,17 @@ class TrackMapState {
     }
 
     static TrackMapState build(List<TrackPoint> points, Fallback fallback) {
+        return build(points, fallback, null);
+    }
+
+    static TrackMapState build(List<TrackPoint> points, Fallback fallback,
+                               List<TrackAscentCalculator.BarometerSample> barometerSamples) {
         TrackPoint trustedPoint = lastTrustedMapTrackPoint(points);
         MapPoint currentPoint = currentMapPoint(trustedPoint, fallback);
         float accuracyMeters = currentAccuracyMeters(trustedPoint, fallback);
         float heading = effectiveHeadingDegrees(points, trustedPoint, fallback);
         double distanceMeters = totalDistanceMeters(points, fallback);
-        double ascentMeters = totalAscentMeters(points, fallback);
+        double ascentMeters = totalAscentMeters(points, fallback, barometerSamples);
         return new TrackMapState(points, currentPoint, accuracyMeters, heading,
                 distanceMeters, ascentMeters);
     }
@@ -155,9 +160,14 @@ class TrackMapState {
         return total;
     }
 
-    private static double totalAscentMeters(List<TrackPoint> points, Fallback fallback) {
+    private static double totalAscentMeters(List<TrackPoint> points, Fallback fallback,
+                                            List<TrackAscentCalculator.BarometerSample>
+                                                    barometerSamples) {
         if (fallback.foregroundRecording && fallback.foregroundTotalAscentMeters >= 0.0) {
             return fallback.foregroundTotalAscentMeters;
+        }
+        if (barometerSamples != null && !barometerSamples.isEmpty()) {
+            return TrackAscentCalculator.ascentResult(points, barometerSamples).totalAscentMeters;
         }
         return TrackAscentCalculator.totalAscentMeters(points);
     }

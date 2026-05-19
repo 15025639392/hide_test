@@ -49,6 +49,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import com.example.gnsssatdemo.track.engine.BasicTrackSession;
+import com.example.gnsssatdemo.track.engine.TrackAscentCalculator;
 import com.example.gnsssatdemo.track.export.DiagnosticLogSummary;
 import com.example.gnsssatdemo.track.export.DiagnosticTrackPointReader;
 import com.example.gnsssatdemo.track.export.GpxReferenceParser;
@@ -153,6 +154,12 @@ public class MainActivity extends Activity {
     private int foregroundServiceTrackPointCount;
     private double foregroundServiceTotalDistanceMeters;
     private double foregroundServiceTotalAscentMeters = -1.0;
+    private double foregroundServiceBarometerTotalAscentMeters = -1.0;
+    private double foregroundServiceGnssTotalAscentMeters = -1.0;
+    private int foregroundServiceBarometerAscentSampleCount;
+    private int foregroundServiceGnssAscentSampleCount;
+    private int foregroundServiceBarometerAscentRejectedSampleCount;
+    private int foregroundServiceGnssAscentRejectedSampleCount;
     private String foregroundServiceAscentSource = "NONE";
     private boolean foregroundServicePressureSensorAvailable;
     private long foregroundServicePressureSampleCount;
@@ -199,6 +206,8 @@ public class MainActivity extends Activity {
     private long cachedHistoricalMapLastEventSeq = -1L;
     private long cachedHistoricalMapDiagnosticBytes = -1L;
     private final List<TrackPoint> cachedHistoricalMapPoints = new ArrayList<>();
+    private final List<TrackAscentCalculator.BarometerSample> cachedHistoricalBarometerSamples =
+            new ArrayList<>();
     private boolean controlsVisible = true;
 
     private final SensorEventListener headingListener = new SensorEventListener() {
@@ -366,6 +375,16 @@ public class MainActivity extends Activity {
             foregroundServiceTrackPointCount = serviceStatus.trackPointCount;
             foregroundServiceTotalDistanceMeters = serviceStatus.totalDistanceMeters;
             foregroundServiceTotalAscentMeters = serviceStatus.totalAscentMeters;
+            foregroundServiceBarometerTotalAscentMeters =
+                    serviceStatus.barometerTotalAscentMeters;
+            foregroundServiceGnssTotalAscentMeters = serviceStatus.gnssTotalAscentMeters;
+            foregroundServiceBarometerAscentSampleCount =
+                    serviceStatus.barometerAscentSampleCount;
+            foregroundServiceGnssAscentSampleCount = serviceStatus.gnssAscentSampleCount;
+            foregroundServiceBarometerAscentRejectedSampleCount =
+                    serviceStatus.barometerAscentRejectedSampleCount;
+            foregroundServiceGnssAscentRejectedSampleCount =
+                    serviceStatus.gnssAscentRejectedSampleCount;
             foregroundServiceAscentSource = serviceStatus.ascentSource;
             foregroundServicePressureSensorAvailable = serviceStatus.pressureSensorAvailable;
             foregroundServicePressureSampleCount = serviceStatus.pressureSampleCount;
@@ -990,6 +1009,14 @@ public class MainActivity extends Activity {
             appendInfoRow(sb, "里程", formatDistance(foregroundServiceTotalDistanceMeters)
                     + "  爬升 " + formatAscent(foregroundServiceTotalAscentMeters)
                     + "  来源 " + ascentSourceText(foregroundServiceAscentSource));
+            appendInfoRow(sb, "爬升分解", "BARO "
+                    + formatAscent(foregroundServiceBarometerTotalAscentMeters)
+                    + " (" + foregroundServiceBarometerAscentSampleCount
+                    + "/" + foregroundServiceBarometerAscentRejectedSampleCount + ")"
+                    + "  GNSS "
+                    + formatAscent(foregroundServiceGnssTotalAscentMeters)
+                    + " (" + foregroundServiceGnssAscentSampleCount
+                    + "/" + foregroundServiceGnssAscentRejectedSampleCount + ")");
             appendInfoRow(sb, "气压计", foregroundBarometerText());
             appendInfoRow(sb, "采样", sampleCountText(foregroundServiceRawPointCount,
                     foregroundServiceTrackPointCount));
@@ -2435,8 +2462,9 @@ public class MainActivity extends Activity {
     }
 
     private void updateMapPreview() {
-        List<TrackPoint> points = mapTrackPoints();
-        TrackMapState mapState = TrackMapState.build(points, mapFallbackState());
+        DiagnosticTrackPointReader.AscentInputs mapInputs = mapTrackInputs();
+        TrackMapState mapState = TrackMapState.build(
+                mapInputs.trackPoints, mapFallbackState(), mapInputs.barometerSamples);
         if (mapView != null) {
             mapView.setMapState(mapState.points, referenceTrackPoints, mapState.currentPoint,
                     mapState.accuracyMeters, mapState.headingDegrees,
@@ -2499,43 +2527,63 @@ public class MainActivity extends Activity {
     }
 
     private List<TrackPoint> mapTrackPoints() {
+        return mapTrackInputs().trackPoints;
+    }
+
+    private DiagnosticTrackPointReader.AscentInputs mapTrackInputs() {
         if (foregroundServiceRecording) {
             if (!foregroundServiceTrackPoints.isEmpty()) {
-                return new ArrayList<>(foregroundServiceTrackPoints);
+                return new DiagnosticTrackPointReader.AscentInputs(
+                        new ArrayList<>(foregroundServiceTrackPoints), new ArrayList<>());
             }
-            return new ArrayList<>();
+            return new DiagnosticTrackPointReader.AscentInputs(new ArrayList<>(), new ArrayList<>());
         }
         if (trackSession != null && trackSession.getSessionId() != null) {
             List<TrackPoint> points = trackSession.getTrackPoints();
             points.addAll(trackSession.getWeakTrackPoints());
             points.addAll(trackSession.getTransportTrackPoints());
             sortMapTrackPoints(points);
-            return points;
+            return new DiagnosticTrackPointReader.AscentInputs(
+                    points, trackSession.getBarometerAscentSamples());
         }
         if (latestManifest != null && latestManifest.diagnosticLogExists
                 && (latestManifest.trackPointCount > 0 || latestManifest.weakTrackPointCount > 0)) {
-            return historicalMapTrackPoints(latestManifest);
+            return historicalMapTrackInputs(latestManifest);
         }
-        return new ArrayList<>();
+        return new DiagnosticTrackPointReader.AscentInputs(new ArrayList<>(), new ArrayList<>());
     }
 
     private List<TrackPoint> historicalMapTrackPoints(SessionManifest manifest) {
+        return historicalMapTrackInputs(manifest).trackPoints;
+    }
+
+    private DiagnosticTrackPointReader.AscentInputs historicalMapTrackInputs(
+            SessionManifest manifest) {
         if (isHistoricalMapCacheValid(manifest)) {
-            return new ArrayList<>(cachedHistoricalMapPoints);
+            return new DiagnosticTrackPointReader.AscentInputs(
+                    new ArrayList<>(cachedHistoricalMapPoints),
+                    new ArrayList<>(cachedHistoricalBarometerSamples));
         }
         cachedHistoricalMapSessionId = manifest.sessionId == null ? "" : manifest.sessionId;
         cachedHistoricalMapLastEventSeq = manifest.lastEventSeq;
         cachedHistoricalMapDiagnosticBytes = manifest.diagnosticLogBytes;
         cachedHistoricalMapPoints.clear();
+        cachedHistoricalBarometerSamples.clear();
         try {
-            List<TrackPoint> points = new DiagnosticTrackPointReader().readDisplayTrackPoints(
+            DiagnosticTrackPointReader.AscentInputs inputs =
+                    new DiagnosticTrackPointReader().readDisplayAscentInputs(
                     new File(manifest.sessionDir, manifest.diagnosticLogFileName));
+            List<TrackPoint> points = inputs.trackPoints;
             sortMapTrackPoints(points);
             cachedHistoricalMapPoints.addAll(points);
+            cachedHistoricalBarometerSamples.addAll(inputs.barometerSamples);
         } catch (IOException | JSONException ignored) {
             cachedHistoricalMapPoints.clear();
+            cachedHistoricalBarometerSamples.clear();
         }
-        return new ArrayList<>(cachedHistoricalMapPoints);
+        return new DiagnosticTrackPointReader.AscentInputs(
+                new ArrayList<>(cachedHistoricalMapPoints),
+                new ArrayList<>(cachedHistoricalBarometerSamples));
     }
 
     private boolean isHistoricalMapCacheValid(SessionManifest manifest) {
@@ -2551,6 +2599,7 @@ public class MainActivity extends Activity {
         cachedHistoricalMapLastEventSeq = -1L;
         cachedHistoricalMapDiagnosticBytes = -1L;
         cachedHistoricalMapPoints.clear();
+        cachedHistoricalBarometerSamples.clear();
     }
 
     private void sortMapTrackPoints(List<TrackPoint> points) {

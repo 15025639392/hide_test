@@ -35,6 +35,9 @@ public class HikingSampleReportGeneratorTest {
         assertEquals(10.0, report.maxRawIntervalSeconds, 0.0);
         assertEquals(10.0, report.averageRawIntervalSeconds, 0.0);
         assertEquals(2, report.samplingRequestCounts.size());
+        assertTrue(report.toJson().has("selectedTotalAscentMeters"));
+        assertTrue(report.toJson().has("barometerAscentRejectedSampleCount"));
+        assertTrue(report.toText().contains("爬升分解"));
         assertTrue(report.excludedMetrics.get(0).contains("电量"));
         assertTrue(report.toText().contains("多地图 GPX 兼容性自动回归不纳入当前统计"));
     }

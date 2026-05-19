@@ -57,6 +57,16 @@ public class RecordingForegroundService extends Service {
     public static final String EXTRA_TRACK_POINT_COUNT = "trackPointCount";
     public static final String EXTRA_TOTAL_DISTANCE_METERS = "totalDistanceMeters";
     public static final String EXTRA_TOTAL_ASCENT_METERS = "totalAscentMeters";
+    public static final String EXTRA_BAROMETER_TOTAL_ASCENT_METERS =
+            "barometerTotalAscentMeters";
+    public static final String EXTRA_GNSS_TOTAL_ASCENT_METERS = "gnssTotalAscentMeters";
+    public static final String EXTRA_BAROMETER_ASCENT_SAMPLE_COUNT =
+            "barometerAscentSampleCount";
+    public static final String EXTRA_GNSS_ASCENT_SAMPLE_COUNT = "gnssAscentSampleCount";
+    public static final String EXTRA_BAROMETER_ASCENT_REJECTED_SAMPLE_COUNT =
+            "barometerAscentRejectedSampleCount";
+    public static final String EXTRA_GNSS_ASCENT_REJECTED_SAMPLE_COUNT =
+            "gnssAscentRejectedSampleCount";
     public static final String EXTRA_STATUS_TEXT = "statusText";
     public static final String EXTRA_HAS_LOCATION = "hasLocation";
     public static final String EXTRA_LATITUDE = "latitude";
@@ -573,10 +583,24 @@ public class RecordingForegroundService extends Service {
                 trackSession == null ? 0 : trackSession.getTrackPointCount());
         intent.putExtra(EXTRA_TOTAL_DISTANCE_METERS,
                 trackSession == null ? 0.0 : trackSession.getTotalDistanceMeters());
+        TrackAscentCalculator.Result ascentResult = trackSession == null
+                ? null : trackSession.getAscentResult();
         intent.putExtra(EXTRA_TOTAL_ASCENT_METERS,
-                trackSession == null ? -1.0 : totalAscentMeters(trackSession.getTrackPoints()));
+                ascentResult == null ? -1.0 : ascentResult.totalAscentMeters);
+        intent.putExtra(EXTRA_BAROMETER_TOTAL_ASCENT_METERS,
+                ascentResult == null ? -1.0 : ascentResult.barometerTotalAscentMeters);
+        intent.putExtra(EXTRA_GNSS_TOTAL_ASCENT_METERS,
+                ascentResult == null ? -1.0 : ascentResult.gnssTotalAscentMeters);
+        intent.putExtra(EXTRA_BAROMETER_ASCENT_SAMPLE_COUNT,
+                ascentResult == null ? 0 : ascentResult.barometerSampleCount);
+        intent.putExtra(EXTRA_GNSS_ASCENT_SAMPLE_COUNT,
+                ascentResult == null ? 0 : ascentResult.gnssSampleCount);
+        intent.putExtra(EXTRA_BAROMETER_ASCENT_REJECTED_SAMPLE_COUNT,
+                ascentResult == null ? 0 : ascentResult.barometerRejectedSampleCount);
+        intent.putExtra(EXTRA_GNSS_ASCENT_REJECTED_SAMPLE_COUNT,
+                ascentResult == null ? 0 : ascentResult.gnssRejectedSampleCount);
         intent.putExtra(EXTRA_ASCENT_SOURCE,
-                trackSession == null ? "NONE" : trackSession.getCurrentAscentSource());
+                ascentResult == null ? "NONE" : ascentResult.source);
         intent.putExtra(EXTRA_PRESSURE_SENSOR_AVAILABLE,
                 trackSession != null && trackSession.isPressureSensorAvailable());
         intent.putExtra(EXTRA_PRESSURE_SAMPLE_COUNT,
@@ -651,10 +675,6 @@ public class RecordingForegroundService extends Service {
 
     private String oneDecimal(double value) {
         return String.format(java.util.Locale.US, "%.1f", value);
-    }
-
-    private double totalAscentMeters(List<TrackPoint> points) {
-        return TrackAscentCalculator.totalAscentMeters(points);
     }
 
     private String sortedPolyline(String polyline) {

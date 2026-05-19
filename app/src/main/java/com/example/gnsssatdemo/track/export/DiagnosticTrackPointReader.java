@@ -2,6 +2,7 @@ package com.example.gnsssatdemo.track.export;
 
 import com.example.gnsssatdemo.track.model.RawPoint;
 import com.example.gnsssatdemo.track.model.TrackPoint;
+import com.example.gnsssatdemo.track.engine.TrackAscentCalculator;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -29,10 +30,26 @@ public class DiagnosticTrackPointReader {
         return readTrackPoints(diagnosticJsonl, true);
     }
 
+    public AscentInputs readAscentInputs(File diagnosticJsonl)
+            throws IOException, JSONException {
+        return readAscentInputs(diagnosticJsonl, false);
+    }
+
+    public AscentInputs readDisplayAscentInputs(File diagnosticJsonl)
+            throws IOException, JSONException {
+        return readAscentInputs(diagnosticJsonl, true);
+    }
+
     private List<TrackPoint> readTrackPoints(File diagnosticJsonl, boolean includeTransportDisplay)
+            throws IOException, JSONException {
+        return readAscentInputs(diagnosticJsonl, includeTransportDisplay).trackPoints;
+    }
+
+    private AscentInputs readAscentInputs(File diagnosticJsonl, boolean includeTransportDisplay)
             throws IOException, JSONException {
         Map<Long, RawPoint> rawPoints = new HashMap<>();
         List<TrackPoint> trackPoints = new ArrayList<>();
+        List<TrackAscentCalculator.BarometerSample> barometerSamples = new ArrayList<>();
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(
                 new FileInputStream(diagnosticJsonl), StandardCharsets.UTF_8))) {
             String line;
@@ -46,6 +63,10 @@ public class DiagnosticTrackPointReader {
                 if ("raw_location".equals(eventName)) {
                     RawPoint rawPoint = rawPointFromEvent(event);
                     rawPoints.put(rawPoint.rawPointId, rawPoint);
+                } else if ("pressure_sample".equals(eventName)) {
+                    barometerSamples.add(barometerSampleFromEvent(event));
+                } else if ("pressure_sample_rejected".equals(eventName)) {
+                    barometerSamples.add(rejectedBarometerSampleFromEvent(event));
                 } else if ("decision".equals(eventName) && isRecordedTrackPointDecision(event)) {
                     RawPoint rawPoint = rawPoints.get(event.optLong("rawPointId", -1L));
                     if (rawPoint != null) {
@@ -65,7 +86,28 @@ public class DiagnosticTrackPointReader {
                 }
             }
         }
-        return trackPoints;
+        return new AscentInputs(trackPoints, barometerSamples);
+    }
+
+    private TrackAscentCalculator.BarometerSample barometerSampleFromEvent(JSONObject event) {
+        return new TrackAscentCalculator.BarometerSample(
+                event.optLong("pressureSampleId", 0L),
+                event.optLong("eventElapsedRealtimeNanos",
+                        event.optLong("elapsedRealtimeNanos", 0L)),
+                (float) event.optDouble("pressureHpa", 0.0),
+                event.optInt("sensorAccuracy", 3),
+                event.optDouble("rawBarometerAltitudeMeters", 0.0));
+    }
+
+    private TrackAscentCalculator.BarometerSample rejectedBarometerSampleFromEvent(
+            JSONObject event) {
+        return new TrackAscentCalculator.BarometerSample(
+                event.optLong("barometerSampleId", event.optLong("pressureSampleId", 0L)),
+                event.optLong("eventElapsedRealtimeNanos",
+                        event.optLong("elapsedRealtimeNanos", 0L)),
+                (float) event.optDouble("pressureHpa", 0.0),
+                event.optInt("sensorAccuracy", 3),
+                Double.NaN);
     }
 
     private RawPoint rawPointFromEvent(JSONObject event) {
@@ -169,5 +211,16 @@ public class DiagnosticTrackPointReader {
             }
         }
         trackPoints.add(refinedPoint);
+    }
+
+    public static class AscentInputs {
+        public final List<TrackPoint> trackPoints;
+        public final List<TrackAscentCalculator.BarometerSample> barometerSamples;
+
+        public AscentInputs(List<TrackPoint> trackPoints,
+                            List<TrackAscentCalculator.BarometerSample> barometerSamples) {
+            this.trackPoints = trackPoints;
+            this.barometerSamples = barometerSamples;
+        }
     }
 }

@@ -34,7 +34,80 @@ public class TrackAscentCalculatorTest {
                 barometerPoint(1L, 100.0, "accept", "moving_good_fix"),
                 point(2L, 160.0, "accept", "moving_good_fix", 10.0)));
 
-        assertEquals(0.0, ascent, 0.0001);
+        assertEquals(-1.0, ascent, 0.0001);
+    }
+
+    @Test
+    public void totalAscentMeters_usesBarometerOutsideMovingGoodFix() {
+        double ascent = TrackAscentCalculator.totalAscentMeters(Arrays.asList(
+                barometerPoint(1L, 100.0, "weak", "weak_signal_stage1"),
+                barometerPoint(2L, 110.0, "reject", "stationary_jitter")));
+
+        assertEquals(3.5, ascent, 0.0001);
+    }
+
+    @Test
+    public void ascentResult_prefersBarometerWhenBothEnginesAreReliable() {
+        TrackAscentCalculator.Result result = TrackAscentCalculator.ascentResult(Arrays.asList(
+                barometerPoint(1L, 100.0, "weak", "weak_signal_stage1"),
+                barometerPoint(2L, 110.0, "reject", "stationary_jitter"),
+                point(3L, 160.0, "accept", "moving_good_fix", 10.0),
+                point(4L, 200.0, "accept", "moving_good_fix", 10.0)));
+
+        assertEquals("BAROMETER", result.source);
+        assertEquals(3.5, result.totalAscentMeters, 0.0001);
+    }
+
+    @Test
+    public void ascentResult_usesIndependentBarometerSamples() {
+        TrackAscentCalculator.Result result = TrackAscentCalculator.ascentResult(
+                Arrays.asList(
+                        point(1L, 100.0, "accept", "moving_good_fix", 10.0),
+                        point(2L, 140.0, "accept", "moving_good_fix", 10.0)),
+                Arrays.asList(
+                        barometerSample(1L, 1L, 100.0),
+                        barometerSample(2L, 2L, 110.0)));
+
+        assertEquals("BAROMETER", result.source);
+        assertEquals(3.5, result.totalAscentMeters, 0.0001);
+        assertEquals(3.5, result.barometerTotalAscentMeters, 0.0001);
+        assertEquals(6.0, result.gnssTotalAscentMeters, 0.0001);
+    }
+
+    @Test
+    public void ascentResult_rejectsBadIndependentBarometerSamples() {
+        TrackAscentCalculator.Result result = TrackAscentCalculator.ascentResult(
+                Arrays.asList(
+                        point(1L, 100.0, "accept", "moving_good_fix", 10.0),
+                        point(2L, 140.0, "accept", "moving_good_fix", 10.0)),
+                Arrays.asList(
+                        barometerSample(1L, 1L, 100.0),
+                        new TrackAscentCalculator.BarometerSample(
+                                2L, 2L * 30_000_000_000L, 0.0f, 3, 110.0),
+                        barometerSample(3L, 1L, 120.0)));
+
+        assertEquals("GNSS", result.source);
+        assertEquals(6.0, result.totalAscentMeters, 0.0001);
+        assertEquals(-1.0, result.barometerTotalAscentMeters, 0.0001);
+        assertEquals(1, result.barometerSampleCount);
+        assertEquals(2, result.barometerRejectedSampleCount);
+    }
+
+    @Test
+    public void ascentResult_keepsUnreliableSensorAccuracyObservable() {
+        TrackAscentCalculator.Result result = TrackAscentCalculator.ascentResult(
+                Arrays.asList(
+                        point(1L, 100.0, "accept", "moving_good_fix", 10.0),
+                        point(2L, 140.0, "accept", "moving_good_fix", 10.0)),
+                Arrays.asList(
+                        barometerSample(1L, 1L, 100.0),
+                        new TrackAscentCalculator.BarometerSample(
+                                2L, 2L * 30_000_000_000L, 1000.0f, 0, 110.0)));
+
+        assertEquals("BAROMETER", result.source);
+        assertEquals(3.5, result.barometerTotalAscentMeters, 0.0001);
+        assertEquals(2, result.barometerSampleCount);
+        assertEquals(0, result.barometerRejectedSampleCount);
     }
 
     @Test
@@ -135,5 +208,12 @@ public class TrackAscentCalculatorTest {
                 1L, id * 30_000_000_000L, result, reason,
                 0.0, 30.0, null,
                 true, id * 30_000_000_000L, 1000.0, rawBarometerAltitudeMeters);
+    }
+
+    private TrackAscentCalculator.BarometerSample barometerSample(long id,
+                                                                  long elapsedStep,
+                                                                  double altitude) {
+        return new TrackAscentCalculator.BarometerSample(
+                id, elapsedStep * 30_000_000_000L, 1000.0f, 3, altitude);
     }
 }
