@@ -82,9 +82,14 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 
 import javax.xml.parsers.ParserConfigurationException;
 
@@ -208,6 +213,14 @@ public class MainActivity extends Activity {
     private final List<TrackPoint> cachedHistoricalMapPoints = new ArrayList<>();
     private final List<TrackAscentCalculator.BarometerSample> cachedHistoricalBarometerSamples =
             new ArrayList<>();
+    private final Map<String, TrackAscentCalculator.Result> cachedHistoricalAscentResults =
+            new HashMap<>();
+    private final Set<String> pendingHistoricalAscentCacheKeys = new HashSet<>();
+    private final Set<String> failedHistoricalAscentCacheKeys = new HashSet<>();
+    private final ExecutorService historicalAscentExecutor = Executors.newSingleThreadExecutor();
+    private long historicalAscentCacheGeneration;
+    private boolean historicalAscentRefreshScheduled;
+    private boolean historicalAscentDestroyed;
     private boolean controlsVisible = true;
 
     private final SensorEventListener headingListener = new SensorEventListener() {
@@ -504,6 +517,8 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        historicalAscentDestroyed = true;
+        invalidateHistoricalAscentCache();
         mainHandler.removeCallbacks(renderRunnable);
         stopPressureUpdates();
         stopHeadingUpdates();
@@ -513,6 +528,7 @@ public class MainActivity extends Activity {
         }
         recordingServiceController.unregisterStatusReceiver(foregroundServiceStatusReceiver);
         satelliteTileLoader.shutdownNow();
+        historicalAscentExecutor.shutdownNow();
         super.onDestroy();
     }
 
@@ -1002,59 +1018,106 @@ public class MainActivity extends Activity {
         return text.toString();
     }
 
-    private void appendRecordingOverview(StringBuilder sb) {
-        appendInfoSectionTitle(sb, "记录");
-        if (foregroundServiceRecording) {
-            appendInfoRow(sb, "状态", "记录中");
-            appendInfoRow(sb, "里程", formatDistance(foregroundServiceTotalDistanceMeters)
-                    + "  爬升 " + formatAscent(foregroundServiceTotalAscentMeters)
-                    + "  来源 " + ascentSourceText(foregroundServiceAscentSource));
-            appendInfoRow(sb, "爬升分解", "BARO "
-                    + formatAscent(foregroundServiceBarometerTotalAscentMeters)
-                    + " (" + foregroundServiceBarometerAscentSampleCount
-                    + "/" + foregroundServiceBarometerAscentRejectedSampleCount + ")"
-                    + "  GNSS "
-                    + formatAscent(foregroundServiceGnssTotalAscentMeters)
-                    + " (" + foregroundServiceGnssAscentSampleCount
-                    + "/" + foregroundServiceGnssAscentRejectedSampleCount + ")");
-            appendInfoRow(sb, "气压计", foregroundBarometerText());
-            appendInfoRow(sb, "采样", sampleCountText(foregroundServiceRawPointCount,
-                    foregroundServiceTrackPointCount));
-            if (foregroundServiceHasLocation) {
-                StringBuilder live = new StringBuilder("当前点已同步");
-                if (!foregroundServiceLiveRawPoints.isEmpty()) {
-                    live.append("，已绘制 ").append(foregroundServiceLiveRawPoints.size()).append(" 个实时点");
-                }
-                appendInfoRow(sb, "实时", live.toString());
-            }
-            if (!foregroundServiceStatusText.isEmpty()) {
-                appendInfoRow(sb, "服务", foregroundServiceStatusText);
-            }
-            return;
+    private String sessionBarometerText(BasicTrackSession session) {
+        if (session == null || !session.isPressureSensorAvailable()) {
+            return "无气压计";
         }
-        if (trackSession != null && trackSession.getSessionId() != null) {
-            appendInfoRow(sb, "状态", trackSession.isActive() ? "记录中" :
-                    (trackSession.isFinished() ? "已结束" : "未记录"));
-            appendInfoRow(sb, "里程", formatDistance(trackSession.getTotalDistanceMeters())
-                    + "  运动 " + one.format(trackSession.getMovingTimeSeconds()) + " s");
-            appendInfoRow(sb, "采样", sampleCountText(trackSession.getRawPointCount(),
-                    trackSession.getTrackPointCount()));
-            if (!trackSession.getLastDecisionReason().isEmpty()) {
-                appendInfoRow(sb, "最近判断",
-                        decisionReasonShortText(trackSession.getLastDecisionReason()));
-            }
-            return;
+        StringBuilder text = new StringBuilder();
+        double displayedAltitude = session.getLastDisplayedBarometerAltitudeMeters();
+        double rawAltitude = session.getLastRawBarometerAltitudeMeters();
+        if (session.isBarometerCalibrated() && !Double.isNaN(displayedAltitude)) {
+            text.append("海拔 ")
+                    .append(formatAltitude(displayedAltitude))
+                    .append("  已校准");
+        } else if (!Double.isNaN(rawAltitude)) {
+            text.append("原始 ")
+                    .append(formatAltitude(rawAltitude))
+                    .append("  未校准");
+        } else {
+            text.append("等待样本");
         }
-        if (latestManifest != null) {
-            appendInfoRow(sb, "状态", "历史 " + shortSessionId(latestManifest.sessionId));
-            appendInfoRow(sb, "里程", formatDistance(latestManifest.totalDistanceMeters)
-                    + "  运动 " + one.format(latestManifest.movingTimeSeconds) + " s");
-            appendInfoRow(sb, "采样", sampleCountText(latestManifest.rawPointCount,
-                    latestManifest.trackPointCount));
-            appendInfoRow(sb, "结论", trackOutcomeText(latestManifest));
-            return;
+        text.append("  样本 ").append(session.getPressureSampleCount());
+        return text.toString();
+    }
+
+    private String ascentOverviewText(double totalDistanceMeters,
+                                      TrackAscentCalculator.Result ascentResult) {
+        double totalAscentMeters = ascentResult == null ? -1.0
+                : ascentResult.totalAscentMeters;
+        String ascentSource = ascentResult == null ? "NONE" : ascentResult.source;
+        return ascentOverviewText(totalDistanceMeters, totalAscentMeters, ascentSource);
+    }
+
+    private String ascentOverviewText(double totalDistanceMeters, double totalAscentMeters,
+                                      String ascentSource) {
+        return formatDistance(totalDistanceMeters)
+                + "  爬升 " + formatAscent(totalAscentMeters)
+                + "  来源 " + ascentSourceText(ascentSource);
+    }
+
+    private String ascentBreakdownText(TrackAscentCalculator.Result ascentResult) {
+        if (ascentResult == null) {
+            return ascentBreakdownText(-1.0, 0, 0, -1.0, 0, 0);
         }
-        appendInfoRow(sb, "状态", "未记录");
+        return ascentBreakdownText(ascentResult.barometerTotalAscentMeters,
+                ascentResult.barometerSampleCount,
+                ascentResult.barometerRejectedSampleCount,
+                ascentResult.gnssTotalAscentMeters,
+                ascentResult.gnssSampleCount,
+                ascentResult.gnssRejectedSampleCount);
+    }
+
+    private String ascentBreakdownText(double barometerTotalAscentMeters,
+                                       int barometerSampleCount,
+                                       int barometerRejectedSampleCount,
+                                       double gnssTotalAscentMeters,
+                                       int gnssSampleCount,
+                                       int gnssRejectedSampleCount) {
+        return "BARO "
+                + formatAscent(barometerTotalAscentMeters)
+                + " (" + barometerSampleCount + "/"
+                + barometerRejectedSampleCount + ")"
+                + "  GNSS "
+                + formatAscent(gnssTotalAscentMeters)
+                + " (" + gnssSampleCount + "/"
+                + gnssRejectedSampleCount + ")";
+    }
+
+    private String manifestAscentOverviewText(SessionManifest manifest,
+                                              TrackAscentCalculator.Result fallbackResult) {
+        if (hasManifestAscentSummary(manifest)) {
+            return ascentOverviewText(manifest.totalDistanceMeters,
+                    manifest.selectedTotalAscentMeters, manifest.selectedAscentSource);
+        }
+        return ascentOverviewText(manifest.totalDistanceMeters, fallbackResult);
+    }
+
+    private String manifestAscentBreakdownText(SessionManifest manifest,
+                                               TrackAscentCalculator.Result fallbackResult) {
+        if (hasManifestAscentSummary(manifest)) {
+            return ascentBreakdownText(manifest.barometerTotalAscentMeters,
+                    manifest.barometerAscentSampleCount,
+                    manifest.barometerAscentRejectedSampleCount,
+                    manifest.gnssTotalAscentMeters,
+                    manifest.gnssAscentSampleCount,
+                    manifest.gnssAscentRejectedSampleCount);
+        }
+        return ascentBreakdownText(fallbackResult);
+    }
+
+    private boolean hasManifestAscentSummary(SessionManifest manifest) {
+        return manifest != null
+                && (isValidAscentValue(manifest.selectedTotalAscentMeters)
+                || isValidAscentValue(manifest.barometerTotalAscentMeters)
+                || isValidAscentValue(manifest.gnssTotalAscentMeters)
+                || manifest.barometerAscentSampleCount > 0
+                || manifest.barometerAscentRejectedSampleCount > 0
+                || manifest.gnssAscentSampleCount > 0
+                || manifest.gnssAscentRejectedSampleCount > 0);
+    }
+
+    private boolean isValidAscentValue(double meters) {
+        return meters >= 0.0 && !Double.isNaN(meters) && !Double.isInfinite(meters);
     }
 
     private void appendLocationBrief(StringBuilder sb) {
@@ -1639,6 +1702,7 @@ public class MainActivity extends Activity {
         lastScanCleanedTmpFileCount = state.cleanedTmpFileCount;
         lastScanError = state.error;
         invalidateHistoricalMapCache();
+        invalidateHistoricalAscentCache();
         recentManifests.clear();
         recentManifests.addAll(state.manifests);
         updateHistoricalActionButtons();
@@ -1688,6 +1752,18 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT));
     }
 
+    private void addHistoryDetailText(LinearLayout card, String text) {
+        TextView detail = new TextView(this);
+        detail.setText(text);
+        detail.setTextColor(Color.rgb(75, 85, 99));
+        detail.setTextSize(12);
+        detail.setLineSpacing(dp(3), 1.0f);
+        detail.setPadding(0, dp(6), 0, 0);
+        card.addView(detail, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+    }
+
     private void addCurrentSessionActionRow() {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -1705,6 +1781,15 @@ public class MainActivity extends Activity {
         card.addView(header, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        TrackAscentCalculator.Result ascentResult = trackSession.getAscentResult();
+        addHistoryDetailText(card, "里程 "
+                + ascentOverviewText(trackSession.getTotalDistanceMeters(), ascentResult)
+                + "  运动 " + one.format(trackSession.getMovingTimeSeconds()) + " s\n"
+                + "爬升分解 " + ascentBreakdownText(ascentResult) + "\n"
+                + "气压计 " + sessionBarometerText(trackSession) + "\n"
+                + "采样 " + sampleCountText(trackSession.getRawPointCount(),
+                trackSession.getTrackPointCount()));
 
         LinearLayout trackExportRow = newExportButtonRow(dp(8));
         if (trackSession.canExportTrustedGpx()) {
@@ -1733,6 +1818,8 @@ public class MainActivity extends Activity {
         cardLp.setMargins(0, 0, 0, dp(10));
 
         /* Header label */
+        boolean selected = isSelectedHistoricalManifest(manifest);
+        boolean currentRecordingSession = isCurrentForegroundSession(manifest);
         TextView label = new TextView(this);
         label.setText(historyActionLabel(manifest, displayIndex));
         label.setTextColor(Color.rgb(17, 24, 39));
@@ -1741,12 +1828,20 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
+        TrackAscentCalculator.Result fallbackAscentResult =
+                !hasManifestAscentSummary(manifest) ? cachedHistoricalAscentResult(manifest) : null;
+        addHistoryDetailText(card, "里程 "
+                + manifestAscentOverviewText(manifest, fallbackAscentResult)
+                + "  运动 " + one.format(manifest.movingTimeSeconds) + " s\n"
+                + "爬升分解 "
+                + manifestAscentBreakdownText(manifest, fallbackAscentResult) + "\n"
+                + "采样 " + sampleCountText(manifest.rawPointCount,
+                manifest.trackPointCount));
+
         /* Manage row (display + delete) */
         LinearLayout manageRow = new LinearLayout(this);
         manageRow.setOrientation(LinearLayout.HORIZONTAL);
         manageRow.setPadding(0, dp(10), 0, 0);
-        boolean selected = isSelectedHistoricalManifest(manifest);
-        boolean currentRecordingSession = isCurrentForegroundSession(manifest);
 
         Button displayButton = new Button(this);
         displayButton.setText(currentRecordingSession
@@ -2557,6 +2652,89 @@ public class MainActivity extends Activity {
         return historicalMapTrackInputs(manifest).trackPoints;
     }
 
+    private TrackAscentCalculator.Result cachedHistoricalAscentResult(SessionManifest manifest) {
+        if (historicalAscentDestroyed || manifest == null || !manifest.diagnosticLogExists) {
+            return null;
+        }
+        String cacheKey = historicalAscentCacheKey(manifest);
+        TrackAscentCalculator.Result cachedResult = cachedHistoricalAscentResults.get(cacheKey);
+        if (cachedResult != null) {
+            return cachedResult;
+        }
+        if (failedHistoricalAscentCacheKeys.contains(cacheKey)) {
+            return null;
+        }
+        scheduleHistoricalAscentResult(manifest, cacheKey);
+        return null;
+    }
+
+    private void scheduleHistoricalAscentResult(SessionManifest manifest, String cacheKey) {
+        if (historicalAscentDestroyed || historicalAscentExecutor.isShutdown()) {
+            return;
+        }
+        if (!pendingHistoricalAscentCacheKeys.add(cacheKey)) {
+            return;
+        }
+        final long generation = historicalAscentCacheGeneration;
+        try {
+            historicalAscentExecutor.execute(() -> {
+                final TrackAscentCalculator.Result result = readHistoricalAscentResult(manifest);
+                mainHandler.post(() -> {
+                    if (historicalAscentDestroyed
+                            || generation != historicalAscentCacheGeneration) {
+                        return;
+                    }
+                    pendingHistoricalAscentCacheKeys.remove(cacheKey);
+                    if (result != null) {
+                        cachedHistoricalAscentResults.put(cacheKey, result);
+                    } else {
+                        failedHistoricalAscentCacheKeys.add(cacheKey);
+                    }
+                    scheduleHistoricalAscentRowsRefresh();
+                });
+            });
+        } catch (RejectedExecutionException ignored) {
+            pendingHistoricalAscentCacheKeys.remove(cacheKey);
+        }
+    }
+
+    private TrackAscentCalculator.Result readHistoricalAscentResult(SessionManifest manifest) {
+        if (manifest == null || !manifest.diagnosticLogExists) {
+            return null;
+        }
+        try {
+            DiagnosticTrackPointReader.AscentInputs inputs =
+                    new DiagnosticTrackPointReader().readDisplayAscentInputs(
+                            new File(manifest.sessionDir, manifest.diagnosticLogFileName));
+            sortMapTrackPoints(inputs.trackPoints);
+            return TrackAscentCalculator.ascentResult(inputs.trackPoints, inputs.barometerSamples);
+        } catch (IOException | JSONException ignored) {
+            return null;
+        }
+    }
+
+    private void scheduleHistoricalAscentRowsRefresh() {
+        if (historicalAscentDestroyed) {
+            return;
+        }
+        if (historicalAscentRefreshScheduled) {
+            return;
+        }
+        historicalAscentRefreshScheduled = true;
+        mainHandler.post(() -> {
+            if (historicalAscentDestroyed) {
+                return;
+            }
+            historicalAscentRefreshScheduled = false;
+            updateHistoryActionRows();
+        });
+    }
+
+    private String historicalAscentCacheKey(SessionManifest manifest) {
+        String sessionId = manifest.sessionId == null ? "" : manifest.sessionId;
+        return sessionId + "|" + manifest.lastEventSeq + "|" + manifest.diagnosticLogBytes;
+    }
+
     private DiagnosticTrackPointReader.AscentInputs historicalMapTrackInputs(
             SessionManifest manifest) {
         if (isHistoricalMapCacheValid(manifest)) {
@@ -2600,6 +2778,14 @@ public class MainActivity extends Activity {
         cachedHistoricalMapDiagnosticBytes = -1L;
         cachedHistoricalMapPoints.clear();
         cachedHistoricalBarometerSamples.clear();
+    }
+
+    private void invalidateHistoricalAscentCache() {
+        historicalAscentCacheGeneration++;
+        cachedHistoricalAscentResults.clear();
+        pendingHistoricalAscentCacheKeys.clear();
+        failedHistoricalAscentCacheKeys.clear();
+        historicalAscentRefreshScheduled = false;
     }
 
     private void sortMapTrackPoints(List<TrackPoint> points) {

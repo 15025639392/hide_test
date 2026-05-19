@@ -52,6 +52,14 @@ public class SessionManifestReader {
                     json.optInt("segmentCount", 0),
                     json.optDouble("totalDistanceMeters", 0.0),
                     json.optDouble("movingTimeSeconds", 0.0),
+                    json.optDouble("selectedTotalAscentMeters", -1.0),
+                    json.optString("selectedAscentSource", "NONE"),
+                    json.optDouble("barometerTotalAscentMeters", -1.0),
+                    json.optInt("barometerAscentSampleCount", 0),
+                    json.optInt("barometerAscentRejectedSampleCount", 0),
+                    json.optDouble("gnssTotalAscentMeters", -1.0),
+                    json.optInt("gnssAscentSampleCount", 0),
+                    json.optInt("gnssAscentRejectedSampleCount", 0),
                     json.optInt("stationaryKeepaliveCount", 0),
                     json.optInt("stationaryJitterCount", 0),
                     json.optInt("gapCount", 0),
@@ -77,7 +85,8 @@ public class SessionManifestReader {
         DiagnosticLogSummary diagnosticSummary = readDiagnosticLogSummary(diagnosticFile);
         return new SessionManifest(SessionManifest.READ_MISSING_SESSION_JSON, sessionDir, sessionDir.getName(),
                 0L, 0L, "", "", 0, "", "diagnostic.jsonl", "track.gpx", "partial.gpx",
-                0L, 0L, 0, 0, 0, 0, 0.0, 0.0, 0, 0, 0, "", diagnosticFile.exists(),
+                0L, 0L, 0, 0, 0, 0, 0.0, 0.0, -1.0, "NONE", -1.0, 0, 0, -1.0,
+                0, 0, 0, 0, 0, "", diagnosticFile.exists(),
                 trustedGpxFile.exists(), partialGpxFile.exists(), fileLengthIfExists(diagnosticFile),
                 fileLengthIfExists(trustedGpxFile), fileLengthIfExists(partialGpxFile), diagnosticSummary.readStatus,
                 diagnosticSummary.lastCompleteEventSeq, diagnosticSummary.completeEventCount);
@@ -90,7 +99,8 @@ public class SessionManifestReader {
         DiagnosticLogSummary diagnosticSummary = readDiagnosticLogSummary(diagnosticFile);
         return new SessionManifest(SessionManifest.READ_INVALID_SESSION_JSON, sessionDir, sessionDir.getName(),
                 0L, 0L, "", "", 0, "", "diagnostic.jsonl", "track.gpx", "partial.gpx",
-                0L, 0L, 0, 0, 0, 0, 0.0, 0.0, 0, 0, 0, "", diagnosticFile.exists(),
+                0L, 0L, 0, 0, 0, 0, 0.0, 0.0, -1.0, "NONE", -1.0, 0, 0, -1.0,
+                0, 0, 0, 0, 0, "", diagnosticFile.exists(),
                 trustedGpxFile.exists(), partialGpxFile.exists(), fileLengthIfExists(diagnosticFile),
                 fileLengthIfExists(trustedGpxFile), fileLengthIfExists(partialGpxFile), diagnosticSummary.readStatus,
                 diagnosticSummary.lastCompleteEventSeq, diagnosticSummary.completeEventCount);

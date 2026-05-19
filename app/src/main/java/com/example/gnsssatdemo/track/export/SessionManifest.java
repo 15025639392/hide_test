@@ -35,6 +35,14 @@ public class SessionManifest {
     public final int segmentCount;
     public final double totalDistanceMeters;
     public final double movingTimeSeconds;
+    public final double selectedTotalAscentMeters;
+    public final String selectedAscentSource;
+    public final double barometerTotalAscentMeters;
+    public final int barometerAscentSampleCount;
+    public final int barometerAscentRejectedSampleCount;
+    public final double gnssTotalAscentMeters;
+    public final int gnssAscentSampleCount;
+    public final int gnssAscentRejectedSampleCount;
     public final int stationaryKeepaliveCount;
     public final int stationaryJitterCount;
     public final int gapCount;
@@ -61,6 +69,12 @@ public class SessionManifest {
                            int trackPointCount, int weakTrackPointCount,
                            int rawPointCount, int segmentCount,
                            double totalDistanceMeters, double movingTimeSeconds,
+                           double selectedTotalAscentMeters, String selectedAscentSource,
+                           double barometerTotalAscentMeters,
+                           int barometerAscentSampleCount,
+                           int barometerAscentRejectedSampleCount,
+                           double gnssTotalAscentMeters, int gnssAscentSampleCount,
+                           int gnssAscentRejectedSampleCount,
                            int stationaryKeepaliveCount, int stationaryJitterCount,
                            int gapCount, String lastKnownErrorCode,
                            boolean diagnosticLogExists, boolean trustedGpxExists,
@@ -90,6 +104,14 @@ public class SessionManifest {
         this.segmentCount = segmentCount;
         this.totalDistanceMeters = totalDistanceMeters;
         this.movingTimeSeconds = movingTimeSeconds;
+        this.selectedTotalAscentMeters = selectedTotalAscentMeters;
+        this.selectedAscentSource = selectedAscentSource;
+        this.barometerTotalAscentMeters = barometerTotalAscentMeters;
+        this.barometerAscentSampleCount = barometerAscentSampleCount;
+        this.barometerAscentRejectedSampleCount = barometerAscentRejectedSampleCount;
+        this.gnssTotalAscentMeters = gnssTotalAscentMeters;
+        this.gnssAscentSampleCount = gnssAscentSampleCount;
+        this.gnssAscentRejectedSampleCount = gnssAscentRejectedSampleCount;
         this.stationaryKeepaliveCount = stationaryKeepaliveCount;
         this.stationaryJitterCount = stationaryJitterCount;
         this.gapCount = gapCount;
