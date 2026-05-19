@@ -17,6 +17,7 @@ RecordingForegroundService
   -> RawPoint / GnssQualitySnapshot / diagnostic.jsonl
   -> LocationValidator
   -> TrackDecisionEngine
+  -> RestAnchorRefiner / RestStateMachine
   -> TrackPoint / session.json
   -> track.gpx / partial.gpx
   -> replay fixtures / reports
@@ -32,6 +33,10 @@ Key files:
 | Session orchestration | `app/src/main/java/com/example/gnsssatdemo/track/engine/BasicTrackSession.java` |
 | Validation policy | `app/src/main/java/com/example/gnsssatdemo/track/engine/LocationValidator.java` |
 | Decision policy | `app/src/main/java/com/example/gnsssatdemo/track/engine/TrackDecisionEngine.java` |
+| Decision coordination | `app/src/main/java/com/example/gnsssatdemo/track/engine/TrackDecisionCoordinator.java` |
+| REST state policy | `app/src/main/java/com/example/gnsssatdemo/track/engine/RestStateMachine.java` |
+| Rest anchor refinement | `app/src/main/java/com/example/gnsssatdemo/track/engine/RestAnchorRefiner.java` |
+| Strategy thresholds | `app/src/main/java/com/example/gnsssatdemo/track/engine/TrackStrategyConfig.java` |
 | Replay policy runner | `app/src/main/java/com/example/gnsssatdemo/track/replay/ReplayRunner.java` |
 | Session files | `app/src/main/java/com/example/gnsssatdemo/track/export/SessionFileStore.java` |
 | GPX export | `app/src/main/java/com/example/gnsssatdemo/track/export/GpxExporter.java` |
@@ -51,6 +56,8 @@ Preserve these unless the user explicitly asks for a strategy change:
   point is outside stationary noise. Stationary recovery refines the existing
   zero-distance anchor instead.
 - Transport mode does not contribute to hiking distance.
+- REST_PAUSED and REST_PROBING do not contribute to hiking distance, and probing
+  points are not backfilled after movement is confirmed.
 - Trusted GPX contains only `anchor` and `accept` TrackPoints.
 - `elapsedRealtimeNanos` remains the internal continuity clock.
 - Replay must reproduce the same policy semantics as real recording.
@@ -60,7 +67,7 @@ Preserve these unless the user explicitly asks for a strategy change:
 Current strategy version:
 
 ```text
-stage1-gnss-track-v1
+stage1-gnss-track-v2-rest-state
 ```
 
 Baseline behavior:
@@ -78,6 +85,13 @@ Baseline behavior:
 | Sustained vehicle-like movement | `reject / transport_suspected`, enter transport mode |
 | Continued transport mode | `reject / transport_confirmed` |
 | Stable walking after transport | `accept / transport_recovery`, zero delta, new segment |
+| Still evidence near an existing zero-distance anchor with better quality | `anchor / stationary_anchor_refined` |
+| Still evidence near the anchor without quality improvement | `reject / stationary_accel_supported_jitter` |
+| REST entry evidence while moving | `reject / rest_candidate` until confirmation |
+| REST paused keepalive near anchor | `reject / rest_paused_keepalive` |
+| REST probing still near anchor | `reject / rest_probing_stationary` |
+| REST probing before movement confirmation | `reject / rest_probing_confirming_moving` |
+| Confirmed movement after REST probing | `accept / rest_moving_recovery`, zero delta, new segment |
 | Small movement below noise floor | `stationary_jitter` or `stationary_keepalive` |
 | Normal movement | `accept / moving_good_fix` |
 
@@ -312,7 +326,8 @@ Use the config from:
 
 Rules:
 
-- Default values must match `stage1-gnss-track-v1`.
+- Default values must match the published compatibility thresholds used by
+  `stage1-gnss-track-v2-rest-state`.
 - Do not add runtime settings in this phase.
 - Do not change fixture expectations.
 

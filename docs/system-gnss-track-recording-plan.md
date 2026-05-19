@@ -5,7 +5,7 @@
 当前策略版本：
 
 ```text
-stage1-gnss-track-v1
+stage1-gnss-track-v2-rest-state
 ```
 
 技术债治理、AI 执行顺序、策略不变量和 replay fixture 分类见
@@ -105,6 +105,8 @@ START_NOT_STICKY
 | STARTING | 1000 | 0 |
 | MOVING | 3000 | 0 |
 | SIGNAL_WEAK | 2000 | 0 |
+| REST_PROBING | 1000 | 0 |
+| REST_PAUSED | 10000 | 0 |
 | PAUSED | 10000 | 0 |
 
 关键原则：
@@ -199,45 +201,49 @@ TrackPoint：
 - 每 30 秒允许一次 `stationary_keepalive` 诊断。
 - 更频繁的小范围漂移记为 `stationary_jitter`。
 
-### 静止锚点优化暂缓
+### 静止锚点优化
 
 `stationary_anchor_refinement` 指在静止或近静止小范围内，把多个可信点聚成一个
 stationary cluster，并选择其中最可信的点作为代表锚点。候选评分可参考 accuracy、
 GNSS snapshot 新鲜度、used satellite count、C/N0 和前后连接是否产生异常速度。
 
-该方向暂时不落地到当前主链路。
+当前版本已经把静止锚点优化接入主链路，但只允许在保守条件下影响零距离锚点，
+不回补距离、不新增真实移动段：
 
-可能收益：
+```text
+候选条件:
+  当前点低速或无明显移动速度
+  与上一可信 TrackPoint 的距离处在 15m 或 accuracy 可解释范围内
+  对 moving_good_fix 候选，必须有最近加速度静止证据
+
+可替换条件:
+  上一可信 TrackPoint 的 distanceDeltaMeters = 0
+  上一可信 TrackPoint 的 movingTimeDeltaSeconds = 0
+  当前点 accuracy 明显更好，或 accuracy 接近但 GNSS snapshot 更好
+
+结果:
+  更好的静止点 -> result = anchor, reason = stationary_anchor_refined
+  未改善的近距离静止漂移 -> result = reject, reason = stationary_accel_supported_jitter
+```
+
+实际收益：
 
 - 静止或休息时地图点位更稳定。
 - 静止簇能有一个更可解释的代表点。
-- 离开静止区后，展示线可能更少受抖动影响。
-- 样本报告可以更清楚表达“这里停留过，而不是移动过”。
+- GAP 后仍在原地的恢复点不会新建一段虚假线路。
+- REST_PAUSED / REST_PROBING 周期内的小范围漂移不污染可信距离。
 
 主要风险：
 
 - 真实徒步中的慢速移动、拍照挪步、折返、窄路绕行可能被误吞成静止。
-- 若代表锚点后续被更新，会影响离开静止区后的连接距离和时间语义。
 - 弱信号环境下 accuracy 不一定可靠，所谓“最可信点”仍可能是漂移点。
-- 需要维护 cluster 状态、best candidate、退出条件和重算逻辑，会增加 replay 与测试矩阵复杂度。
+- 需要依赖 replay fixture 和真实样本持续校验，不应继续扩大到非零距离移动点替换。
 
-暂缓原因：
+边界：
 
-- 当前 `stationary_keepalive` / `stationary_jitter` 已经能做到静止抖动不累计距离。
-- 当前阶段更需要保持 RawPoint/TrackPoint 判点链路简单、可解释、可回放。
-- 在没有足够真实静止、休息、弱 GPS 样本前，把该优化接入 `totalDistanceMeters`
-  或 `track.gpx` 的收益不确定，风险高于收益。
-
-如后续验证该方向，第一阶段只能做 diagnostic/report/display only：
-
-```text
-识别 stationary cluster
-记录 bestStationaryAnchorCandidate
-输出到 sample_report 或地图辅助展示
-不改变 TrackPoint
-不改变 totalDistanceMeters
-不改变 track.gpx / partial.gpx
-```
+- 不替换已经产生非零距离或非零 moving time 的 TrackPoint。
+- 不把 GNSS snapshot 单独作为 accept/reject 输入，只用于同等 accuracy 附近的锚点择优。
+- 不修改已经累计的 `totalDistanceMeters` 和 `movingTimeSeconds`。
 
 ## REST 状态机策略
 

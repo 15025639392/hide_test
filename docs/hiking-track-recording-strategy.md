@@ -1,5 +1,9 @@
 # 徒步轨迹记录策略设计
 
+当前实现的权威短版见 `docs/system-gnss-track-recording-plan.md`。本文保留
+策略设计背景，但涉及当前落地行为时，以 `stage1-gnss-track-v2-rest-state`
+为准。
+
 ## 1. 核心定义
 
 轨迹记录的本质不是把 GPS 点按时间存下来，而是：
@@ -209,11 +213,12 @@ transport mode:
 enum class TrackingState {
     STARTING,
     MOVING,
-    MAYBE_PAUSED,
-    PAUSED,
     SIGNAL_WEAK,
-    RECOVERING,
-    BATTERY_SAVING,
+    PAUSED,
+    REST_CANDIDATE,
+    REST_PAUSED,
+    REST_PROBING,
+    TRANSPORT,
     ENDED
 }
 ```
@@ -227,20 +232,23 @@ STARTING:
 MOVING:
   用户正在持续移动
 
-MAYBE_PAUSED:
-  短时间位移很小，疑似停留，但还不能确认
-
 PAUSED:
-  已经确认停留
+  连续静止决策后的低频采样状态
 
 SIGNAL_WEAK:
   连续弱定位、坏点、漂移点，或长时间没有定位
 
-RECOVERING:
-  弱信号后重新拿到较好定位，正在确认恢复稳定
+REST_CANDIDATE:
+  有低速、小位移和加速度静止证据，正在收集休息确认
 
-BATTERY_SAVING:
-  低电量或系统约束下的省电记录模式
+REST_PAUSED:
+  已确认休息锚点，GPS keepalive 不累计距离
+
+REST_PROBING:
+  从休息恢复时提频探测，确认前不回补距离
+
+TRANSPORT:
+  疑似交通工具混入，继续记录 RawPoint 但不进入可信徒步距离
 
 ENDED:
   用户结束记录
@@ -329,36 +337,40 @@ STARTING
      连续拿到若干 GOOD/EXCELLENT 点，并发生有效位移
 
 MOVING
-  -> MAYBE_PAUSED
-     一段时间内位移很小，速度持续偏低
+  -> REST_CANDIDATE
+     连续 20s 以上低速、小位移，且有加速度静止证据
 
-MAYBE_PAUSED
-  -> PAUSED
-     持续静止超过阈值，例如 3-5 分钟
+REST_CANDIDATE
+  -> REST_PAUSED
+     收集到至少 2 个静止确认点，并选出休息锚点
 
-MAYBE_PAUSED
+REST_PAUSED
+  -> REST_PROBING
+     加速度变化，或位置/速度显示可能离开锚点
+
+REST_PROBING
   -> MOVING
-     重新出现连续有效位移
+     连续可信移动证据确认离开休息锚点，写入零距离 recovery 点
 
-PAUSED
-  -> MOVING
-     离开停留区域，例如连续位移超过 20-30 米
+REST_PROBING
+  -> REST_PAUSED
+     探测点仍在锚点附近，继续休息 keepalive
 
-MOVING / MAYBE_PAUSED / PAUSED
+MOVING / REST_CANDIDATE / REST_PAUSED / REST_PROBING
   -> SIGNAL_WEAK
      连续多个 WEAK/BAD/DRIFT 点，或长时间无定位
 
 SIGNAL_WEAK
-  -> RECOVERING
-     重新拿到 GOOD/EXCELLENT 点
-
-RECOVERING
   -> MOVING
-     连续稳定一段时间
+     重新拿到可信移动点；若 GAP 超过 120s，恢复点以 gap_recovery 零距离入轨
 
-任意状态
-  -> BATTERY_SAVING
-     电量低于阈值，例如 15%
+MOVING
+  -> TRANSPORT
+     明显超过徒步速度范围或有合理车辆速度证据
+
+TRANSPORT
+  -> MOVING
+     稳定恢复到徒步速度，写入 transport_recovery 零距离点
 ```
 
 ### 5.2 徒步场景的特殊判断
@@ -371,17 +383,21 @@ RECOVERING
 信号断了 != 用户没走
 ```
 
-因此需要一个 `MAYBE_PAUSED` 缓冲状态，避免把慢速爬坡、短暂停顿、拍照等场景过早判定为暂停。
+因此当前实现使用 `REST_CANDIDATE` 和 `REST_PROBING` 作为缓冲状态，避免把慢速爬坡、短暂停顿、拍照等场景过早判定为暂停，也避免休息后起步把锚点附近漂移回补为距离。
 
-建议第一版暂停判断：
+当前暂停/休息判断：
 
 ```text
-MAYBE_PAUSED:
-  最近 60-120 秒有效位移很小
+REST_CANDIDATE:
+  连续低速、小位移，并有最近加速度静止证据
 
-PAUSED:
-  在半径 20-30 米范围内持续 3-5 分钟
-  且没有连续可信的离开趋势
+REST_PAUSED:
+  保留 GPS keepalive
+  小范围漂移不累计距离
+
+REST_PROBING:
+  提频确认恢复移动
+  探测点默认不回补距离
 ```
 
 山地或陡坡场景可延长暂停确认时间：
@@ -425,31 +441,31 @@ MOVING:
   distanceFilterMeters = 0 米
   desiredAccuracy = HIGH
 
-MAYBE_PAUSED:
-  intervalMillis = 10 秒
-  distanceFilterMeters = 0 米
-  desiredAccuracy = BALANCED
-
-PAUSED:
-  intervalMillis = 10 秒
-  distanceFilterMeters = 0 米
-  desiredAccuracy = BALANCED
-
 SIGNAL_WEAK:
   intervalMillis = 2 秒
   distanceFilterMeters = 0 米
   desiredAccuracy = HIGH
   注意：提高采集尝试，不等于提高点的信任度
 
-RECOVERING:
-  intervalMillis = 2-3 秒
+REST_PROBING:
+  intervalMillis = 1 秒
   distanceFilterMeters = 0 米
   desiredAccuracy = HIGH
 
-BATTERY_SAVING:
-  intervalMillis = 30-90 秒
+REST_PAUSED:
+  intervalMillis = 10 秒
   distanceFilterMeters = 0 米
-  desiredAccuracy = LOW_POWER
+  desiredAccuracy = HIGH
+
+TRANSPORT:
+  intervalMillis = 3 秒
+  distanceFilterMeters = 0 米
+  desiredAccuracy = HIGH
+
+PAUSED:
+  intervalMillis = 10 秒
+  distanceFilterMeters = 0 米
+  desiredAccuracy = HIGH
 ```
 
 真实徒步记录优先保留路线形状，因此第一阶段不把距离过滤交给 Android 系统。功耗主要通过时间间隔调节；距离、静止、弱信号和 GAP 由 App 层解释。
@@ -469,11 +485,11 @@ fun chooseSamplingPolicy(context: TrackingContext): SamplingPolicy {
     return when (context.state) {
         TrackingState.STARTING -> SamplingPolicy(1_000, 0f, DesiredAccuracy.HIGH)
         TrackingState.MOVING -> SamplingPolicy(3_000, 0f, DesiredAccuracy.HIGH)
-        TrackingState.MAYBE_PAUSED -> SamplingPolicy(10_000, 0f, DesiredAccuracy.BALANCED)
-        TrackingState.PAUSED -> SamplingPolicy(10_000, 0f, DesiredAccuracy.BALANCED)
         TrackingState.SIGNAL_WEAK -> SamplingPolicy(2_000, 0f, DesiredAccuracy.HIGH)
-        TrackingState.RECOVERING -> SamplingPolicy(2_000, 0f, DesiredAccuracy.HIGH)
-        TrackingState.BATTERY_SAVING -> SamplingPolicy(60_000, 0f, DesiredAccuracy.LOW_POWER)
+        TrackingState.REST_PROBING -> SamplingPolicy(1_000, 0f, DesiredAccuracy.HIGH)
+        TrackingState.REST_PAUSED -> SamplingPolicy(10_000, 0f, DesiredAccuracy.HIGH)
+        TrackingState.TRANSPORT -> SamplingPolicy(3_000, 0f, DesiredAccuracy.HIGH)
+        TrackingState.PAUSED -> SamplingPolicy(10_000, 0f, DesiredAccuracy.HIGH)
         TrackingState.ENDED -> SamplingPolicy(60_000, 0f, DesiredAccuracy.LOW_POWER)
     }
 }
@@ -491,9 +507,9 @@ EXCELLENT / GOOD:
 
 WEAK:
   保存 RawPoint
-  可作为辅助显示或恢复判断
-  谨慎进入 TrackPoint
-  默认不强参与距离统计，或降低权重
+  可作为辅助显示和弱信号诊断
+  进入 weakTrackPoints / partial GPX
+  不进入可信主轨迹，不参与可信距离和 movingTime
 
 BAD:
   只保存 RawPoint
@@ -526,7 +542,7 @@ TRANSPORT:
 停留状态下的小范围漂移不累计
 异常速度不累计
 长时间断点不按直线累计为真实距离
-低精度点可进入估算距离，不进入可信距离
+弱点、REST 探测点、交通工具点不进入可信距离
 ```
 
 ## 8. 轨迹分段
@@ -723,11 +739,12 @@ OFF_ROUTE:
 
 - `STARTING`
 - `MOVING`
-- `MAYBE_PAUSED`
+- `REST_CANDIDATE`
+- `REST_PAUSED`
+- `REST_PROBING`
 - `PAUSED`
 - `SIGNAL_WEAK`
-- `RECOVERING`
-- `BATTERY_SAVING`
+- `TRANSPORT`
 - 不同状态对应不同采样策略
 
 ### V3：分段与可信度
@@ -778,7 +795,7 @@ OFF_ROUTE:
 1. 原始点全部保存
 2. 点质量分级
 3. RawPoint / TrackPoint 分离
-4. MOVING / MAYBE_PAUSED / PAUSED / SIGNAL_WEAK 状态机
+4. MOVING / REST_CANDIDATE / REST_PAUSED / REST_PROBING / SIGNAL_WEAK 状态机
 5. 坏点不进入主轨迹
 6. 停留漂移不累计距离
 7. 长时间无点标记 GAP
