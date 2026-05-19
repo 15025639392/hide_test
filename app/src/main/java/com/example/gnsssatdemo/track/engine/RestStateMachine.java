@@ -91,6 +91,23 @@ public class RestStateMachine {
             }
             return Decision.keep(outcome, state);
         }
+        if (RestAnchorRefiner.REASON_ANCHOR_REFINED.equals(outcome.reason)) {
+            anchor = Anchor.from(rawPoint);
+            state = STATE_REST_PAUSED;
+            probingMovingPointCount = 0;
+            recentMotionMoving = false;
+            return Decision.keep(outcome, state);
+        }
+        if (RestAnchorRefiner.REASON_ACCEL_SUPPORTED_JITTER.equals(outcome.reason)
+                && (isPaused() || isProbing())) {
+            if (anchor != null && isAccuracyExplainableFromAnchor(rawPoint)) {
+                anchor = anchor.betterOf(rawPoint);
+                state = STATE_REST_PAUSED;
+                probingMovingPointCount = 0;
+                recentMotionMoving = false;
+            }
+            return Decision.keep(outcome, state);
+        }
 
         if (STATE_REST_PAUSED.equals(state)) {
             return applyPaused(outcome, rawPoint);
@@ -106,7 +123,7 @@ public class RestStateMachine {
         }
         if (restEvidence) {
             startCandidate(rawPoint);
-            return Decision.override(reject(REASON_REST_CANDIDATE), state);
+            return Decision.override(reject(REASON_REST_CANDIDATE, outcome), state);
         }
         return Decision.keep(outcome, state);
     }
@@ -124,9 +141,9 @@ public class RestStateMachine {
             anchor = candidateAnchor;
             state = STATE_REST_PAUSED;
             probingMovingPointCount = 0;
-            return Decision.override(reject(REASON_REST_PAUSED_KEEPALIVE), state);
+            return Decision.override(reject(REASON_REST_PAUSED_KEEPALIVE, outcome), state);
         }
-        return Decision.override(reject(REASON_REST_CANDIDATE), state);
+        return Decision.override(reject(REASON_REST_CANDIDATE, outcome), state);
     }
 
     private Decision applyPaused(TrackDecisionResult outcome, RawPoint rawPoint) {
@@ -136,7 +153,7 @@ public class RestStateMachine {
         }
         if (isNearAnchor(rawPoint) && isLowSpeed(rawPoint) && !recentMotionMoving) {
             anchor = anchor.betterOf(rawPoint);
-            return Decision.override(reject(REASON_REST_PAUSED_KEEPALIVE), state);
+            return Decision.override(reject(REASON_REST_PAUSED_KEEPALIVE, outcome), state);
         }
         state = STATE_REST_PROBING;
         probingMovingPointCount = 0;
@@ -148,12 +165,12 @@ public class RestStateMachine {
             reset();
             return Decision.keep(outcome, state);
         }
-        if (isNearAnchor(rawPoint) && isLowSpeed(rawPoint)) {
+        if (isLowSpeed(rawPoint) && isAccuracyExplainableFromAnchor(rawPoint)) {
             anchor = anchor.betterOf(rawPoint);
             state = STATE_REST_PAUSED;
             probingMovingPointCount = 0;
             recentMotionMoving = false;
-            return Decision.override(reject(REASON_REST_PROBING_STATIONARY), state);
+            return Decision.override(reject(REASON_REST_PROBING_STATIONARY, outcome), state);
         }
         if (isMovingConfirmation(outcome, rawPoint)) {
             probingMovingPointCount++;
@@ -169,10 +186,10 @@ public class RestStateMachine {
                         REASON_REST_MOVING_RECOVERY, 0.0, 0.0,
                         outcome.nextStationaryKeepaliveElapsedRealtimeNanos, 0, 0, true), state);
             }
-            return Decision.override(reject(REASON_REST_PROBING_CONFIRMING_MOVING), state);
+            return Decision.override(reject(REASON_REST_PROBING_CONFIRMING_MOVING, outcome), state);
         }
         probingMovingPointCount = 0;
-        return Decision.override(reject(REASON_REST_PROBING_CONFIRMING_MOVING), state);
+        return Decision.override(reject(REASON_REST_PROBING_CONFIRMING_MOVING, outcome), state);
     }
 
     private boolean hasRestEntryEvidence(RawPoint rawPoint, TrackPoint previousTrackPoint,
@@ -249,6 +266,15 @@ public class RestStateMachine {
                 rawPoint.latitude, rawPoint.longitude) <= MAX_ANCHOR_DISTANCE_METERS;
     }
 
+    private boolean isAccuracyExplainableFromAnchor(RawPoint rawPoint) {
+        double anchorDistance = distanceMeters(anchor.latitude, anchor.longitude,
+                rawPoint.latitude, rawPoint.longitude);
+        double accuracyRange = Math.max(MAX_ANCHOR_DISTANCE_METERS,
+                (rawPoint.accuracyMeters + anchor.accuracyMeters)
+                        * ACCURACY_EXPLAIN_MULTIPLIER);
+        return anchorDistance <= accuracyRange;
+    }
+
     private boolean isWithinAccuracyExplainableRange(RawPoint rawPoint,
                                                      TrackPoint previousTrackPoint) {
         double distanceMeters = distanceMeters(previousTrackPoint.latitude,
@@ -276,9 +302,9 @@ public class RestStateMachine {
         candidatePointCount++;
     }
 
-    private TrackDecisionResult reject(String reason) {
+    private TrackDecisionResult reject(String reason, TrackDecisionResult baseOutcome) {
         return new TrackDecisionResult("reject", reason, 0.0, 0.0,
-                0L, 0, 1, false);
+                baseOutcome.nextStationaryKeepaliveElapsedRealtimeNanos, 0, 1, false);
     }
 
     private static double distanceMeters(double lat1, double lon1, double lat2, double lon2) {

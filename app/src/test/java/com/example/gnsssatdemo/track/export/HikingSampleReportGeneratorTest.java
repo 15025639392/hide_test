@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class HikingSampleReportGeneratorTest {
@@ -411,7 +412,7 @@ public class HikingSampleReportGeneratorTest {
                 + motionWindow(4, 1, 2_000_000_000L, 3_000_000_000L, true)
                 + raw(5, 2, 3_000_000_000L, false)
                 + decision(6, 2, 2, 1, 1, 3_000_000_000L,
-                "reject", "stationary_anchor_refined", 0.0, 0.0)
+                "anchor", "stationary_anchor_refined", 0.0, 0.0)
                 + raw(7, 3, 4_000_000_000L, false)
                 + decision(8, 3, 3, 1, 1, 4_000_000_000L,
                 "reject", "stationary_accel_supported_jitter", 0.0, 0.0)
@@ -427,6 +428,8 @@ public class HikingSampleReportGeneratorTest {
                 .read(dir);
         HikingSampleReport report = new HikingSampleReportGenerator().generate(manifest);
 
+        assertEquals(1, report.trustedDecisionCount);
+        assertFalse(report.blockingFindings.toString().contains("TrackPoint"));
         assertEquals(2, report.stationaryDecisionCount);
         assertEquals(2, report.stationarySupportedByAccelCount);
         assertEquals(0, report.stationaryMissingMotionSummaryCount);

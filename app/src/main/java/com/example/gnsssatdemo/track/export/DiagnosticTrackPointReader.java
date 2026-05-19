@@ -49,7 +49,12 @@ public class DiagnosticTrackPointReader {
                 } else if ("decision".equals(eventName) && isRecordedTrackPointDecision(event)) {
                     RawPoint rawPoint = rawPoints.get(event.optLong("rawPointId", -1L));
                     if (rawPoint != null) {
-                        trackPoints.add(trackPointFromEvent(event, rawPoint));
+                        TrackPoint trackPoint = trackPointFromEvent(event, rawPoint);
+                        if (isAnchorRefinementDecision(event)) {
+                            upsertRefinedTrackPoint(trackPoints, trackPoint);
+                        } else {
+                            trackPoints.add(trackPoint);
+                        }
                     }
                 } else if (includeTransportDisplay && "decision".equals(eventName)
                         && isTransportDisplayDecision(event)) {
@@ -131,5 +136,19 @@ public class DiagnosticTrackPointReader {
         }
         String result = event.optString("result", "");
         return "anchor".equals(result) || "accept".equals(result) || "weak".equals(result);
+    }
+
+    private boolean isAnchorRefinementDecision(JSONObject event) {
+        return "stationary_anchor_refined".equals(event.optString("reason", ""));
+    }
+
+    private void upsertRefinedTrackPoint(List<TrackPoint> trackPoints, TrackPoint refinedPoint) {
+        for (int i = trackPoints.size() - 1; i >= 0; i--) {
+            if (trackPoints.get(i).trackPointId == refinedPoint.trackPointId) {
+                trackPoints.set(i, refinedPoint);
+                return;
+            }
+        }
+        trackPoints.add(refinedPoint);
     }
 }

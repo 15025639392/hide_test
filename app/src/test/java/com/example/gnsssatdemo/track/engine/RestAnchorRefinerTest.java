@@ -85,7 +85,7 @@ public class RestAnchorRefinerTest {
     }
 
     @Test
-    public void refine_keepsNearbyGapRecoveryWithoutRecentStationaryDriftReference() {
+    public void refine_replacesNearbyGapRecoveryWhenLowSpeedPointImprovesAnchor() {
         RestAnchorRefiner.Decision decision = refiner.refine(gapRecovery(),
                 raw(2L, 10f, 29.00005, 106.0, 6_000_000_000L, true, 0f, 2L),
                 previousTrackPoint(12f, 1L),
@@ -93,11 +93,13 @@ public class RestAnchorRefinerTest {
                 snapshot(1L, 14, 24f),
                 stillSummaries());
 
-        assertFalse(decision.handled);
+        assertTrue(decision.handled);
+        assertTrue(decision.refineAnchor);
+        assertEquals(RestAnchorRefiner.REASON_ANCHOR_REFINED, decision.reason);
     }
 
     @Test
-    public void refine_keepsNearbyGapRecoveryWithoutStillEvidenceOrRecentStationaryDriftReference() {
+    public void refine_replacesNearbyGapRecoveryEvenWithoutStillEvidence() {
         RestAnchorRefiner.Decision decision = refiner.refine(gapRecovery(),
                 raw(2L, 10f, 29.00005, 106.0, 6_000_000_000L, true, 0f, 2L),
                 previousTrackPoint(12f, 1L),
@@ -105,7 +107,23 @@ public class RestAnchorRefinerTest {
                 snapshot(1L, 14, 24f),
                 Collections.<MotionSummary>emptyList());
 
-        assertFalse(decision.handled);
+        assertTrue(decision.handled);
+        assertTrue(decision.refineAnchor);
+        assertEquals(RestAnchorRefiner.REASON_ANCHOR_REFINED, decision.reason);
+    }
+
+    @Test
+    public void refine_rejectsNearbyGapRecoveryWhenAnchorQualityDoesNotImprove() {
+        RestAnchorRefiner.Decision decision = refiner.refine(gapRecovery(),
+                raw(2L, 12f, 29.00005, 106.0, 6_000_000_000L, true, 0f, 2L),
+                previousTrackPoint(10f, 1L),
+                snapshot(2L, 14, 24f),
+                snapshot(1L, 14, 24f),
+                Collections.<MotionSummary>emptyList());
+
+        assertTrue(decision.handled);
+        assertFalse(decision.refineAnchor);
+        assertEquals(RestAnchorRefiner.REASON_ACCEL_SUPPORTED_JITTER, decision.reason);
     }
 
     @Test

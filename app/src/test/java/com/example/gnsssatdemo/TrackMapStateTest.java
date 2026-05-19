@@ -66,6 +66,17 @@ public class TrackMapStateTest {
     }
 
     @Test
+    public void build_treatsStationaryAnchorRefinementAsAscentAnchor() {
+        TrackMapState state = TrackMapState.build(Arrays.asList(
+                altitudePoint(1L, 29.0, 100.0, "accept", "moving_good_fix"),
+                altitudePoint(2L, 29.0001, 150.0, "anchor", "stationary_anchor_refined"),
+                altitudePoint(3L, 29.0002, 151.0, "accept", "moving_good_fix")),
+                new TrackMapState.Fallback());
+
+        assertEquals(1.0, state.totalAscentMeters, 0.0);
+    }
+
+    @Test
     public void build_usesCompassFallbackOnlyWhenReliable() {
         TrackMapState.Fallback fallback = new TrackMapState.Fallback();
         fallback.hasLastLocation = true;
@@ -203,5 +214,12 @@ public class TrackMapStateTest {
         return new TrackPoint(id, id, id, 1L, latitude, longitude,
                 false, 0.0, 5f, false, 0f, hasBearing, bearingDegrees,
                 1L, id * 1_000_000_000L, result, reason, distanceDeltaMeters, 1.0, null);
+    }
+
+    private TrackPoint altitudePoint(long id, double latitude, double altitude, String result,
+                                     String reason) {
+        return new TrackPoint(id, id, id, 1L, latitude, 106.0,
+                true, altitude, 5f, false, 0f, false, 0f,
+                1L, id * 1_000_000_000L, result, reason, 0.0, 0.0, null);
     }
 }

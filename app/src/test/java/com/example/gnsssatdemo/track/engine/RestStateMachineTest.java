@@ -48,6 +48,23 @@ public class RestStateMachineTest {
     }
 
     @Test
+    public void apply_treatsAccuracyExplainableGapRecoveryAsStationary() {
+        RestStateMachine machine = pausedMachine();
+        machine.onMotionSummary(motion(4L, 32_000_000_000L, 33_000_000_000L, false));
+        long keepaliveNanos = 31_000_000_000L;
+
+        RestStateMachine.Decision decision = machine.apply(gapRecoveryOutcome(keepaliveNanos),
+                raw(4L, 29.00018, 34_000_000_000L, true, 0.0f, 10f),
+                previousTrackPoint(), Collections.<MotionSummary>emptyList());
+
+        assertEquals("reject", decision.outcome.result);
+        assertEquals(RestStateMachine.REASON_REST_PROBING_STATIONARY,
+                decision.outcome.reason);
+        assertEquals(keepaliveNanos, decision.outcome.nextStationaryKeepaliveElapsedRealtimeNanos);
+        assertTrue(machine.isPaused());
+    }
+
+    @Test
     public void apply_confirmsMovingAfterTwoProbingMovementPointsWithoutBackfill() {
         RestStateMachine machine = pausedMachine();
         machine.onMotionSummary(motion(4L, 32_000_000_000L, 33_000_000_000L, false));
@@ -140,6 +157,15 @@ public class RestStateMachineTest {
                 30.0, 3.0, 0L, 0, 0, false);
     }
 
+    private TrackDecisionResult gapRecoveryOutcome() {
+        return gapRecoveryOutcome(0L);
+    }
+
+    private TrackDecisionResult gapRecoveryOutcome(long nextStationaryKeepaliveElapsedRealtimeNanos) {
+        return new TrackDecisionResult("accept", "gap_recovery",
+                0.0, 0.0, nextStationaryKeepaliveElapsedRealtimeNanos, 0, 0, true);
+    }
+
     private TrackDecisionResult impossibleJumpOutcome() {
         return new TrackDecisionResult("reject", "impossible_speed",
                 0.0, 0.0, 0L, 0, 0, false);
@@ -160,8 +186,14 @@ public class RestStateMachineTest {
 
     private RawPoint raw(long rawPointId, double latitude, long elapsedRealtimeNanos,
                          boolean hasSpeed, float speedMetersPerSecond) {
+        return raw(rawPointId, latitude, elapsedRealtimeNanos, hasSpeed,
+                speedMetersPerSecond, 5f);
+    }
+
+    private RawPoint raw(long rawPointId, double latitude, long elapsedRealtimeNanos,
+                         boolean hasSpeed, float speedMetersPerSecond, float accuracyMeters) {
         return new RawPoint(rawPointId, "gps", latitude, 106.0,
-                false, 0.0, true, 5f,
+                false, 0.0, true, accuracyMeters,
                 hasSpeed, speedMetersPerSecond, false, 0f,
                 1L, true, elapsedRealtimeNanos, false, null);
     }

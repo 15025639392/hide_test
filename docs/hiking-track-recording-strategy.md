@@ -103,7 +103,7 @@ Segment       一段具有明确语义的轨迹片段
 断点:
   地图视觉上不留空白断口。
   所有可信 TrackPoint 按时间顺序用蓝色实线连续连接。
-  长时间 GAP 用 decisionReason = gap_recovery、gapCount 和 segmentId 表达，不用断线破坏最终轨迹连续性。
+  长时间 GAP 后若确认为移动恢复，用 decisionReason = gap_recovery、gapCount 和 segmentId 表达；若仍是静止锚点优化，则替换原零距离 anchor，不用断线破坏最终轨迹连续性。
   弱信号点只显示为黄色诊断点，不打断可信实线，也不参与可信距离。
 
 当前位置:
@@ -508,7 +508,7 @@ DRIFT:
 GAP:
   标记内部 Segment / gapCount
   创建 GAP 或 WEAK_SIGNAL 事件
-  后续恢复点使用 gap_recovery
+  后续移动恢复点使用 gap_recovery；静止恢复点使用 stationary_anchor_refined 替换原零距离 anchor
   最终轨迹线保持连续展示
   GAP 两端直线不计入可信距离
 
@@ -613,7 +613,7 @@ OFF_ROUTE:
 10:20 B 点
 ```
 
-中间 19 分钟没有定位时，最终轨迹可以连续显示，但系统必须把恢复点标记为 `gap_recovery`，并且这段连接不计入可信距离。UI/诊断应能显示它是 GAP 连接，而不是用户被连续定位证明走过的真实路径。
+中间 19 分钟没有定位时，最终轨迹可以连续显示；如果恢复点已经离开静止噪声范围，系统必须把恢复点标记为 `gap_recovery`，并且这段连接不计入可信距离。若恢复点仍属于静止锚点优化，则应使用 `stationary_anchor_refined` 替换原零距离 anchor，不生成新的线路段。UI/诊断应能显示它是 GAP 连接或锚点优化，而不是用户被连续定位证明走过的真实路径。
 
 ### 9.3 网络与定位解耦
 

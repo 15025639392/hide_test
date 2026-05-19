@@ -12,9 +12,11 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class HikingSampleReportGenerator {
     private static final double MIN_TARGET_DURATION_SECONDS = 30.0 * 60.0;
@@ -265,6 +267,7 @@ public class HikingSampleReportGenerator {
         int trustedDecisionCount;
         int weakDecisionCount;
         int rejectDecisionCount;
+        final Set<Long> trustedTrackPointIds = new HashSet<>();
         int gapRecoveryCount;
         int gapRecoveryZeroDeltaCount;
         int noLocationTimeoutCount;
@@ -387,7 +390,7 @@ public class HikingSampleReportGenerator {
             String reason = event.optString("reason", "unknown");
             increment(decisionReasonCounts, result + ":" + reason);
             if ("anchor".equals(result) || "accept".equals(result)) {
-                trustedDecisionCount++;
+                rememberTrustedTrackPoint(event);
             } else if ("weak".equals(result)) {
                 weakDecisionCount++;
                 addDecisionGnssMetrics(event, weakDecisionGnssMetrics);
@@ -415,6 +418,17 @@ public class HikingSampleReportGenerator {
                 stationaryDecisions.add(new StationaryDecisionSnapshot(
                         event.optLong("eventElapsedRealtimeNanos", -1L)));
             }
+        }
+
+        void rememberTrustedTrackPoint(JSONObject event) {
+            long trackPointId = event.optLong("trackPointId", -1L);
+            if (trackPointId > 0L) {
+                if (trustedTrackPointIds.add(trackPointId)) {
+                    trustedDecisionCount++;
+                }
+                return;
+            }
+            trustedDecisionCount++;
         }
 
         boolean isStationaryReason(String reason) {

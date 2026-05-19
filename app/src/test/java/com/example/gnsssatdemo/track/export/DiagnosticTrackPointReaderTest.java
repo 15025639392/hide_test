@@ -99,6 +99,38 @@ public class DiagnosticTrackPointReaderTest {
     }
 
     @Test
+    public void readTrackPoints_replacesAnchorRefinementDecisionWithSameTrackPointId()
+            throws Exception {
+        File dir = Files.createTempDirectory("diagnostic-track-reader-refine-anchor").toFile();
+        File diagnostic = new File(dir, "diagnostic.jsonl");
+        String jsonl = ""
+                + "{\"event\":\"raw_location\",\"rawPointId\":1,\"provider\":\"gps\","
+                + "\"lat\":29.0,\"lng\":106.0,\"accuracy\":20.0,\"timeMillis\":1000,"
+                + "\"elapsedRealtimeNanos\":2000}\n"
+                + "{\"event\":\"decision\",\"decisionId\":1,\"rawPointId\":1,"
+                + "\"result\":\"anchor\",\"reason\":\"first_fix_relaxed\",\"trackPointId\":1,"
+                + "\"segmentId\":1,\"distanceDeltaMeters\":0.0,"
+                + "\"movingTimeDeltaSeconds\":0.0}\n"
+                + "{\"event\":\"raw_location\",\"rawPointId\":2,\"provider\":\"gps\","
+                + "\"lat\":29.00002,\"lng\":106.0,\"accuracy\":8.0,\"timeMillis\":2000,"
+                + "\"elapsedRealtimeNanos\":12000}\n"
+                + "{\"event\":\"decision\",\"decisionId\":2,\"rawPointId\":2,"
+                + "\"result\":\"anchor\",\"reason\":\"stationary_anchor_refined\","
+                + "\"trackPointId\":1,\"segmentId\":1,"
+                + "\"distanceDeltaMeters\":0.0,\"movingTimeDeltaSeconds\":0.0}\n";
+        Files.write(diagnostic.toPath(), jsonl.getBytes(StandardCharsets.UTF_8));
+
+        List<TrackPoint> points = new DiagnosticTrackPointReader().readTrackPoints(diagnostic);
+
+        assertEquals(1, points.size());
+        assertEquals(1L, points.get(0).trackPointId);
+        assertEquals(2L, points.get(0).sourceRawPointId);
+        assertEquals(2L, points.get(0).sourceDecisionId);
+        assertEquals("stationary_anchor_refined", points.get(0).decisionReason);
+        assertEquals(8.0, points.get(0).accuracyMeters, 0.0);
+    }
+
+    @Test
     public void readDisplayTrackPoints_includesTransportRejectPointsForMapOnly() throws Exception {
         File dir = Files.createTempDirectory("diagnostic-track-reader-transport").toFile();
         File diagnostic = new File(dir, "diagnostic.jsonl");

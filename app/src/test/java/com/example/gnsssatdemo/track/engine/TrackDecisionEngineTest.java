@@ -81,6 +81,15 @@ public class TrackDecisionEngineTest {
     }
 
     @Test
+    public void decide_rejectsReportedTransportEvenInsideAccuracyNoiseFloor() {
+        TrackDecisionResult result = engine.decide(raw(2L, 30f, 29.000225, 106.0,
+                        6_000_000_000L, true, 5.0f),
+                previous(), 0L, false);
+
+        assertDecision(result, "reject", "transport_suspected");
+    }
+
+    @Test
     public void decide_rejectsReasonableVehicleSpeedAsTransportSuspected() {
         TrackDecisionResult result = engine.decide(raw(2L, 5f, 29.002, 106.0,
                         11_000_000_000L, true, 20.0f),
@@ -117,6 +126,16 @@ public class TrackDecisionEngineTest {
         assertEquals(0.0, result.distanceDeltaMeters, 0.0);
         assertEquals(0.0, result.movingTimeDeltaSeconds, 0.0);
         assertTrue(result.startsNewSegment);
+    }
+
+    @Test
+    public void decide_treatsAccuracyExplainableLongGapAsStationary() {
+        TrackDecisionResult result = engine.decide(raw(2L, 20f, 29.0002, 106.0,
+                        1_000_000_000L + TrackDecisionEngine.GAP_LINE_BREAK_NANOS + 1L),
+                previous(), 0L, false);
+
+        assertDecision(result, "reject", "stationary_keepalive");
+        assertFalse(result.startsNewSegment);
     }
 
     @Test

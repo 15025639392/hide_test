@@ -97,7 +97,7 @@ movement recovery anchor:
 
 | Reason | Result | Notes |
 | --- | --- | --- |
-| `stationary_anchor_refined` | `reject` | The current raw point had better rest-anchor quality and was kept as diagnostic evidence instead of adding movement distance. |
+| `stationary_anchor_refined` | `anchor` | The current raw point had better rest-anchor quality and replaced the previous zero-distance anchor instead of adding a line segment. |
 | `stationary_accel_supported_jitter` | `reject` | The current raw point stayed near the rest anchor but did not improve anchor quality, so it was discarded as stationary drift. |
 | `rest_candidate` | `reject` | REST candidate evidence is being collected; the point is not counted as distance. |
 | `rest_paused_keepalive` | `reject` | REST_PAUSED GPS keepalive near the anchor; the point may refine the anchor but does not count distance. |

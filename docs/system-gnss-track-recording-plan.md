@@ -188,9 +188,9 @@ TrackPoint：
 - accuracy > 30m -> `weak_signal_stage1`。
 - delta time <= 0 -> `non_positive_delta_time`。
 - 两点所需速度 > 12m/s 且没有合理车辆速度证据 -> `impossible_speed`。
-- delta time > 120s -> `gap_recovery`。
-- 明显超过徒步范围但未达到跳点速度的持续移动 -> `transport_suspected`。
+- 非 GAP 下明显超过徒步范围但未达到跳点速度的持续移动 -> `transport_suspected`。
 - 距离 < `max(5m, accuracy * 1.5)` -> 静止抖动或静止保活。
+- delta time > 120s -> `gap_recovery`，但若恢复点仍在精度可解释的静止范围内，优先按静止/锚点优化处理。
 - 其他可信移动 -> `moving_good_fix`。
 
 静止：
@@ -296,12 +296,12 @@ GAP 的产品口径：
 ```text
 最终轨迹线保持连续
 GAP 两端直线不计入可信距离
-恢复点进入 TrackPoint
-恢复点标记 decisionReason = gap_recovery
+恢复点进入 TrackPoint；若仍属于静止锚点优化，则替换原零距离 anchor
+移动恢复点标记 decisionReason = gap_recovery
 恢复点 distanceDeltaMeters = 0
 恢复点 movingTimeDeltaSeconds = 0
-内部 segmentId 增加
-session gapCount 增加
+移动恢复时内部 segmentId 增加
+移动恢复时 session gapCount 增加
 ```
 
 也就是说，`segmentId` 是诊断和统计语义，不等同于地图视觉断开。
@@ -531,7 +531,7 @@ GNSS 保守策略：
 ```text
 只在可信 moving_good_fix 段内累计爬升
 first_fix_good / first_fix_relaxed / forced_weak_first_fix 只设海拔 anchor
-gap_recovery / transport_recovery / rest_moving_recovery 只重置海拔 anchor
+gap_recovery / transport_recovery / rest_moving_recovery / stationary_anchor_refined 只重置海拔 anchor
 weak / transport / stationary / REST_PAUSED / REST_PROBING / reject 不参与爬升
 
 使用滤波后的 altitude，不直接累计原始 altitude

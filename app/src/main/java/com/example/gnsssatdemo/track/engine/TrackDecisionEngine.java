@@ -78,18 +78,16 @@ public class TrackDecisionEngine {
         double requiredSpeed = distanceMeters / deltaSeconds;
         boolean reportedSpeedTransportSuspected =
                 isReportedSpeedTransportSuspected(rawPoint, distanceMeters, requiredSpeed);
+        boolean longGap = rawPoint.elapsedRealtimeNanos - previousTrackPoint.elapsedRealtimeNanos
+                > config.gapLineBreakNanos;
+        boolean transportSuspected = reportedSpeedTransportSuspected
+                || isSustainedTransportSuspected(distanceMeters, deltaSeconds, requiredSpeed);
         if (requiredSpeed > config.impossibleSpeedMetersPerSecond
                 && !reportedSpeedTransportSuspected) {
             return result("reject", "impossible_speed", 0.0, 0.0,
                     lastStationaryKeepaliveElapsedRealtimeNanos, 0, 0);
         }
-        if (rawPoint.elapsedRealtimeNanos - previousTrackPoint.elapsedRealtimeNanos
-                > config.gapLineBreakNanos) {
-            return result("accept", "gap_recovery", 0.0, 0.0,
-                    lastStationaryKeepaliveElapsedRealtimeNanos, 0, 0, true);
-        }
-        if (reportedSpeedTransportSuspected
-                || isSustainedTransportSuspected(distanceMeters, deltaSeconds, requiredSpeed)) {
+        if (!longGap && transportSuspected) {
             return result("reject", "transport_suspected", 0.0, 0.0,
                     lastStationaryKeepaliveElapsedRealtimeNanos, 0, 0);
         }
@@ -103,6 +101,14 @@ public class TrackDecisionEngine {
             }
             return result("reject", "stationary_jitter", 0.0, 0.0,
                     lastStationaryKeepaliveElapsedRealtimeNanos, 0, 1);
+        }
+        if (longGap) {
+            return result("accept", "gap_recovery", 0.0, 0.0,
+                    lastStationaryKeepaliveElapsedRealtimeNanos, 0, 0, true);
+        }
+        if (transportSuspected) {
+            return result("reject", "transport_suspected", 0.0, 0.0,
+                    lastStationaryKeepaliveElapsedRealtimeNanos, 0, 0);
         }
         return result("accept", "moving_good_fix", distanceMeters, deltaSeconds,
                 lastStationaryKeepaliveElapsedRealtimeNanos, 0, 0);

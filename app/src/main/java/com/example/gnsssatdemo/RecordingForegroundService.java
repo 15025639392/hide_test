@@ -597,7 +597,8 @@ public class RecordingForegroundService extends Service {
 
     private boolean isAscentAnchorPoint(TrackPoint point) {
         return "gap_recovery".equals(point.decisionReason)
-                || "transport_recovery".equals(point.decisionReason);
+                || "transport_recovery".equals(point.decisionReason)
+                || "stationary_anchor_refined".equals(point.decisionReason);
     }
 
     private String sortedPolyline(String polyline) {

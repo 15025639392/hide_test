@@ -22,6 +22,7 @@ public class RestAnchorRefiner {
     private static final float STRONG_ACCURACY_IMPROVEMENT_RATIO = 0.85f;
     private static final int MIN_USED_SATELLITE_IMPROVEMENT = 2;
     private static final float MIN_TOP4_CN0_IMPROVEMENT = 2.0f;
+    private static final double ACCURACY_EXPLAIN_MULTIPLIER = 1.5;
 
     public Decision refine(TrackDecisionResult outcome, RawPoint rawPoint,
                            TrackPoint previousTrackPoint,
@@ -31,16 +32,21 @@ public class RestAnchorRefiner {
         if (outcome == null || rawPoint == null || previousTrackPoint == null) {
             return Decision.noop();
         }
-        if (outcome.distanceDeltaMeters > REST_ANCHOR_RADIUS_METERS) {
-            return Decision.noop();
-        }
         if (rawPoint.hasSpeed && rawPoint.speedMetersPerSecond > MAX_REST_SPEED_METERS_PER_SECOND) {
             return Decision.noop();
         }
-        if (!hasStationaryEvidence(rawPoint.elapsedRealtimeNanos, recentMotionSummaries)) {
+        if (!isRestAnchorRefinementCandidate(outcome)) {
             return Decision.noop();
         }
-        if (!isMovingGoodFix(outcome)) {
+        if (isMovingGoodFix(outcome)
+                && !hasStationaryEvidence(rawPoint.elapsedRealtimeNanos,
+                recentMotionSummaries)) {
+            return Decision.noop();
+        }
+        if (isMovingGoodFix(outcome) && outcome.distanceDeltaMeters > REST_ANCHOR_RADIUS_METERS) {
+            return Decision.noop();
+        }
+        if (!isWithinRestAnchorRange(rawPoint, previousTrackPoint)) {
             return Decision.noop();
         }
         if (canReplaceTrackPoint(previousTrackPoint)
@@ -51,10 +57,36 @@ public class RestAnchorRefiner {
         return Decision.rejectJitter();
     }
 
-    private boolean isMovingGoodFix(TrackDecisionResult outcome) {
+    private boolean isRestAnchorRefinementCandidate(TrackDecisionResult outcome) {
         return outcome != null
-                && "accept".equals(outcome.result)
+                && (isMovingGoodFix(outcome)
+                || isGapRecovery(outcome)
+                || isStationaryDecision(outcome));
+    }
+
+    private boolean isMovingGoodFix(TrackDecisionResult outcome) {
+        return "accept".equals(outcome.result)
                 && "moving_good_fix".equals(outcome.reason);
+    }
+
+    private boolean isGapRecovery(TrackDecisionResult outcome) {
+        return "accept".equals(outcome.result)
+                && "gap_recovery".equals(outcome.reason);
+    }
+
+    private boolean isStationaryDecision(TrackDecisionResult outcome) {
+        return "stationary_keepalive".equals(outcome.reason)
+                || "stationary_jitter".equals(outcome.reason);
+    }
+
+    private boolean isWithinRestAnchorRange(RawPoint rawPoint,
+                                            TrackPoint previousTrackPoint) {
+        double distanceMeters = distanceMeters(previousTrackPoint.latitude,
+                previousTrackPoint.longitude, rawPoint.latitude, rawPoint.longitude);
+        double accuracyRange = Math.max(REST_ANCHOR_RADIUS_METERS,
+                (rawPoint.accuracyMeters + previousTrackPoint.accuracyMeters)
+                        * ACCURACY_EXPLAIN_MULTIPLIER);
+        return distanceMeters <= accuracyRange;
     }
 
     private boolean hasStationaryEvidence(long elapsedRealtimeNanos,

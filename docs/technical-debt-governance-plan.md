@@ -47,7 +47,9 @@ Preserve these unless the user explicitly asks for a strategy change:
   decisions.
 - Weak points do not contribute to trusted distance or moving time.
 - `gap_recovery` creates a trusted recovery point, starts a new internal
-  segment, and has zero distance and moving-time delta.
+  segment, and has zero distance and moving-time delta only when the recovery
+  point is outside stationary noise. Stationary recovery refines the existing
+  zero-distance anchor instead.
 - Transport mode does not contribute to hiking distance.
 - Trusted GPX contains only `anchor` and `accept` TrackPoints.
 - `elapsedRealtimeNanos` remains the internal continuity clock.
@@ -72,7 +74,7 @@ Baseline behavior:
 | Moving accuracy > 30m | `weak / weak_signal_stage1` |
 | Accuracy > 80m | hard reject |
 | Implied speed > 12m/s without transport evidence | `reject / impossible_speed` |
-| Gap > 120s | `accept / gap_recovery`, zero delta, new segment |
+| Gap > 120s outside stationary noise | `accept / gap_recovery`, zero delta, new segment |
 | Sustained vehicle-like movement | `reject / transport_suspected`, enter transport mode |
 | Continued transport mode | `reject / transport_confirmed` |
 | Stable walking after transport | `accept / transport_recovery`, zero delta, new segment |
@@ -94,7 +96,10 @@ app/src/test/resources/replay-fixtures
 | Weak signal | `forced_weak_first_fix.jsonl` | Test-only weak first fix anchor |
 | Validation reject | `validation_rejects.jsonl` | Hard validator rejects |
 | Speed reject | `impossible_speed.jsonl` | Implausible jump filtering |
-| Stationary | `stationary_filter.jsonl` | Jitter and keepalive behavior |
+| Stationary | `stationary_filter.jsonl` | Nearby stationary fixes remain non-trusted jitter after rest-anchor checks |
+| Stationary | `stationary_anchor_refinement_after_gap.jsonl` | Static long-gap recovery refines the existing zero-distance anchor |
+| Stationary | `stationary_anchor_refinement_with_motion.jsonl` | Still motion evidence refines a nearby moving-looking fix into the rest anchor |
+| Gap | `gap_recovery_after_stationary_gap.jsonl` | Long-gap recovery outside stationary noise remains `gap_recovery` |
 | Transport | `transport_mode.jsonl` | Vehicle-like movement isolation and recovery |
 | Invalid input | `malformed_line.jsonl` | Malformed JSON handling |
 | Invalid input | `truncated_json_line.jsonl` | Truncated JSON handling |

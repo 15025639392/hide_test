@@ -77,6 +77,9 @@ public class ReplayRunnerTest {
         assertExactFixture("impossible_speed.jsonl", 2);
         assertExactFixture("stationary_filter.jsonl", 3);
         assertExactFixture("transport_mode.jsonl", 4);
+        assertExactFixture("gap_recovery_after_stationary_gap.jsonl", 2);
+        assertExactFixture("stationary_anchor_refinement_after_gap.jsonl", 2);
+        assertExactFixture("stationary_anchor_refinement_with_motion.jsonl", 2);
     }
 
     @Test

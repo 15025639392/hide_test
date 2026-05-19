@@ -239,13 +239,27 @@ public class BasicTrackSession implements Closeable {
                     recentMotionSummaries);
             TrackPoint trackPoint = null;
             TrackPoint decisionTrackPoint = null;
+            boolean replacedPreviousTrackPoint = false;
             if (restAnchorDecision.handled) {
-                outcome = new TrackDecisionResult("reject", restAnchorDecision.reason,
-                        0.0, 0.0, lastStationaryKeepaliveElapsedRealtimeNanos,
-                        0, 1);
+                long nextStationaryKeepaliveElapsedRealtimeNanos =
+                        outcome.nextStationaryKeepaliveElapsedRealtimeNanos;
                 if (restAnchorDecision.refineAnchor && exportedPreviousTrackPoint != null) {
+                    long decisionId = decisionSeq + 1L;
+                    trackPoint = refinedTrackPoint(exportedPreviousTrackPoint, decisionId,
+                            rawPoint, restAnchorDecision.reason);
+                    trackPoints.set(trackPoints.size() - 1, trackPoint);
+                    decisionTrackPoint = trackPoint;
+                    acceptedDecisionIds.add(decisionId);
+                    replacedPreviousTrackPoint = true;
+                    outcome = new TrackDecisionResult("anchor", restAnchorDecision.reason,
+                            0.0, 0.0, nextStationaryKeepaliveElapsedRealtimeNanos,
+                            0, 0);
                     addRecentSummary("休息锚点优化 Raw#" + rawPoint.rawPointId
                             + " acc=" + String.format(Locale.US, "%.1fm", rawPoint.accuracyMeters));
+                } else {
+                    outcome = new TrackDecisionResult("reject", restAnchorDecision.reason,
+                            0.0, 0.0, nextStationaryKeepaliveElapsedRealtimeNanos,
+                            0, 1);
                 }
             }
             RestStateMachine.Decision restDecision = restStateMachine.apply(outcome, rawPoint,
@@ -253,7 +267,7 @@ public class BasicTrackSession implements Closeable {
             outcome = restDecision.outcome;
             String decisionState = decision.wasTransportMode ? "TRANSPORT"
                     : restDecision.state;
-            if (shouldRecordTrustedTrackPoint(outcome)) {
+            if (!replacedPreviousTrackPoint && shouldRecordTrustedTrackPoint(outcome)) {
                 if (shouldStartNewSegment(outcome) && exportedPreviousTrackPoint != null) {
                     segmentId++;
                     if (shouldIncrementGapCount(outcome)) {
@@ -316,6 +330,30 @@ public class BasicTrackSession implements Closeable {
         return outcome != null
                 && "accept".equals(outcome.result)
                 && "gap_recovery".equals(outcome.reason);
+    }
+
+    private TrackPoint refinedTrackPoint(TrackPoint previousTrackPoint, long decisionId,
+                                         RawPoint rawPoint, String reason) {
+        return new TrackPoint(previousTrackPoint.trackPointId,
+                rawPoint.rawPointId,
+                decisionId,
+                previousTrackPoint.segmentId,
+                rawPoint.latitude,
+                rawPoint.longitude,
+                rawPoint.hasAltitude,
+                rawPoint.altitude,
+                rawPoint.accuracyMeters,
+                rawPoint.hasSpeed,
+                rawPoint.speedMetersPerSecond,
+                rawPoint.hasBearing,
+                rawPoint.bearingDegrees,
+                rawPoint.timeMillis,
+                rawPoint.elapsedRealtimeNanos,
+                "anchor",
+                reason,
+                0.0,
+                0.0,
+                rawPoint.sourceGnssSnapshotId);
     }
 
     private void rememberMotionSummary(MotionSummary summary) {
