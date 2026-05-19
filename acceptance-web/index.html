@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>气压计爬升验收台</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="toolbar" aria-label="批次设置">
+        <div class="identity">
+          <h1>气压计爬升验收台</h1>
+          <p>多设备同路线累计爬升一致性检查</p>
+        </div>
+        <div class="upload-actions">
+          <label class="file-drop">
+            <span>上传本批目录</span>
+            <input id="folderInput" type="file" webkitdirectory directory multiple />
+          </label>
+          <label class="file-drop secondary">
+            <span>选择 session.json</span>
+            <input id="fileInput" type="file" accept=".json,application/json" multiple />
+          </label>
+        </div>
+      </section>
+
+      <section class="import-status" aria-live="polite">
+        <span id="importText">等待导入本批数据</span>
+      </section>
+
+      <section class="summary-grid" aria-label="验收结论">
+        <article>
+          <span>结论</span>
+          <strong id="verdictText">等待数据</strong>
+        </article>
+        <article>
+          <span>中位爬升</span>
+          <strong id="medianText">-</strong>
+        </article>
+        <article>
+          <span>最大偏差</span>
+          <strong id="maxDeviationText">-</strong>
+        </article>
+        <article>
+          <span>有效 / 排除</span>
+          <strong id="countText">0 / 0</strong>
+        </article>
+      </section>
+
+      <section class="actions" aria-label="报告操作">
+        <button id="downloadJson" type="button" disabled>导出 JSON</button>
+        <button id="downloadMarkdown" type="button" disabled>导出 Markdown</button>
+        <button id="clearData" type="button">清空</button>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>设备明细</h2>
+          <span id="ruleText">规则未选择</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>结论</th>
+                <th>设备</th>
+                <th>Session</th>
+                <th>来源</th>
+                <th>爬升</th>
+                <th>绝对差</th>
+                <th>相对差</th>
+                <th>样本 / 拒绝</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody id="sessionRows">
+              <tr>
+                <td colspan="9" class="empty">上传本批目录或多个 session.json 开始验收</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./src/main.mjs"></script>
+  </body>
+</html>
