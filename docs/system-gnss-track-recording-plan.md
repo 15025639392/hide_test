@@ -496,6 +496,35 @@ transport mode 中:
 独立的 `TrackAscentCalculator`，由前台实时状态、地图回放和样本报告共用，
 避免多处重复计算出现不同结果。
 
+当前已落地共享 `TrackAscentCalculator`、GNSS 保守爬升路径、气压计采集诊断，
+并已将 3 秒内关联到 TrackPoint 的 pressure sample 作为 BAROMETER 相对高度
+优先参与爬升累计；气压计绝对海拔校准、信息栏来源展示与 DEM 接入仍作为后续增强。
+
+气压计优势落地方案：
+
+```text
+阶段 1: 相对爬升
+  pressure sample 关联 TrackPoint 后优先作为 BAROMETER elevation sample
+  使用 rawBarometerAltitudeMeters 的短时间相对变化累计爬升
+  不要求 GNSS altitude 可信
+
+阶段 2: 绝对海拔校准
+  遇到可信 GNSS altitude:
+    hasAltitude
+    hasVerticalAccuracy
+    verticalAccuracy <= 8m
+    horizontal accuracy <= 30m
+  且同一 TrackPoint 有 BAROMETER sample:
+    calibrationOffset = gnssAltitude - rawBarometerAltitudeMeters
+    displayedBarometerAltitude = rawBarometerAltitudeMeters + calibrationOffset
+    记录 barometer_calibration 诊断事件
+  calibrationOffset 只用于显示/诊断，不反向改写累计爬升趋势
+
+阶段 3: 展示与报告
+  信息栏显示气压计海拔、校准状态、爬升来源 BAROMETER
+  报告输出 barometerCalibrated / calibrationOffset / ascentSource
+```
+
 海拔源优先级：
 
 ```text

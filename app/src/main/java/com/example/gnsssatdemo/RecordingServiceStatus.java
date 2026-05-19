@@ -17,6 +17,12 @@ class RecordingServiceStatus {
     final boolean hasBearing;
     final float bearingDegrees;
     final String trackPolyline;
+    final String ascentSource;
+    final boolean pressureSensorAvailable;
+    final long pressureSampleCount;
+    final boolean barometerCalibrated;
+    final double barometerAltitudeMeters;
+    final double rawBarometerAltitudeMeters;
 
     RecordingServiceStatus(boolean active, String sessionId,
                            long rawPointCount, int trackPointCount,
@@ -25,7 +31,10 @@ class RecordingServiceStatus {
                            double latitude, double longitude, float accuracyMeters,
                            boolean hasSpeed, float speedMetersPerSecond,
                            boolean hasBearing, float bearingDegrees,
-                           String trackPolyline) {
+                           String trackPolyline, String ascentSource,
+                           boolean pressureSensorAvailable, long pressureSampleCount,
+                           boolean barometerCalibrated, double barometerAltitudeMeters,
+                           double rawBarometerAltitudeMeters) {
         this.active = active;
         this.sessionId = sessionId;
         this.rawPointCount = rawPointCount;
@@ -42,5 +51,11 @@ class RecordingServiceStatus {
         this.hasBearing = hasBearing;
         this.bearingDegrees = bearingDegrees;
         this.trackPolyline = trackPolyline;
+        this.ascentSource = ascentSource;
+        this.pressureSensorAvailable = pressureSensorAvailable;
+        this.pressureSampleCount = pressureSampleCount;
+        this.barometerCalibrated = barometerCalibrated;
+        this.barometerAltitudeMeters = barometerAltitudeMeters;
+        this.rawBarometerAltitudeMeters = rawBarometerAltitudeMeters;
     }
 }

@@ -1,6 +1,7 @@
 package com.example.gnsssatdemo.track.engine;
 
 import android.content.Context;
+import android.hardware.SensorManager;
 import android.location.Location;
 import android.os.Build;
 import android.os.SystemClock;
@@ -38,6 +39,9 @@ import java.util.UUID;
 public class BasicTrackSession implements Closeable {
     private static final String STRATEGY_VERSION = "stage1-gnss-track-v2-rest-state";
     private static final int RECENT_SUMMARY_LIMIT = 8;
+    private static final long PRESSURE_SAMPLE_MAX_AGE_NANOS = 3_000_000_000L;
+    private static final double BAROMETER_CALIBRATION_MAX_GNSS_VERTICAL_ACCURACY_METERS = 8.0;
+    private static final double BAROMETER_CALIBRATION_MAX_GNSS_HORIZONTAL_ACCURACY_METERS = 30.0;
     private static final long WEAK_TRACK_POINT_ID_OFFSET = 1_000_000_000L;
     private static final long TRANSPORT_DISPLAY_POINT_ID_OFFSET = 2_000_000_000L;
 
@@ -70,6 +74,8 @@ public class BasicTrackSession implements Closeable {
     private long transportDisplayPointSeq;
     private long gnssSnapshotSeq;
     private long samplingPolicySeq;
+    private long pressureSampleSeq;
+    private long barometerCalibrationSeq;
     private long segmentId = 1L;
     private boolean forcedWeakFirstFixEnabled;
     private String lastDecisionResult = "";
@@ -77,6 +83,17 @@ public class BasicTrackSession implements Closeable {
     private float lastRawAccuracyMeters = -1f;
     private long lastStationaryKeepaliveElapsedRealtimeNanos;
     private GnssQualitySnapshot lastGnssSnapshot;
+    private boolean pressureSensorAvailable;
+    private boolean pressureSummaryWritten;
+    private long firstPressureSampleElapsedRealtimeNanos;
+    private long lastPressureSampleElapsedRealtimeNanos;
+    private double minPressureHpa;
+    private double maxPressureHpa;
+    private double lastPressureHpa;
+    private double lastRawBarometerAltitudeMeters;
+    private boolean barometerCalibrated;
+    private double barometerCalibrationOffsetMeters;
+    private double lastDisplayedBarometerAltitudeMeters;
     private final List<TrackPoint> trackPoints = new ArrayList<>();
     private final List<TrackPoint> weakTrackPoints = new ArrayList<>();
     private final List<TrackPoint> transportTrackPoints = new ArrayList<>();
@@ -99,6 +116,14 @@ public class BasicTrackSession implements Closeable {
     public void start(boolean gpsProviderEnabled, boolean preciseLocationGranted,
                       boolean forcedWeakFirstFixEnabled, boolean foregroundServiceActive)
             throws IOException, JSONException {
+        start(gpsProviderEnabled, preciseLocationGranted, forcedWeakFirstFixEnabled,
+                foregroundServiceActive, false);
+    }
+
+    public void start(boolean gpsProviderEnabled, boolean preciseLocationGranted,
+                      boolean forcedWeakFirstFixEnabled, boolean foregroundServiceActive,
+                      boolean pressureSensorAvailable)
+            throws IOException, JSONException {
         closeLoggerQuietly();
         sessionId = UUID.randomUUID().toString();
         createdWallTimeMillis = System.currentTimeMillis();
@@ -111,8 +136,11 @@ public class BasicTrackSession implements Closeable {
         transportDisplayPointSeq = 0L;
         gnssSnapshotSeq = 0L;
         samplingPolicySeq = 0L;
+        pressureSampleSeq = 0L;
+        barometerCalibrationSeq = 0L;
         segmentId = 1L;
         this.forcedWeakFirstFixEnabled = forcedWeakFirstFixEnabled;
+        this.pressureSensorAvailable = pressureSensorAvailable;
         lifecycle.resetForStart();
         lastDecisionResult = "";
         lastDecisionReason = "";
@@ -129,6 +157,7 @@ public class BasicTrackSession implements Closeable {
         recentMotionSummaries.clear();
         acceptedDecisionIds.clear();
         recentSummaries.clear();
+        resetPressureDiagnostics();
 
         sessionDir = fileStore.createSessionDir(sessionId);
         journalWriter.reset(sessionDir, createdWallTimeMillis);
@@ -137,7 +166,8 @@ public class BasicTrackSession implements Closeable {
 
         appendSessionMetadata();
         appendConfigSnapshot();
-        appendRuntimeSnapshot(gpsProviderEnabled, preciseLocationGranted, foregroundServiceActive);
+        appendRuntimeSnapshot(gpsProviderEnabled, preciseLocationGranted, foregroundServiceActive,
+                pressureSensorAvailable);
         appendSessionEvent("start_recording", "IDLE", "RECORDING", "WAITING_FIRST_FIX");
         addRecentSummary("开始记录，等待首个可信 GNSS 点");
         lifecycle.markActive();
@@ -148,6 +178,7 @@ public class BasicTrackSession implements Closeable {
         if (!lifecycle.isActive() || lifecycle.isFinished()) {
             return;
         }
+        appendPressureSummaryIfNeeded();
         appendSessionEvent("finish_recording", "RECORDING", "FINISHED", "FIX_READY");
         addRecentSummary("结束记录，TrackPoint=" + trackPoints.size());
         lifecycle.markFinished();
@@ -205,6 +236,44 @@ public class BasicTrackSession implements Closeable {
         }
     }
 
+    public void onPressureSample(float pressureHpa, int sensorAccuracy,
+                                 long elapsedRealtimeNanos) {
+        if (!lifecycle.isActive() || lifecycle.isFinished()
+                || !journalWriter.isDiagnosticLoggerOpen()
+                || pressureHpa <= 0f) {
+            return;
+        }
+        double rawAltitudeMeters = SensorManager.getAltitude(
+                SensorManager.PRESSURE_STANDARD_ATMOSPHERE, pressureHpa);
+        pressureSampleSeq++;
+        if (firstPressureSampleElapsedRealtimeNanos == 0L) {
+            firstPressureSampleElapsedRealtimeNanos = elapsedRealtimeNanos;
+            minPressureHpa = pressureHpa;
+            maxPressureHpa = pressureHpa;
+        } else {
+            minPressureHpa = Math.min(minPressureHpa, pressureHpa);
+            maxPressureHpa = Math.max(maxPressureHpa, pressureHpa);
+        }
+        lastPressureSampleElapsedRealtimeNanos = elapsedRealtimeNanos;
+        lastPressureHpa = pressureHpa;
+        lastRawBarometerAltitudeMeters = rawAltitudeMeters;
+        if (barometerCalibrated) {
+            lastDisplayedBarometerAltitudeMeters =
+                    rawAltitudeMeters + barometerCalibrationOffsetMeters;
+        }
+        try {
+            JSONObject event = new JSONObject();
+            event.put("event", "pressure_sample");
+            event.put("pressureSampleId", pressureSampleSeq);
+            event.put("pressureHpa", pressureHpa);
+            event.put("sensorAccuracy", sensorAccuracy);
+            event.put("rawBarometerAltitudeMeters", rawAltitudeMeters);
+            appendDiagnostic(event, elapsedRealtimeNanos);
+        } catch (IOException | JSONException e) {
+            markIntegrityError("diagnostic_log_append_failed", e);
+        }
+    }
+
     public void onLocation(Location location) {
         if (!lifecycle.isActive() || lifecycle.isFinished()
                 || !journalWriter.isDiagnosticLoggerOpen() || location == null) {
@@ -247,6 +316,7 @@ public class BasicTrackSession implements Closeable {
                     long decisionId = decisionSeq + 1L;
                     trackPoint = refinedTrackPoint(exportedPreviousTrackPoint, decisionId,
                             rawPoint, restAnchorDecision.reason);
+                    maybeCalibrateBarometer(trackPoint, rawPoint);
                     trackPoints.set(trackPoints.size() - 1, trackPoint);
                     decisionTrackPoint = trackPoint;
                     acceptedDecisionIds.add(decisionId);
@@ -280,18 +350,20 @@ public class BasicTrackSession implements Closeable {
                     }
                 }
                 long decisionId = decisionSeq + 1L;
-                trackPoint = new TrackPoint(++trackPointSeq, decisionId, segmentId, rawPoint,
-                        outcome.result, outcome.reason,
-                        outcome.distanceDeltaMeters, outcome.movingTimeDeltaSeconds);
+                trackPoint = trackPointFromRaw(++trackPointSeq, decisionId, segmentId, rawPoint,
+                        outcome.result, outcome.reason, outcome.distanceDeltaMeters,
+                        outcome.movingTimeDeltaSeconds);
+                maybeCalibrateBarometer(trackPoint, rawPoint);
                 trackPoints.add(trackPoint);
                 decisionTrackPoint = trackPoint;
                 acceptedDecisionIds.add(decisionId);
                 stats.addAcceptedMovement(outcome);
             } else if ("weak".equals(outcome.result)) {
                 long decisionId = decisionSeq + 1L;
-                trackPoint = new TrackPoint(WEAK_TRACK_POINT_ID_OFFSET + ++weakTrackPointSeq,
-                        decisionId, segmentId, rawPoint,
-                        outcome.result, outcome.reason, 0.0, 0.0);
+                trackPoint = trackPointFromRaw(WEAK_TRACK_POINT_ID_OFFSET + ++weakTrackPointSeq,
+                        decisionId, segmentId, rawPoint, outcome.result, outcome.reason,
+                        0.0, 0.0);
+                maybeCalibrateBarometer(trackPoint, rawPoint);
                 weakTrackPoints.add(trackPoint);
                 decisionTrackPoint = trackPoint;
             }
@@ -334,26 +406,95 @@ public class BasicTrackSession implements Closeable {
 
     private TrackPoint refinedTrackPoint(TrackPoint previousTrackPoint, long decisionId,
                                          RawPoint rawPoint, String reason) {
-        return new TrackPoint(previousTrackPoint.trackPointId,
-                rawPoint.rawPointId,
+        return trackPointFromRaw(previousTrackPoint.trackPointId,
                 decisionId,
                 previousTrackPoint.segmentId,
-                rawPoint.latitude,
-                rawPoint.longitude,
-                rawPoint.hasAltitude,
-                rawPoint.altitude,
-                rawPoint.accuracyMeters,
-                rawPoint.hasSpeed,
-                rawPoint.speedMetersPerSecond,
-                rawPoint.hasBearing,
-                rawPoint.bearingDegrees,
-                rawPoint.timeMillis,
-                rawPoint.elapsedRealtimeNanos,
+                rawPoint,
                 "anchor",
                 reason,
                 0.0,
-                0.0,
-                rawPoint.sourceGnssSnapshotId);
+                0.0);
+    }
+
+    private TrackPoint trackPointFromRaw(long trackPointId, long decisionId, long segmentId,
+                                         RawPoint rawPoint, String result, String reason,
+                                         double distanceDeltaMeters,
+                                         double movingTimeDeltaSeconds) {
+        if (hasRecentPressureSample(rawPoint)) {
+            return new TrackPoint(trackPointId, rawPoint.rawPointId, decisionId, segmentId,
+                    rawPoint.latitude, rawPoint.longitude,
+                    rawPoint.hasAltitude, rawPoint.altitude,
+                    rawPoint.hasVerticalAccuracy, rawPoint.verticalAccuracyMeters,
+                    rawPoint.accuracyMeters,
+                    rawPoint.hasSpeed, rawPoint.speedMetersPerSecond,
+                    rawPoint.hasBearing, rawPoint.bearingDegrees,
+                    rawPoint.timeMillis, rawPoint.elapsedRealtimeNanos,
+                    result, reason, distanceDeltaMeters, movingTimeDeltaSeconds,
+                    rawPoint.sourceGnssSnapshotId,
+                    true, lastPressureSampleElapsedRealtimeNanos,
+                    lastPressureHpa, lastRawBarometerAltitudeMeters);
+        }
+        return new TrackPoint(trackPointId, decisionId, segmentId, rawPoint,
+                result, reason, distanceDeltaMeters, movingTimeDeltaSeconds);
+    }
+
+    private boolean hasRecentPressureSample(RawPoint rawPoint) {
+        if (!rawPoint.hasElapsedRealtimeNanos || lastPressureSampleElapsedRealtimeNanos <= 0L) {
+            return false;
+        }
+        long ageNanos = Math.abs(rawPoint.elapsedRealtimeNanos
+                - lastPressureSampleElapsedRealtimeNanos);
+        return ageNanos <= PRESSURE_SAMPLE_MAX_AGE_NANOS;
+    }
+
+    private void maybeCalibrateBarometer(TrackPoint trackPoint, RawPoint rawPoint) {
+        if (barometerCalibrated
+                || trackPoint == null
+                || rawPoint == null
+                || !trackPoint.hasPressureSample
+                || !isReliableGnssBarometerCalibrationReference(rawPoint)) {
+            return;
+        }
+        barometerCalibrationOffsetMeters =
+                rawPoint.altitude - trackPoint.rawBarometerAltitudeMeters;
+        lastDisplayedBarometerAltitudeMeters =
+                trackPoint.rawBarometerAltitudeMeters + barometerCalibrationOffsetMeters;
+        barometerCalibrated = true;
+        try {
+            JSONObject event = new JSONObject();
+            event.put("event", "barometer_calibration");
+            event.put("barometerCalibrationId", ++barometerCalibrationSeq);
+            event.put("source", "GNSS");
+            event.put("trackPointId", trackPoint.trackPointId);
+            event.put("rawPointId", rawPoint.rawPointId);
+            event.put("pressureSampleElapsedRealtimeNanos",
+                    trackPoint.pressureSampleElapsedRealtimeNanos);
+            event.put("pressureHpa", trackPoint.pressureHpa);
+            event.put("rawBarometerAltitudeMeters",
+                    trackPoint.rawBarometerAltitudeMeters);
+            event.put("referenceAltitudeMeters", rawPoint.altitude);
+            event.put("calibrationOffsetMeters", barometerCalibrationOffsetMeters);
+            event.put("displayedBarometerAltitudeMeters",
+                    lastDisplayedBarometerAltitudeMeters);
+            event.put("verticalAccuracyMeters", rawPoint.verticalAccuracyMeters);
+            event.put("horizontalAccuracyMeters", rawPoint.accuracyMeters);
+            appendDiagnostic(event, rawPoint.elapsedRealtimeNanos);
+            addRecentSummary("气压计海拔已用 GNSS 校准");
+        } catch (IOException | JSONException e) {
+            markIntegrityError("diagnostic_log_append_failed", e);
+        }
+    }
+
+    private boolean isReliableGnssBarometerCalibrationReference(RawPoint rawPoint) {
+        return rawPoint.hasAltitude
+                && rawPoint.hasVerticalAccuracy
+                && rawPoint.verticalAccuracyMeters > 0f
+                && rawPoint.verticalAccuracyMeters
+                <= BAROMETER_CALIBRATION_MAX_GNSS_VERTICAL_ACCURACY_METERS
+                && rawPoint.hasAccuracy
+                && rawPoint.accuracyMeters > 0f
+                && rawPoint.accuracyMeters
+                <= BAROMETER_CALIBRATION_MAX_GNSS_HORIZONTAL_ACCURACY_METERS;
     }
 
     private void rememberMotionSummary(MotionSummary summary) {
@@ -380,15 +521,9 @@ public class BasicTrackSession implements Closeable {
 
     private void addTransportDisplayPoint(RawPoint rawPoint, String reason) {
         long decisionId = decisionSeq + 1L;
-        TrackPoint point = new TrackPoint(
+        TrackPoint point = trackPointFromRaw(
                 TRANSPORT_DISPLAY_POINT_ID_OFFSET + ++transportDisplayPointSeq,
-                decisionId,
-                segmentId,
-                rawPoint,
-                "transport",
-                reason,
-                0.0,
-                0.0);
+                decisionId, segmentId, rawPoint, "transport", reason, 0.0, 0.0);
         transportTrackPoints.add(point);
     }
 
@@ -423,6 +558,7 @@ public class BasicTrackSession implements Closeable {
             return;
         }
         try {
+            appendPressureSummaryIfNeeded();
             appendSessionEvent(eventType, "RECORDING", "INTERRUPTED",
                     trackPoints.isEmpty() ? "WAITING_FIRST_FIX" : "FIX_READY");
             addRecentSummary("记录被中断: " + eventType);
@@ -481,7 +617,8 @@ public class BasicTrackSession implements Closeable {
     }
 
     private void appendRuntimeSnapshot(boolean gpsProviderEnabled, boolean preciseLocationGranted,
-                                       boolean foregroundServiceActive)
+                                       boolean foregroundServiceActive,
+                                       boolean pressureSensorAvailable)
             throws IOException, JSONException {
         JSONObject event = new JSONObject();
         event.put("event", "runtime_snapshot");
@@ -492,6 +629,7 @@ public class BasicTrackSession implements Closeable {
         event.put("locationProviderGpsEnabled", gpsProviderEnabled);
         event.put("preciseLocationGranted", preciseLocationGranted);
         event.put("foregroundServiceActive", foregroundServiceActive);
+        event.put("pressureSensorAvailable", pressureSensorAvailable);
         appendDiagnostic(event, recordStartElapsedRealtimeNanos);
     }
 
@@ -530,6 +668,8 @@ public class BasicTrackSession implements Closeable {
         event.put("lng", rawPoint.longitude);
         event.put("accuracy", rawPoint.hasAccuracy ? rawPoint.accuracyMeters : JSONObject.NULL);
         event.put("altitude", rawPoint.hasAltitude ? rawPoint.altitude : JSONObject.NULL);
+        event.put("verticalAccuracy", rawPoint.hasVerticalAccuracy
+                ? rawPoint.verticalAccuracyMeters : JSONObject.NULL);
         event.put("speed", rawPoint.hasSpeed ? rawPoint.speedMetersPerSecond : JSONObject.NULL);
         event.put("bearing", rawPoint.hasBearing ? rawPoint.bearingDegrees : JSONObject.NULL);
         event.put("timeMillis", rawPoint.timeMillis);
@@ -580,6 +720,13 @@ public class BasicTrackSession implements Closeable {
             if ("gap_recovery".equals(reason) || "transport_recovery".equals(reason)) {
                 event.put("startsNewSegment", true);
             }
+            if (trackPoint.hasPressureSample) {
+                event.put("pressureSampleElapsedRealtimeNanos",
+                        trackPoint.pressureSampleElapsedRealtimeNanos);
+                event.put("pressureHpa", trackPoint.pressureHpa);
+                event.put("rawBarometerAltitudeMeters",
+                        trackPoint.rawBarometerAltitudeMeters);
+            }
         }
         if (rawPoint.sourceGnssSnapshotId != null) {
             event.put("sourceGnssSnapshotId", rawPoint.sourceGnssSnapshotId);
@@ -612,6 +759,15 @@ public class BasicTrackSession implements Closeable {
         json.put("stationaryJitterCount", stats.getStationaryJitterCount());
         json.put("gapCount", stats.getGapCount());
         json.put("transportCount", stats.getTransportCount());
+        json.put("pressureSensorAvailable", pressureSensorAvailable);
+        json.put("pressureSampleCount", pressureSampleSeq);
+        json.put("barometerCalibrated", barometerCalibrated);
+        json.put("barometerCalibrationCount", barometerCalibrationSeq);
+        if (barometerCalibrated) {
+            json.put("barometerCalibrationOffsetMeters", barometerCalibrationOffsetMeters);
+            json.put("lastDisplayedBarometerAltitudeMeters",
+                    lastDisplayedBarometerAltitudeMeters);
+        }
         json.put("totalDistanceMeters", stats.getTotalDistanceMeters());
         json.put("movingTimeSeconds", stats.getMovingTimeSeconds());
         json.put("segmentCount", trackPoints.isEmpty() ? 0 : segmentId);
@@ -842,6 +998,46 @@ public class BasicTrackSession implements Closeable {
         return stats.getMovingTimeSeconds();
     }
 
+    public boolean isPressureSensorAvailable() {
+        return pressureSensorAvailable;
+    }
+
+    public long getPressureSampleCount() {
+        return pressureSampleSeq;
+    }
+
+    public boolean isBarometerCalibrated() {
+        return barometerCalibrated;
+    }
+
+    public double getBarometerCalibrationOffsetMeters() {
+        return barometerCalibrationOffsetMeters;
+    }
+
+    public double getLastDisplayedBarometerAltitudeMeters() {
+        return barometerCalibrated ? lastDisplayedBarometerAltitudeMeters : Double.NaN;
+    }
+
+    public double getLastRawBarometerAltitudeMeters() {
+        return pressureSampleSeq > 0L ? lastRawBarometerAltitudeMeters : Double.NaN;
+    }
+
+    public String getCurrentAscentSource() {
+        for (int i = trackPoints.size() - 1; i >= 0; i--) {
+            TrackPoint point = trackPoints.get(i);
+            if (!"moving_good_fix".equals(point.decisionReason)) {
+                continue;
+            }
+            if (TrackAscentCalculator.usesBarometerAltitude(point)) {
+                return "BAROMETER";
+            }
+            if (TrackAscentCalculator.usesGnssAltitude(point)) {
+                return "GNSS";
+            }
+        }
+        return "NONE";
+    }
+
     public List<String> getRecentSummaries() {
         return new ArrayList<>(recentSummaries);
     }
@@ -895,6 +1091,52 @@ public class BasicTrackSession implements Closeable {
         while (recentSummaries.size() > RECENT_SUMMARY_LIMIT) {
             recentSummaries.remove(0);
         }
+    }
+
+    private void resetPressureDiagnostics() {
+        pressureSummaryWritten = false;
+        firstPressureSampleElapsedRealtimeNanos = 0L;
+        lastPressureSampleElapsedRealtimeNanos = 0L;
+        minPressureHpa = 0.0;
+        maxPressureHpa = 0.0;
+        lastPressureHpa = 0.0;
+        lastRawBarometerAltitudeMeters = 0.0;
+        barometerCalibrated = false;
+        barometerCalibrationOffsetMeters = 0.0;
+        lastDisplayedBarometerAltitudeMeters = 0.0;
+    }
+
+    private void appendPressureSummaryIfNeeded() throws IOException, JSONException {
+        if (pressureSummaryWritten || !journalWriter.isDiagnosticLoggerOpen()) {
+            return;
+        }
+        pressureSummaryWritten = true;
+        JSONObject event = new JSONObject();
+        event.put("event", "pressure_summary");
+        event.put("pressureSensorAvailable", pressureSensorAvailable);
+        event.put("pressureSampleCount", pressureSampleSeq);
+        event.put("barometerCalibrated", barometerCalibrated);
+        event.put("barometerCalibrationCount", barometerCalibrationSeq);
+        if (barometerCalibrated) {
+            event.put("calibrationOffsetMeters", barometerCalibrationOffsetMeters);
+            event.put("lastDisplayedBarometerAltitudeMeters",
+                    lastDisplayedBarometerAltitudeMeters);
+        }
+        if (pressureSampleSeq > 0L) {
+            event.put("firstPressureSampleElapsedRealtimeNanos",
+                    firstPressureSampleElapsedRealtimeNanos);
+            event.put("lastPressureSampleElapsedRealtimeNanos",
+                    lastPressureSampleElapsedRealtimeNanos);
+            event.put("minPressureHpa", minPressureHpa);
+            event.put("maxPressureHpa", maxPressureHpa);
+            event.put("lastPressureHpa", lastPressureHpa);
+            event.put("lastRawBarometerAltitudeMeters", lastRawBarometerAltitudeMeters);
+            addRecentSummary("气压计样本 " + pressureSampleSeq + " 条");
+        }
+        long eventElapsedRealtimeNanos = lastPressureSampleElapsedRealtimeNanos > 0L
+                ? lastPressureSampleElapsedRealtimeNanos
+                : SystemClock.elapsedRealtimeNanos();
+        appendDiagnostic(event, eventElapsedRealtimeNanos);
     }
 
     @Override

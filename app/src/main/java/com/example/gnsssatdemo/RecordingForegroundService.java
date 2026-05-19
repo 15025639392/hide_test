@@ -27,6 +27,7 @@ import android.os.Looper;
 import android.os.SystemClock;
 
 import com.example.gnsssatdemo.track.engine.BasicTrackSession;
+import com.example.gnsssatdemo.track.engine.TrackAscentCalculator;
 import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
 import com.example.gnsssatdemo.track.model.MotionSummary;
 import com.example.gnsssatdemo.track.model.TrackPoint;
@@ -66,6 +67,13 @@ public class RecordingForegroundService extends Service {
     public static final String EXTRA_HAS_BEARING = "hasBearing";
     public static final String EXTRA_BEARING_DEGREES = "bearingDegrees";
     public static final String EXTRA_TRACK_POLYLINE = "trackPolyline";
+    public static final String EXTRA_ASCENT_SOURCE = "ascentSource";
+    public static final String EXTRA_PRESSURE_SENSOR_AVAILABLE = "pressureSensorAvailable";
+    public static final String EXTRA_PRESSURE_SAMPLE_COUNT = "pressureSampleCount";
+    public static final String EXTRA_BAROMETER_CALIBRATED = "barometerCalibrated";
+    public static final String EXTRA_BAROMETER_ALTITUDE_METERS = "barometerAltitudeMeters";
+    public static final String EXTRA_RAW_BAROMETER_ALTITUDE_METERS =
+            "rawBarometerAltitudeMeters";
 
     private static final String CHANNEL_ID = "gnss_recording_visible_v2";
     private static final int NOTIFICATION_ID = 42;
@@ -87,6 +95,7 @@ public class RecordingForegroundService extends Service {
     private LocationManager locationManager;
     private SensorManager sensorManager;
     private Sensor motionSensor;
+    private Sensor pressureSensor;
     private BasicTrackSession trackSession;
     private Location lastLocation;
     private long lastLocationReceivedElapsedRealtimeMillis;
@@ -94,8 +103,11 @@ public class RecordingForegroundService extends Service {
     private boolean listening;
     private boolean gnssStatusRegistered;
     private boolean motionSensorRegistered;
+    private boolean pressureSensorRegistered;
     private boolean stopRequested;
     private SamplingPolicy currentSamplingPolicy;
+    private long lastPressureSampleElapsedRealtimeNanos;
+    private static final long PRESSURE_SAMPLE_MIN_INTERVAL_NANOS = 1_000_000_000L;
     private final RecordingSamplingState samplingState = new RecordingSamplingState();
     private final AccelerometerMotionSampler motionSampler =
             new AccelerometerMotionSampler(new AccelerometerMotionSampler.Listener() {
@@ -117,6 +129,31 @@ public class RecordingForegroundService extends Service {
         @Override
         public void onAccuracyChanged(Sensor sensor, int accuracy) {
             // Motion evidence is diagnostic-only; no action needed on accuracy changes.
+        }
+    };
+
+    private final SensorEventListener pressureSensorListener = new SensorEventListener() {
+        @Override
+        public void onSensorChanged(SensorEvent event) {
+            if (event == null || event.values == null || event.values.length == 0) {
+                return;
+            }
+            long elapsedRealtimeNanos = event.timestamp;
+            if (lastPressureSampleElapsedRealtimeNanos > 0L
+                    && elapsedRealtimeNanos - lastPressureSampleElapsedRealtimeNanos
+                    < PRESSURE_SAMPLE_MIN_INTERVAL_NANOS) {
+                return;
+            }
+            lastPressureSampleElapsedRealtimeNanos = elapsedRealtimeNanos;
+            if (trackSession != null && trackSession.isActive()) {
+                trackSession.onPressureSample(event.values[0], event.accuracy,
+                        elapsedRealtimeNanos);
+            }
+        }
+
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) {
+            // Pressure accuracy is captured on each sample for diagnostics.
         }
     };
 
@@ -192,6 +229,7 @@ public class RecordingForegroundService extends Service {
             if (motionSensor == null) {
                 motionSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
             }
+            pressureSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE);
         }
         trackSession = new BasicTrackSession(this);
         createNotificationChannel();
@@ -221,6 +259,7 @@ public class RecordingForegroundService extends Service {
     @Override
     public void onDestroy() {
         stopMotionCallbacks();
+        stopPressureCallbacks();
         stopLocationCallbacks();
         mainHandler.removeCallbacks(noLocationTimeoutRunnable);
         if (!stopRequested && trackSession != null && trackSession.isActive()) {
@@ -255,8 +294,10 @@ public class RecordingForegroundService extends Service {
         try {
             samplingState.reset();
             motionSampler.reset();
-            trackSession.start(isGpsProviderEnabled(), true, forceWeakFirstFix, true);
+            trackSession.start(isGpsProviderEnabled(), true, forceWeakFirstFix, true,
+                    pressureSensor != null);
             startMotionCallbacks();
+            startPressureCallbacks();
             startLocationCallbacks();
             lastLocationReceivedElapsedRealtimeMillis = SystemClock.elapsedRealtime();
             noLocationTimeoutLogged = false;
@@ -277,6 +318,7 @@ public class RecordingForegroundService extends Service {
         stopRequested = true;
         mainHandler.removeCallbacks(noLocationTimeoutRunnable);
         stopMotionCallbacks();
+        stopPressureCallbacks();
         stopLocationCallbacks();
         if (trackSession != null && trackSession.isActive()) {
             try {
@@ -344,6 +386,24 @@ public class RecordingForegroundService extends Service {
         motionSampler.flush();
         sensorManager.unregisterListener(motionSensorListener);
         motionSensorRegistered = false;
+    }
+
+    private void startPressureCallbacks() {
+        if (pressureSensorRegistered || sensorManager == null || pressureSensor == null) {
+            return;
+        }
+        lastPressureSampleElapsedRealtimeNanos = 0L;
+        pressureSensorRegistered = sensorManager.registerListener(pressureSensorListener,
+                pressureSensor, SensorManager.SENSOR_DELAY_NORMAL, mainHandler);
+    }
+
+    private void stopPressureCallbacks() {
+        if (sensorManager == null || !pressureSensorRegistered) {
+            return;
+        }
+        sensorManager.unregisterListener(pressureSensorListener);
+        pressureSensorRegistered = false;
+        lastPressureSampleElapsedRealtimeNanos = 0L;
     }
 
     private void updateLocationRequestForCurrentPolicy(boolean force) {
@@ -515,6 +575,20 @@ public class RecordingForegroundService extends Service {
                 trackSession == null ? 0.0 : trackSession.getTotalDistanceMeters());
         intent.putExtra(EXTRA_TOTAL_ASCENT_METERS,
                 trackSession == null ? -1.0 : totalAscentMeters(trackSession.getTrackPoints()));
+        intent.putExtra(EXTRA_ASCENT_SOURCE,
+                trackSession == null ? "NONE" : trackSession.getCurrentAscentSource());
+        intent.putExtra(EXTRA_PRESSURE_SENSOR_AVAILABLE,
+                trackSession != null && trackSession.isPressureSensorAvailable());
+        intent.putExtra(EXTRA_PRESSURE_SAMPLE_COUNT,
+                trackSession == null ? 0L : trackSession.getPressureSampleCount());
+        intent.putExtra(EXTRA_BAROMETER_CALIBRATED,
+                trackSession != null && trackSession.isBarometerCalibrated());
+        intent.putExtra(EXTRA_BAROMETER_ALTITUDE_METERS,
+                trackSession == null ? Double.NaN
+                        : trackSession.getLastDisplayedBarometerAltitudeMeters());
+        intent.putExtra(EXTRA_RAW_BAROMETER_ALTITUDE_METERS,
+                trackSession == null ? Double.NaN
+                        : trackSession.getLastRawBarometerAltitudeMeters());
         intent.putExtra(EXTRA_STATUS_TEXT, text);
         if (lastLocation != null) {
             intent.putExtra(EXTRA_HAS_LOCATION, true);
@@ -563,7 +637,16 @@ public class RecordingForegroundService extends Service {
                 .append(point.elapsedRealtimeNanos).append(',')
                 .append(point.decisionResult).append(',')
                 .append(point.hasAltitude ? point.altitude : Double.NaN).append(',')
-                .append(point.decisionReason);
+                .append(point.decisionReason).append(',')
+                .append(point.hasVerticalAccuracy ? point.verticalAccuracyMeters : Double.NaN)
+                .append(',')
+                .append(point.hasPressureSample
+                        ? point.pressureSampleElapsedRealtimeNanos : 0L)
+                .append(',')
+                .append(point.hasPressureSample ? point.pressureHpa : Double.NaN)
+                .append(',')
+                .append(point.hasPressureSample
+                        ? point.rawBarometerAltitudeMeters : Double.NaN);
     }
 
     private String oneDecimal(double value) {
@@ -571,34 +654,7 @@ public class RecordingForegroundService extends Service {
     }
 
     private double totalAscentMeters(List<TrackPoint> points) {
-        double total = 0.0;
-        Double previousAltitude = null;
-        boolean sawTrustedAltitude = false;
-        for (TrackPoint point : points) {
-            if (isAscentAnchorPoint(point)) {
-                previousAltitude = point.hasAltitude ? point.altitude : null;
-                sawTrustedAltitude = sawTrustedAltitude || point.hasAltitude;
-                continue;
-            }
-            if (!point.hasAltitude) {
-                continue;
-            }
-            if (previousAltitude != null) {
-                double delta = point.altitude - previousAltitude;
-                if (delta > 0.0) {
-                    total += delta;
-                }
-            }
-            sawTrustedAltitude = true;
-            previousAltitude = point.altitude;
-        }
-        return sawTrustedAltitude ? total : -1.0;
-    }
-
-    private boolean isAscentAnchorPoint(TrackPoint point) {
-        return "gap_recovery".equals(point.decisionReason)
-                || "transport_recovery".equals(point.decisionReason)
-                || "stationary_anchor_refined".equals(point.decisionReason);
+        return TrackAscentCalculator.totalAscentMeters(points);
     }
 
     private String sortedPolyline(String polyline) {

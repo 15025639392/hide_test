@@ -72,12 +72,15 @@ public class DiagnosticTrackPointReader {
         Object accuracy = event.opt("accuracy");
         boolean hasAccuracy = accuracy != null && accuracy != JSONObject.NULL;
         boolean hasAltitude = event.has("altitude") && event.opt("altitude") != JSONObject.NULL;
+        boolean hasVerticalAccuracy = event.has("verticalAccuracy")
+                && event.opt("verticalAccuracy") != JSONObject.NULL;
         boolean hasSpeed = event.has("speed") && event.opt("speed") != JSONObject.NULL;
         boolean hasBearing = event.has("bearing") && event.opt("bearing") != JSONObject.NULL;
         return new RawPoint(event.optLong("rawPointId"),
                 event.optString("provider", ""),
                 event.optDouble("lat"), event.optDouble("lng"),
                 hasAltitude, event.optDouble("altitude", 0.0),
+                hasVerticalAccuracy, (float) event.optDouble("verticalAccuracy", 0.0),
                 hasAccuracy, (float) event.optDouble("accuracy", 0.0),
                 hasSpeed, (float) event.optDouble("speed", 0.0),
                 hasBearing, (float) event.optDouble("bearing", 0.0),
@@ -90,26 +93,38 @@ public class DiagnosticTrackPointReader {
     }
 
     private TrackPoint trackPointFromEvent(JSONObject event, RawPoint rawPoint) {
-        return new TrackPoint(event.optLong("trackPointId"),
-                event.optLong("decisionId"),
-                event.optLong("segmentId", 1L),
-                rawPoint,
-                event.optString("result"),
-                event.optString("reason"),
+        return trackPointFromEvent(event, rawPoint, event.optLong("trackPointId"),
+                event.optString("result"), event.optString("reason"),
                 event.optDouble("distanceDeltaMeters", 0.0),
                 event.optDouble("movingTimeDeltaSeconds", 0.0));
     }
 
     private TrackPoint transportDisplayPointFromEvent(JSONObject event, RawPoint rawPoint) {
         long decisionId = event.optLong("decisionId");
-        return new TrackPoint(TRANSPORT_DISPLAY_POINT_ID_OFFSET + decisionId,
+        return trackPointFromEvent(event, rawPoint, TRANSPORT_DISPLAY_POINT_ID_OFFSET + decisionId,
+                "transport", event.optString("reason", "transport_display"), 0.0, 0.0);
+    }
+
+    private TrackPoint trackPointFromEvent(JSONObject event, RawPoint rawPoint, long trackPointId,
+                                           String result, String reason,
+                                           double distanceDeltaMeters,
+                                           double movingTimeDeltaSeconds) {
+        boolean hasPressureSample = event.has("pressureSampleElapsedRealtimeNanos")
+                && event.optLong("pressureSampleElapsedRealtimeNanos", 0L) > 0L
+                && event.has("pressureHpa")
+                && event.opt("pressureHpa") != JSONObject.NULL
+                && event.has("rawBarometerAltitudeMeters")
+                && event.opt("rawBarometerAltitudeMeters") != JSONObject.NULL;
+        return new TrackPoint(trackPointId,
                 rawPoint.rawPointId,
-                decisionId,
+                event.optLong("decisionId"),
                 event.optLong("segmentId", 1L),
                 rawPoint.latitude,
                 rawPoint.longitude,
                 rawPoint.hasAltitude,
                 rawPoint.altitude,
+                rawPoint.hasVerticalAccuracy,
+                rawPoint.verticalAccuracyMeters,
                 rawPoint.accuracyMeters,
                 rawPoint.hasSpeed,
                 rawPoint.speedMetersPerSecond,
@@ -117,11 +132,15 @@ public class DiagnosticTrackPointReader {
                 rawPoint.bearingDegrees,
                 rawPoint.timeMillis,
                 rawPoint.elapsedRealtimeNanos,
-                "transport",
-                event.optString("reason", "transport_display"),
-                0.0,
-                0.0,
-                rawPoint.sourceGnssSnapshotId);
+                result,
+                reason,
+                distanceDeltaMeters,
+                movingTimeDeltaSeconds,
+                rawPoint.sourceGnssSnapshotId,
+                hasPressureSample, event.optLong("pressureSampleElapsedRealtimeNanos", 0L),
+                hasPressureSample ? event.optDouble("pressureHpa", 0.0) : 0.0,
+                hasPressureSample
+                        ? event.optDouble("rawBarometerAltitudeMeters", 0.0) : 0.0);
     }
 
     private boolean isTransportDisplayDecision(JSONObject event) {

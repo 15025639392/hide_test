@@ -73,7 +73,7 @@ public class TrackMapStateTest {
                 altitudePoint(3L, 29.0002, 151.0, "accept", "moving_good_fix")),
                 new TrackMapState.Fallback());
 
-        assertEquals(1.0, state.totalAscentMeters, 0.0);
+        assertEquals(0.0, state.totalAscentMeters, 0.0);
     }
 
     @Test
@@ -219,7 +219,7 @@ public class TrackMapStateTest {
     private TrackPoint altitudePoint(long id, double latitude, double altitude, String result,
                                      String reason) {
         return new TrackPoint(id, id, id, 1L, latitude, 106.0,
-                true, altitude, 5f, false, 0f, false, 0f,
-                1L, id * 1_000_000_000L, result, reason, 0.0, 0.0, null);
+                true, altitude, true, 5f, 5f, false, 0f, false, 0f,
+                1L, id * 30_000_000_000L, result, reason, 10.0, 0.0, null);
     }
 }

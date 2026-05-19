@@ -176,10 +176,13 @@ public class ReplayRunner {
     private RawPoint rawPointFromEvent(JSONObject event) {
         boolean hasElapsedRealtimeNanos = event.optBoolean("hasElapsedRealtimeNanos", true);
         boolean hasAccuracy = event.optBoolean("hasAccuracy", true);
+        boolean hasVerticalAccuracy = event.has("verticalAccuracy")
+                && event.opt("verticalAccuracy") != JSONObject.NULL;
         return new RawPoint(event.optLong("rawPointId"),
                 event.optString("provider", LocationManager.GPS_PROVIDER),
                 event.optDouble("lat"), event.optDouble("lng"),
                 event.has("altitude"), event.optDouble("altitude", 0.0),
+                hasVerticalAccuracy, (float) event.optDouble("verticalAccuracy", 0.0),
                 hasAccuracy, (float) event.optDouble("accuracy", 0.0),
                 event.has("speed"), (float) event.optDouble("speed", 0.0),
                 event.has("bearing"), (float) event.optDouble("bearing", 0.0),

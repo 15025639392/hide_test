@@ -89,6 +89,73 @@ Compatibility rules:
 - The sample report may correlate `motion_summary` with
   `stationary_jitter` / `stationary_keepalive` decisions for explanation only.
 
+## `raw_location`
+
+Raw location events preserve Android `Location` fields used by replay and
+post-run analysis. Optional fields must be tolerated when reading older logs.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `accuracy` | float/null | Horizontal accuracy in meters when `Location.hasAccuracy()` is true. |
+| `altitude` | double/null | GNSS altitude when `Location.hasAltitude()` is true. |
+| `verticalAccuracy` | float/null | Vertical accuracy in meters when Android O+ reports `Location.hasVerticalAccuracy()`. Required for GNSS ascent accumulation. |
+
+## `pressure_sample` and `pressure_summary`
+
+Pressure events are diagnostic evidence for barometer altitude. When a
+TrackPoint has a pressure sample within the configured association window, the
+ascent calculator can use the raw barometer altitude as the preferred relative
+elevation source.
+
+`pressure_sample` fields:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `pressureSampleId` | long | Monotonic pressure sample id in the session. |
+| `pressureHpa` | float | Pressure sensor value in hPa. |
+| `sensorAccuracy` | int | Android sensor accuracy value reported with the event. |
+| `rawBarometerAltitudeMeters` | double | `SensorManager.getAltitude(PRESSURE_STANDARD_ATMOSPHERE, pressureHpa)` before absolute calibration. |
+
+`pressure_summary` fields:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `pressureSensorAvailable` | boolean | Whether the recording runtime found a pressure sensor. |
+| `pressureSampleCount` | long | Number of logged pressure samples. |
+| `barometerCalibrated` | boolean | Whether an absolute barometer altitude offset was established. |
+| `barometerCalibrationCount` | long | Number of written calibration events. |
+| `calibrationOffsetMeters` | double | Current barometer display offset when calibrated. |
+| `lastDisplayedBarometerAltitudeMeters` | double | Last calibrated display altitude when calibrated. |
+| `firstPressureSampleElapsedRealtimeNanos` | long | First pressure sample timestamp when samples exist. |
+| `lastPressureSampleElapsedRealtimeNanos` | long | Last pressure sample timestamp when samples exist. |
+| `minPressureHpa` | double | Minimum logged pressure value when samples exist. |
+| `maxPressureHpa` | double | Maximum logged pressure value when samples exist. |
+| `lastPressureHpa` | double | Last logged pressure value when samples exist. |
+| `lastRawBarometerAltitudeMeters` | double | Last raw barometer altitude when samples exist. |
+
+Decision events for TrackPoints may additionally include
+`pressureSampleElapsedRealtimeNanos`, `pressureHpa`, and
+`rawBarometerAltitudeMeters` when a recent pressure sample was associated with
+that TrackPoint.
+
+## `barometer_calibration`
+
+Barometer calibration events record the offset that converts raw pressure
+altitude into an absolute display altitude. Calibration must not rewrite ascent
+history; ascent remains based on relative BAROMETER changes.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `barometerCalibrationId` | long | Monotonic calibration id in the session. |
+| `source` | string | Reference source, initially `GNSS`. |
+| `rawBarometerAltitudeMeters` | double | Raw pressure altitude at calibration time. |
+| `referenceAltitudeMeters` | double | Trusted absolute reference altitude. |
+| `calibrationOffsetMeters` | double | `referenceAltitudeMeters - rawBarometerAltitudeMeters`. |
+| `displayedBarometerAltitudeMeters` | double | Raw barometer altitude plus calibration offset. |
+| `verticalAccuracyMeters` | float | GNSS vertical accuracy for GNSS-sourced calibration. |
+| `horizontalAccuracyMeters` | float | GNSS horizontal accuracy for GNSS-sourced calibration. |
+| `pressureSampleElapsedRealtimeNanos` | long | Pressure sample timestamp used by the TrackPoint. |
+
 ## Stationary and REST Decision Reasons
 
 These reasons are emitted when rest-anchor refinement or the explicit REST state

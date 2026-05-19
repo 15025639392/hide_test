@@ -152,6 +152,12 @@ public class MainActivity extends Activity {
     private int foregroundServiceTrackPointCount;
     private double foregroundServiceTotalDistanceMeters;
     private double foregroundServiceTotalAscentMeters = -1.0;
+    private String foregroundServiceAscentSource = "NONE";
+    private boolean foregroundServicePressureSensorAvailable;
+    private long foregroundServicePressureSampleCount;
+    private boolean foregroundServiceBarometerCalibrated;
+    private double foregroundServiceBarometerAltitudeMeters = Double.NaN;
+    private double foregroundServiceRawBarometerAltitudeMeters = Double.NaN;
     private boolean foregroundServiceHasLocation;
     private double foregroundServiceLatitude;
     private double foregroundServiceLongitude;
@@ -335,6 +341,13 @@ public class MainActivity extends Activity {
             foregroundServiceTrackPointCount = serviceStatus.trackPointCount;
             foregroundServiceTotalDistanceMeters = serviceStatus.totalDistanceMeters;
             foregroundServiceTotalAscentMeters = serviceStatus.totalAscentMeters;
+            foregroundServiceAscentSource = serviceStatus.ascentSource;
+            foregroundServicePressureSensorAvailable = serviceStatus.pressureSensorAvailable;
+            foregroundServicePressureSampleCount = serviceStatus.pressureSampleCount;
+            foregroundServiceBarometerCalibrated = serviceStatus.barometerCalibrated;
+            foregroundServiceBarometerAltitudeMeters = serviceStatus.barometerAltitudeMeters;
+            foregroundServiceRawBarometerAltitudeMeters =
+                    serviceStatus.rawBarometerAltitudeMeters;
             foregroundServiceStatusText = serviceStatus.statusText;
             foregroundServiceHasLocation = serviceStatus.hasLocation;
             if (foregroundServiceHasLocation) {
@@ -513,12 +526,29 @@ public class MainActivity extends Activity {
                 String decisionResult = parts.length >= 7 ? parts[6] : "accept";
                 double altitude = parts.length >= 8 ? Double.parseDouble(parts[7]) : Double.NaN;
                 String decisionReason = parts.length >= 9 ? parts[8] : "foreground_live";
+                float verticalAccuracy = parts.length >= 10
+                        ? Float.parseFloat(parts[9]) : Float.NaN;
+                long pressureElapsedRealtimeNanos = parts.length >= 11
+                        ? Long.parseLong(parts[10]) : 0L;
+                double pressureHpa = parts.length >= 12
+                        ? Double.parseDouble(parts[11]) : Double.NaN;
+                double rawBarometerAltitude = parts.length >= 13
+                        ? Double.parseDouble(parts[12]) : Double.NaN;
                 boolean hasAltitude = !Double.isNaN(altitude);
+                boolean hasVerticalAccuracy = !Float.isNaN(verticalAccuracy);
+                boolean hasPressureSample = pressureElapsedRealtimeNanos > 0L
+                        && !Double.isNaN(pressureHpa)
+                        && !Double.isNaN(rawBarometerAltitude);
                 foregroundServiceTrackPoints.add(new TrackPoint(id, id, id, 1L,
-                        lat, lng, hasAltitude, hasAltitude ? altitude : 0.0, accuracy,
+                        lat, lng, hasAltitude, hasAltitude ? altitude : 0.0,
+                        hasVerticalAccuracy, hasVerticalAccuracy ? verticalAccuracy : 0f,
+                        accuracy,
                         false, 0f, bearing >= 0f, bearing,
                         timeMillis, elapsedRealtimeNanos, decisionResult, decisionReason,
-                        0.0, 0.0, null));
+                        0.0, 0.0, null,
+                        hasPressureSample, pressureElapsedRealtimeNanos,
+                        hasPressureSample ? pressureHpa : 0.0,
+                        hasPressureSample ? rawBarometerAltitude : 0.0));
                 id++;
             } catch (NumberFormatException ignored) {
                 // Ignore one malformed live point without dropping the whole update.
@@ -879,12 +909,44 @@ public class MainActivity extends Activity {
         return "原始 " + rawPointCount + "  轨迹 " + trackPointCount;
     }
 
+    private String ascentSourceText(String source) {
+        if ("BAROMETER".equals(source)) {
+            return "BAROMETER";
+        }
+        if ("GNSS".equals(source)) {
+            return "GNSS";
+        }
+        return "-";
+    }
+
+    private String foregroundBarometerText() {
+        if (!foregroundServicePressureSensorAvailable) {
+            return "无气压计";
+        }
+        StringBuilder text = new StringBuilder();
+        if (foregroundServiceBarometerCalibrated) {
+            text.append("海拔 ")
+                    .append(formatAltitude(foregroundServiceBarometerAltitudeMeters))
+                    .append("  已校准");
+        } else if (!Double.isNaN(foregroundServiceRawBarometerAltitudeMeters)) {
+            text.append("原始 ")
+                    .append(formatAltitude(foregroundServiceRawBarometerAltitudeMeters))
+                    .append("  未校准");
+        } else {
+            text.append("等待样本");
+        }
+        text.append("  样本 ").append(foregroundServicePressureSampleCount);
+        return text.toString();
+    }
+
     private void appendRecordingOverview(StringBuilder sb) {
         appendInfoSectionTitle(sb, "记录");
         if (foregroundServiceRecording) {
             appendInfoRow(sb, "状态", "记录中");
             appendInfoRow(sb, "里程", formatDistance(foregroundServiceTotalDistanceMeters)
-                    + "  爬升 " + formatAscent(foregroundServiceTotalAscentMeters));
+                    + "  爬升 " + formatAscent(foregroundServiceTotalAscentMeters)
+                    + "  来源 " + ascentSourceText(foregroundServiceAscentSource));
+            appendInfoRow(sb, "气压计", foregroundBarometerText());
             appendInfoRow(sb, "采样", sampleCountText(foregroundServiceRawPointCount,
                     foregroundServiceTrackPointCount));
             if (foregroundServiceHasLocation) {
@@ -1226,6 +1288,13 @@ public class MainActivity extends Activity {
 
     private String formatAscent(double meters) {
         if (meters < 0.0 || Double.isNaN(meters) || Double.isInfinite(meters)) {
+            return "-";
+        }
+        return one.format(meters) + " m";
+    }
+
+    private String formatAltitude(double meters) {
+        if (Double.isNaN(meters) || Double.isInfinite(meters)) {
             return "-";
         }
         return one.format(meters) + " m";

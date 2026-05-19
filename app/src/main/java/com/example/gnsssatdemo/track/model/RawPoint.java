@@ -10,6 +10,8 @@ public class RawPoint {
     public final double longitude;
     public final boolean hasAltitude;
     public final double altitude;
+    public final boolean hasVerticalAccuracy;
+    public final float verticalAccuracyMeters;
     public final boolean hasAccuracy;
     public final float accuracyMeters;
     public final boolean hasSpeed;
@@ -25,6 +27,7 @@ public class RawPoint {
     public RawPoint(long rawPointId, Location location, Long sourceGnssSnapshotId) {
         this(rawPointId, location.getProvider(), location.getLatitude(), location.getLongitude(),
                 location.hasAltitude(), location.hasAltitude() ? location.getAltitude() : 0.0,
+                hasVerticalAccuracy(location), verticalAccuracyMeters(location),
                 location.hasAccuracy(), location.hasAccuracy() ? location.getAccuracy() : 0f,
                 location.hasSpeed(), location.hasSpeed() ? location.getSpeed() : 0f,
                 location.hasBearing(), location.hasBearing() ? location.getBearing() : 0f,
@@ -39,12 +42,29 @@ public class RawPoint {
                     boolean hasBearing, float bearingDegrees,
                     long timeMillis, boolean hasElapsedRealtimeNanos, long elapsedRealtimeNanos,
                     boolean mock, Long sourceGnssSnapshotId) {
+        this(rawPointId, provider, latitude, longitude,
+                hasAltitude, altitude, false, 0f,
+                hasAccuracy, accuracyMeters, hasSpeed, speedMetersPerSecond,
+                hasBearing, bearingDegrees, timeMillis, hasElapsedRealtimeNanos,
+                elapsedRealtimeNanos, mock, sourceGnssSnapshotId);
+    }
+
+    public RawPoint(long rawPointId, String provider, double latitude, double longitude,
+                    boolean hasAltitude, double altitude,
+                    boolean hasVerticalAccuracy, float verticalAccuracyMeters,
+                    boolean hasAccuracy, float accuracyMeters,
+                    boolean hasSpeed, float speedMetersPerSecond,
+                    boolean hasBearing, float bearingDegrees,
+                    long timeMillis, boolean hasElapsedRealtimeNanos, long elapsedRealtimeNanos,
+                    boolean mock, Long sourceGnssSnapshotId) {
         this.rawPointId = rawPointId;
         this.provider = provider;
         this.latitude = latitude;
         this.longitude = longitude;
         this.hasAltitude = hasAltitude;
         this.altitude = altitude;
+        this.hasVerticalAccuracy = hasVerticalAccuracy;
+        this.verticalAccuracyMeters = verticalAccuracyMeters;
         this.hasAccuracy = hasAccuracy;
         this.accuracyMeters = accuracyMeters;
         this.hasSpeed = hasSpeed;
@@ -63,5 +83,13 @@ public class RawPoint {
             return location.isMock();
         }
         return location.isFromMockProvider();
+    }
+
+    private static boolean hasVerticalAccuracy(Location location) {
+        return Build.VERSION.SDK_INT >= 26 && location.hasVerticalAccuracy();
+    }
+
+    private static float verticalAccuracyMeters(Location location) {
+        return hasVerticalAccuracy(location) ? location.getVerticalAccuracyMeters() : 0f;
     }
 }

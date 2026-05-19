@@ -1,5 +1,6 @@
 package com.example.gnsssatdemo;
 
+import com.example.gnsssatdemo.track.engine.TrackAscentCalculator;
 import com.example.gnsssatdemo.track.model.TrackPoint;
 
 import java.util.ArrayList;
@@ -158,41 +159,7 @@ class TrackMapState {
         if (fallback.foregroundRecording && fallback.foregroundTotalAscentMeters >= 0.0) {
             return fallback.foregroundTotalAscentMeters;
         }
-        double total = 0.0;
-        Double previousAltitude = null;
-        boolean sawTrustedAltitude = false;
-        for (TrackPoint point : points) {
-            if (isWeakMapPoint(point)) {
-                continue;
-            }
-            if (isTransportMapPoint(point)) {
-                previousAltitude = null;
-                continue;
-            }
-            if (isAscentAnchorPoint(point)) {
-                previousAltitude = point.hasAltitude ? point.altitude : null;
-                sawTrustedAltitude = sawTrustedAltitude || point.hasAltitude;
-                continue;
-            }
-            if (!point.hasAltitude) {
-                continue;
-            }
-            if (previousAltitude != null) {
-                double delta = point.altitude - previousAltitude;
-                if (delta > 0.0) {
-                    total += delta;
-                }
-            }
-            sawTrustedAltitude = true;
-            previousAltitude = point.altitude;
-        }
-        return sawTrustedAltitude ? total : -1.0;
-    }
-
-    private static boolean isAscentAnchorPoint(TrackPoint point) {
-        return "gap_recovery".equals(point.decisionReason)
-                || "transport_recovery".equals(point.decisionReason)
-                || "stationary_anchor_refined".equals(point.decisionReason);
+        return TrackAscentCalculator.totalAscentMeters(points);
     }
 
     private static float trustedTrackHeadingDegrees(List<TrackPoint> points,

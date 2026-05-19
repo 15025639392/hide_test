@@ -40,7 +40,21 @@ class RecordingStatusMapper {
                         RecordingForegroundService.EXTRA_HAS_BEARING, false),
                 hasLocation ? intent.getFloatExtra(
                         RecordingForegroundService.EXTRA_BEARING_DEGREES, -1f) : -1f,
-                trackPolyline);
+                trackPolyline,
+                nonNull(intent.getStringExtra(
+                        RecordingForegroundService.EXTRA_ASCENT_SOURCE)),
+                intent.getBooleanExtra(
+                        RecordingForegroundService.EXTRA_PRESSURE_SENSOR_AVAILABLE, false),
+                intent.getLongExtra(
+                        RecordingForegroundService.EXTRA_PRESSURE_SAMPLE_COUNT, 0L),
+                intent.getBooleanExtra(
+                        RecordingForegroundService.EXTRA_BAROMETER_CALIBRATED, false),
+                intent.getDoubleExtra(
+                        RecordingForegroundService.EXTRA_BAROMETER_ALTITUDE_METERS,
+                        Double.NaN),
+                intent.getDoubleExtra(
+                        RecordingForegroundService.EXTRA_RAW_BAROMETER_ALTITUDE_METERS,
+                        Double.NaN));
     }
 
     private String nonNull(String value) {
