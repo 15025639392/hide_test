@@ -57,7 +57,7 @@ Android 侧可补的 IMU 数据：
    - weak/reject 点附近设备方向是否频繁变化。
    - GNSS bearing 与设备 heading / heading delta 是否明显矛盾。
    - transport_suspected 是否主要由速度证据触发，而不是弱信号。
-5. 离线 replay 增加 IMU fixture，用真实样本验证解释价值。
+5. 离线 replay 增加 IMU 回放样本（fixture），用真实样本验证解释价值。
 
 ### 暂时不要做
 
@@ -157,7 +157,7 @@ SensorManager
 
 - 记录 30-60 分钟徒步时日志量可控。
 - `imu_summary` 能按 `elapsedRealtimeNanos` 和 RawPoint 对齐。
-- replay 兼容没有 IMU 字段的历史 fixture。
+- replay 兼容没有 IMU 字段的历史回放样本（fixture）。
 - 可信距离、GPX、判点 reason 不变。
 
 ### 第二阶段：报告解释
@@ -183,7 +183,7 @@ SensorManager
 
 - 至少覆盖户外开阔、林下、峡谷/楼群、静止休息、交通工具混入等真实样本。
 - 有参考轨迹或人工标注，能证明误差下降且 false positive 不上升。
-- replay fixture 覆盖无 IMU、低质量 IMU、手机乱转、GAP、弱 GNSS 等情况。
+- replay 回放样本（fixture）覆盖无 IMU、低质量 IMU、手机乱转、GAP、弱 GNSS 等情况。
 - UI 和导出清楚区分“可信 GNSS 轨迹”和“实验融合轨迹”。
 
 ## 资料来源

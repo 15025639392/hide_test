@@ -44,7 +44,7 @@ diagnostics.
 
 GNSS snapshot events are diagnostic evidence only. These fields must not become
 trusted-track accept/reject inputs unless a future strategy phase explicitly
-changes policy and replay fixtures in the same change.
+changes policy and replay fixtures（回放样本） in the same change.
 
 Legacy fields:
 

@@ -20,7 +20,7 @@ RecordingForegroundService
   -> RestAnchorRefiner / RestStateMachine
   -> TrackPoint / session.json
   -> track.gpx / partial.gpx
-  -> replay fixtures / reports
+  -> replay fixtures（回放样本） / reports
 ```
 
 Key files:
@@ -98,6 +98,9 @@ Baseline behavior:
 
 ## Replay Fixture Catalog
 
+Replay fixture 指“回放样本”：一组固定 JSONL 输入，用来离线重放轨迹策略，
+确认策略改动前后的判点结果是否符合预期。
+
 Fixtures live in:
 
 ```text
@@ -121,8 +124,8 @@ app/src/test/resources/replay-fixtures
 | Invalid input | `missing_session_metadata.jsonl` | Missing metadata handling |
 | Invalid input | `no_raw_location_events.jsonl` | Empty replay behavior |
 
-When a policy change alters expected replay output, update the fixture and the
-corresponding test in the same change.
+When a policy change alters expected replay output, update the fixture
+（回放样本） and the corresponding test in the same change.
 
 ## Required Validation
 
@@ -162,7 +165,7 @@ For every governance step, answer these before editing:
 - Does this change alter `partial.gpx` output?
 - Does this change alter `diagnostic.jsonl` schema?
 - Does this change affect old session reading?
-- Does replay need a fixture update?
+- Does replay need a fixture（回放样本） update?
 
 If the intended task is structural cleanup, all answers should usually be "no".
 
@@ -178,7 +181,7 @@ Tasks:
 1. Create this governance document.
 2. Ensure `docs/system-gnss-track-recording-plan.md` names the current strategy
    version and points to this governance plan.
-3. Ensure replay fixture categories are documented here.
+3. Ensure replay fixture（回放样本） categories are documented here.
 
 Allowed changes:
 
@@ -199,7 +202,7 @@ Completion criteria:
 
 - This document exists.
 - The system GNSS plan links to this document.
-- Replay fixtures are cataloged.
+- Replay fixtures（回放样本） are cataloged.
 
 ### Phase 2: Shared Track Decision State
 
@@ -236,7 +239,7 @@ Not allowed:
 
 - Changing thresholds.
 - Renaming decision reasons.
-- Changing fixture expectations.
+- Changing fixture（回放样本） expectations.
 - Changing GPX schema.
 
 Validation:
@@ -249,7 +252,7 @@ gradle :app:runReplay
 Completion criteria:
 
 - Transport-mode logic exists in one shared implementation.
-- Existing replay fixtures pass unchanged.
+- Existing replay fixtures（回放样本） pass unchanged.
 
 ### Phase 3: Split BasicTrackSession Responsibilities
 
@@ -330,7 +333,7 @@ Rules:
 - Default values must match the published compatibility thresholds used by
   `stage1-gnss-track-v2-rest-state`.
 - Do not add runtime settings in this phase.
-- Do not change fixture expectations.
+- Do not change fixture（回放样本） expectations.
 
 Validation:
 
@@ -518,7 +521,7 @@ Completed:
 
 - Phase 1 / Task 1: create this governance document.
 - Phase 1 / Task 2: link this governance plan from the system GNSS plan.
-- Phase 1 / Task 3: catalog replay fixture categories.
+- Phase 1 / Task 3: catalog replay fixture（回放样本） categories.
 - Phase 2 implementation has introduced a shared `TrackDecisionCoordinator`.
 - Phase 2 validation passed:
   - `source scripts/use-jdk17.sh && ./gradlew testDebugUnitTest`
