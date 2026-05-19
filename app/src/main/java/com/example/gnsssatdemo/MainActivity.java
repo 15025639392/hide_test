@@ -118,6 +118,7 @@ public class MainActivity extends Activity {
     private Sensor rotationVectorSensor;
     private Sensor magneticFieldSensor;
     private Sensor gyroscopeSensor;
+    private Sensor pressureSensor;
     private RecordingServiceController recordingServiceController;
     private HistorySessionController historySessionController;
     private SatelliteTileLoader satelliteTileLoader;
@@ -176,6 +177,10 @@ public class MainActivity extends Activity {
     private String lastScanError = "";
     private float headingDegrees = Float.NaN;
     private String headingUnreliableReason = "sensor_unavailable";
+    private boolean pressureSensorAvailable;
+    private long pressureSampleCount;
+    private float currentPressureHpa = Float.NaN;
+    private double currentRawBarometerAltitudeMeters = Double.NaN;
     private final CompassHeadingReliability headingReliability =
             new CompassHeadingReliability();
     private final Runnable headingStaleRunnable = new Runnable() {
@@ -249,6 +254,26 @@ public class MainActivity extends Activity {
                     render();
                 }
             }
+        }
+    };
+
+    private final SensorEventListener pressureListener = new SensorEventListener() {
+        @Override
+        public void onSensorChanged(SensorEvent event) {
+            if (event == null || event.values == null || event.values.length == 0
+                    || event.values[0] <= 0f) {
+                return;
+            }
+            currentPressureHpa = event.values[0];
+            currentRawBarometerAltitudeMeters = SensorManager.getAltitude(
+                    SensorManager.PRESSURE_STANDARD_ATMOSPHERE, currentPressureHpa);
+            pressureSampleCount++;
+            render();
+        }
+
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) {
+            // Pressure accuracy is not used for the always-visible HUD summary.
         }
     };
 
@@ -390,6 +415,8 @@ public class MainActivity extends Activity {
             rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
             magneticFieldSensor = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD);
             gyroscopeSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+            pressureSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE);
+            pressureSensorAvailable = pressureSensor != null;
             headingReliability.setSensorAvailability(magneticFieldSensor != null,
                     gyroscopeSensor != null);
         }
@@ -409,11 +436,13 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         startHeadingUpdates();
+        startPressureUpdates();
         queryForegroundServiceStatus();
     }
 
     @Override
     protected void onPause() {
+        stopPressureUpdates();
         stopHeadingUpdates();
         super.onPause();
     }
@@ -457,6 +486,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         mainHandler.removeCallbacks(renderRunnable);
+        stopPressureUpdates();
         stopHeadingUpdates();
         stopListening();
         if (trackSession != null) {
@@ -601,6 +631,20 @@ public class MainActivity extends Activity {
         mainHandler.removeCallbacks(headingStaleRunnable);
         if (sensorManager != null) {
             sensorManager.unregisterListener(headingListener);
+        }
+    }
+
+    private void startPressureUpdates() {
+        if (sensorManager == null || pressureSensor == null) {
+            return;
+        }
+        sensorManager.registerListener(pressureListener, pressureSensor,
+                SensorManager.SENSOR_DELAY_NORMAL, mainHandler);
+    }
+
+    private void stopPressureUpdates() {
+        if (sensorManager != null) {
+            sensorManager.unregisterListener(pressureListener);
         }
     }
 
@@ -1407,6 +1451,18 @@ public class MainActivity extends Activity {
             }
         }
         return "卫星：定位 " + used + " 颗 / 可见 " + visible + " 颗";
+    }
+
+    private String barometerHudText() {
+        if (!pressureSensorAvailable) {
+            return "气压：不可用";
+        }
+        if (Float.isNaN(currentPressureHpa)
+                || Double.isNaN(currentRawBarometerAltitudeMeters)) {
+            return "气压：可用，等待样本";
+        }
+        return "气压：" + one.format(currentPressureHpa) + "hPa 原海拔"
+                + formatAltitude(currentRawBarometerAltitudeMeters);
     }
 
     private String formatDuration(double seconds) {
@@ -3273,7 +3329,7 @@ public class MainActivity extends Activity {
             float lineHeight = dp(15);
             float paddingX = dp(8);
             float paddingY = dp(7);
-            float hudHeight = paddingY * 2 + lineHeight * 4;
+            float hudHeight = paddingY * 2 + lineHeight * 5;
             viewBounds.set(left, top, left + width, top + hudHeight);
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(Color.argb(165, 17, 24, 39));
@@ -3300,6 +3356,8 @@ public class MainActivity extends Activity {
             canvas.drawText(fitHudText(satelliteHudText(), textWidth), textX, baseline, paint);
             baseline += lineHeight;
             canvas.drawText(fitHudText(trackLine, textWidth), textX, baseline, paint);
+            baseline += lineHeight;
+            canvas.drawText(fitHudText(barometerHudText(), textWidth), textX, baseline, paint);
         }
 
         private void drawGpsHudLine(Canvas canvas, float textX, float baseline, float textWidth) {
