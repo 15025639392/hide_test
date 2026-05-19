@@ -16,6 +16,30 @@ Every event written through `DiagnosticLogger` includes:
 | `eventElapsedRealtimeNanos` | long | Continuity clock for the event. |
 | `eventWallTimeMillis` | long | Wall-clock write time. |
 
+## `session_metadata`
+
+Session metadata records stable context that applies to the whole recording.
+The same device fields are also written to `session.json` so offline acceptance
+tools can group exported sessions without scanning the full JSONL file.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `createdWallTimeMillis` | long | Wall-clock session creation time. |
+| `createdElapsedRealtimeNanos` | long | Session creation time on the elapsed realtime clock. |
+| `diagnosticLogFileName` | string | Diagnostic JSONL file name. |
+| `gpxFileName` | string | Trusted GPX file name. |
+| `completionState` | string | Session lifecycle state at the time metadata was written. |
+| `strategyVersion` | string | Track and ascent strategy version. |
+| `deviceManufacturer` | string | Android `Build.MANUFACTURER`, used for acceptance grouping. |
+| `deviceBrand` | string | Android `Build.BRAND`, used for acceptance grouping. |
+| `deviceModel` | string | Android `Build.MODEL`, used for acceptance grouping. |
+| `deviceName` | string | Android `Build.DEVICE`, used for acceptance grouping. |
+| `androidSdkInt` | int | Android SDK version. |
+
+Privacy rule: do not add hardware serial, Android ID, advertising ID, account
+identifier, phone number, or any other user/device-unique identifier to exported
+diagnostics.
+
 ## `gnss_snapshot`
 
 GNSS snapshot events are diagnostic evidence only. These fields must not become
@@ -86,8 +110,9 @@ are evidence absence only; they must not by themselves prove user movement.
 Compatibility rules:
 
 - Treat `motion_summary` as optional when reading old logs.
-- The sample report may correlate `motion_summary` with
-  `stationary_jitter` / `stationary_keepalive` decisions for explanation only.
+- `motion_summary` is runtime evidence for the REST state machine and replay.
+  Sample reports may count these events, but must not derive an acceptance
+  metric from legacy stationary-decision correlation.
 
 ## `raw_location`
 

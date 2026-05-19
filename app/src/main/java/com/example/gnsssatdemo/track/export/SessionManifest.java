@@ -24,6 +24,11 @@ public class SessionManifest {
     public final String integrityState;
     public final int schemaVersion;
     public final String strategyVersion;
+    public final String deviceManufacturer;
+    public final String deviceBrand;
+    public final String deviceModel;
+    public final String deviceName;
+    public final int androidSdkInt;
     public final String diagnosticLogFileName;
     public final String trustedGpxFileName;
     public final String partialGpxFileName;
@@ -63,6 +68,8 @@ public class SessionManifest {
                            long createdWallTimeMillis, long createdElapsedRealtimeNanos,
                            String completionState, String integrityState,
                            int schemaVersion, String strategyVersion,
+                           String deviceManufacturer, String deviceBrand,
+                           String deviceModel, String deviceName, int androidSdkInt,
                            String diagnosticLogFileName, String trustedGpxFileName,
                            String partialGpxFileName,
                            long lastEventSeq, long lastUpdatedWallTimeMillis,
@@ -93,6 +100,11 @@ public class SessionManifest {
         this.integrityState = integrityState;
         this.schemaVersion = schemaVersion;
         this.strategyVersion = strategyVersion;
+        this.deviceManufacturer = deviceManufacturer;
+        this.deviceBrand = deviceBrand;
+        this.deviceModel = deviceModel;
+        this.deviceName = deviceName;
+        this.androidSdkInt = androidSdkInt;
         this.diagnosticLogFileName = diagnosticLogFileName;
         this.trustedGpxFileName = trustedGpxFileName;
         this.partialGpxFileName = partialGpxFileName;

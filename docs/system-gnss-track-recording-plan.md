@@ -492,6 +492,9 @@ transport mode 中:
 
 ## 海拔与累计爬升目标策略
 
+多设备同时间同路线的气压计累计爬升一致性验收目标，见
+`docs/barometer-ascent-consistency-targets.md`。
+
 累计爬升不再按“相邻可信点海拔正差求和”作为长期口径。后续实现应抽出
 独立的 `TrackAscentCalculator`，由前台实时状态、地图回放和样本报告共用，
 避免多处重复计算出现不同结果。

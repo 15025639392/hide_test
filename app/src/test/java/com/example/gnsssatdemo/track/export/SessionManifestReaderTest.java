@@ -25,6 +25,11 @@ public class SessionManifestReaderTest {
         json.put("integrityState", "OK");
         json.put("schemaVersion", 1);
         json.put("strategyVersion", "stage1-gnss-track-v1");
+        json.put("deviceManufacturer", "Google");
+        json.put("deviceBrand", "google");
+        json.put("deviceModel", "Pixel 8");
+        json.put("deviceName", "shiba");
+        json.put("androidSdkInt", 35);
         json.put("diagnosticLogFileName", "diagnostic.jsonl");
         json.put("trustedGpxFileName", "track.gpx");
         json.put("partialGpxFileName", "partial.gpx");
@@ -64,6 +69,11 @@ public class SessionManifestReaderTest {
         assertEquals("OK", manifest.integrityState);
         assertEquals(1, manifest.schemaVersion);
         assertEquals("stage1-gnss-track-v1", manifest.strategyVersion);
+        assertEquals("Google", manifest.deviceManufacturer);
+        assertEquals("google", manifest.deviceBrand);
+        assertEquals("Pixel 8", manifest.deviceModel);
+        assertEquals("shiba", manifest.deviceName);
+        assertEquals(35, manifest.androidSdkInt);
         assertEquals(22L, manifest.lastEventSeq);
         assertEquals(300L, manifest.lastUpdatedWallTimeMillis);
         assertEquals(2, manifest.trackPointCount);

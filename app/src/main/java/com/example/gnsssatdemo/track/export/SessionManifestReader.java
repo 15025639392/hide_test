@@ -41,6 +41,11 @@ public class SessionManifestReader {
                     json.optString("integrityState", ""),
                     json.optInt("schemaVersion", 0),
                     json.optString("strategyVersion", ""),
+                    json.optString("deviceManufacturer", ""),
+                    json.optString("deviceBrand", ""),
+                    json.optString("deviceModel", ""),
+                    json.optString("deviceName", ""),
+                    json.optInt("androidSdkInt", 0),
                     diagnosticFileName,
                     trustedGpxFileName,
                     partialGpxFileName,
@@ -84,7 +89,8 @@ public class SessionManifestReader {
         File partialGpxFile = fileStore.partialGpx(sessionDir);
         DiagnosticLogSummary diagnosticSummary = readDiagnosticLogSummary(diagnosticFile);
         return new SessionManifest(SessionManifest.READ_MISSING_SESSION_JSON, sessionDir, sessionDir.getName(),
-                0L, 0L, "", "", 0, "", "diagnostic.jsonl", "track.gpx", "partial.gpx",
+                0L, 0L, "", "", 0, "", "", "", "", "", 0,
+                "diagnostic.jsonl", "track.gpx", "partial.gpx",
                 0L, 0L, 0, 0, 0, 0, 0.0, 0.0, -1.0, "NONE", -1.0, 0, 0, -1.0,
                 0, 0, 0, 0, 0, "", diagnosticFile.exists(),
                 trustedGpxFile.exists(), partialGpxFile.exists(), fileLengthIfExists(diagnosticFile),
@@ -98,7 +104,8 @@ public class SessionManifestReader {
         File partialGpxFile = fileStore.partialGpx(sessionDir);
         DiagnosticLogSummary diagnosticSummary = readDiagnosticLogSummary(diagnosticFile);
         return new SessionManifest(SessionManifest.READ_INVALID_SESSION_JSON, sessionDir, sessionDir.getName(),
-                0L, 0L, "", "", 0, "", "diagnostic.jsonl", "track.gpx", "partial.gpx",
+                0L, 0L, "", "", 0, "", "", "", "", "", 0,
+                "diagnostic.jsonl", "track.gpx", "partial.gpx",
                 0L, 0L, 0, 0, 0, 0, 0.0, 0.0, -1.0, "NONE", -1.0, 0, 0, -1.0,
                 0, 0, 0, 0, 0, "", diagnosticFile.exists(),
                 trustedGpxFile.exists(), partialGpxFile.exists(), fileLengthIfExists(diagnosticFile),

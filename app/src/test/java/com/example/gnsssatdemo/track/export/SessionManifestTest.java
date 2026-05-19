@@ -51,7 +51,8 @@ public class SessionManifestTest {
                                      String integrityState, boolean diagnosticExists) {
         return new SessionManifest(readStatus, new File("/tmp/session"), "session",
                 0L, 0L, completionState, integrityState, 1,
-                "stage1-gnss-track-v1", "diagnostic.jsonl", "track.gpx", "partial.gpx",
+                "stage1-gnss-track-v1", "", "", "", "", 0,
+                "diagnostic.jsonl", "track.gpx", "partial.gpx",
                 1L, 1L, 0, 0, 0, 1, 0.0, 0.0,
                 -1.0, "NONE", -1.0, 0, 0, -1.0, 0, 0, 0, 0, 0, "",
                 diagnosticExists, false, false, diagnosticExists ? 10L : 0L, 0L, 0L,

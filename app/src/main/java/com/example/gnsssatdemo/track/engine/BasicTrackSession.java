@@ -597,7 +597,20 @@ public class BasicTrackSession implements Closeable {
         event.put("gpxFileName", "track.gpx");
         event.put("completionState", lifecycle.getCompletionState());
         event.put("strategyVersion", STRATEGY_VERSION);
+        appendDeviceMetadata(event);
         appendDiagnostic(event, recordStartElapsedRealtimeNanos);
+    }
+
+    private void appendDeviceMetadata(JSONObject json) throws JSONException {
+        json.put("deviceManufacturer", safeBuildValue(Build.MANUFACTURER));
+        json.put("deviceBrand", safeBuildValue(Build.BRAND));
+        json.put("deviceModel", safeBuildValue(Build.MODEL));
+        json.put("deviceName", safeBuildValue(Build.DEVICE));
+        json.put("androidSdkInt", Build.VERSION.SDK_INT);
+    }
+
+    private String safeBuildValue(String value) {
+        return value == null ? "" : value;
     }
 
     private void appendConfigSnapshot() throws IOException, JSONException {
@@ -764,6 +777,7 @@ public class BasicTrackSession implements Closeable {
         json.put("integrityState", lifecycle.getIntegrityState());
         json.put("schemaVersion", 1);
         json.put("strategyVersion", STRATEGY_VERSION);
+        appendDeviceMetadata(json);
         json.put("diagnosticLogFileName", "diagnostic.jsonl");
         json.put("trustedGpxFileName", "track.gpx");
         json.put("partialGpxFileName", "partial.gpx");

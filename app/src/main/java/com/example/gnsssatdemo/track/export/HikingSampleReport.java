@@ -67,9 +67,6 @@ public class HikingSampleReport {
     public final double averageRejectDecisionLowCn0VisibleCount;
     public final double averageRejectDecisionWeakUsedCount;
     public final int motionSummaryCount;
-    public final int stationaryDecisionCount;
-    public final int stationarySupportedByAccelCount;
-    public final int stationaryMissingMotionSummaryCount;
     public final Map<String, Integer> samplingRequestCounts;
     public final Map<String, Double> samplingDurationSeconds;
     public final Map<String, Integer> decisionReasonCounts;
@@ -112,9 +109,7 @@ public class HikingSampleReport {
                               double averageRejectDecisionTop4AvgCn0,
                               double averageRejectDecisionLowCn0VisibleCount,
                               double averageRejectDecisionWeakUsedCount,
-                              int motionSummaryCount, int stationaryDecisionCount,
-                              int stationarySupportedByAccelCount,
-                              int stationaryMissingMotionSummaryCount,
+                              int motionSummaryCount,
                               Map<String, Integer> samplingRequestCounts,
                               Map<String, Double> samplingDurationSeconds,
                               Map<String, Integer> decisionReasonCounts,
@@ -174,9 +169,6 @@ public class HikingSampleReport {
         this.averageRejectDecisionLowCn0VisibleCount = averageRejectDecisionLowCn0VisibleCount;
         this.averageRejectDecisionWeakUsedCount = averageRejectDecisionWeakUsedCount;
         this.motionSummaryCount = motionSummaryCount;
-        this.stationaryDecisionCount = stationaryDecisionCount;
-        this.stationarySupportedByAccelCount = stationarySupportedByAccelCount;
-        this.stationaryMissingMotionSummaryCount = stationaryMissingMotionSummaryCount;
         this.samplingRequestCounts = Collections.unmodifiableMap(samplingRequestCounts);
         this.samplingDurationSeconds = Collections.unmodifiableMap(samplingDurationSeconds);
         this.decisionReasonCounts = Collections.unmodifiableMap(decisionReasonCounts);
@@ -240,10 +232,6 @@ public class HikingSampleReport {
         json.put("averageRejectDecisionLowCn0VisibleCount", averageRejectDecisionLowCn0VisibleCount);
         json.put("averageRejectDecisionWeakUsedCount", averageRejectDecisionWeakUsedCount);
         json.put("motionSummaryCount", motionSummaryCount);
-        json.put("stationaryDecisionCount", stationaryDecisionCount);
-        json.put("stationarySupportedByAccelCount", stationarySupportedByAccelCount);
-        json.put("stationaryMissingMotionSummaryCount", stationaryMissingMotionSummaryCount);
-        json.put("stationarySupportedByAccelRatio", stationarySupportedByAccelRatio());
         json.put("samplingRequestCounts", integerMapToJson(samplingRequestCounts));
         json.put("samplingDurationSeconds", doubleMapToJson(samplingDurationSeconds));
         json.put("decisionReasonCounts", integerMapToJson(decisionReasonCounts));
@@ -326,22 +314,6 @@ public class HikingSampleReport {
             }
             sb.append('\n');
         }
-        if (stationaryDecisionCount > 0 || motionSummaryCount > 0) {
-            sb.append("## 加速度计静止证据\n");
-            sb.append("- Motion Summary=").append(motionSummaryCount)
-                    .append(" stationary 决策=").append(stationaryDecisionCount)
-                    .append(" supported=").append(stationarySupportedByAccelCount)
-                    .append(" missing=").append(stationaryMissingMotionSummaryCount)
-                    .append(" supportedRatio=")
-                    .append(oneDecimal(stationarySupportedByAccelRatio() * 100.0))
-                    .append("%\n");
-            if (stationarySupportedByAccelCount > 0) {
-                sb.append("- 解释=部分静止/休息锚点决策同时具备设备静止证据，")
-                        .append("更像休息或静止时的定位漂移。\n");
-            }
-            sb.append('\n');
-        }
-
         appendIntegerMap(sb, "## 采样策略请求", samplingRequestCounts);
         appendDoubleMap(sb, "## 采样策略估算时长", samplingDurationSeconds);
         appendIntegerMap(sb, "## 决策原因分布", decisionReasonCounts);
@@ -360,11 +332,6 @@ public class HikingSampleReport {
             return "REVIEW（可看，但调整阈值前需要人工复核）";
         }
         return "FAIL（不建议作为阈值调整依据）";
-    }
-
-    private double stationarySupportedByAccelRatio() {
-        return stationaryDecisionCount == 0 ? 0.0
-                : stationarySupportedByAccelCount / (double) stationaryDecisionCount;
     }
 
     private void appendIntegerMap(StringBuilder sb, String title, Map<String, Integer> values) {

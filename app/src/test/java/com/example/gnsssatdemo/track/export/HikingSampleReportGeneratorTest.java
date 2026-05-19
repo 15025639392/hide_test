@@ -8,7 +8,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class HikingSampleReportGeneratorTest {
@@ -290,154 +289,6 @@ public class HikingSampleReportGeneratorTest {
         assertTrue(!report.toText().contains("GNSS 质量解释"));
     }
 
-    @Test
-    public void generate_summarizesStationaryDecisionsSupportedByAccelerometer() throws Exception {
-        File dir = Files.createTempDirectory("hiking-sample-report-motion").toFile();
-        String diagnostic = ""
-                + event(1, "session_metadata", 1_000_000_000L,
-                "\"createdElapsedRealtimeNanos\":1000000000")
-                + event(2, "config_snapshot", 1_000_000_000L,
-                "\"locationRequestMinDistanceMeters\":0")
-                + event(3, "sampling_policy", 1_000_000_000L,
-                "\"state\":\"STARTING\",\"locationRequestMinDistanceMeters\":0")
-                + raw(4, 1, 2_000_000_000L, false)
-                + decision(5, 1, 1, 1, 1, 2_000_000_000L,
-                "anchor", "first_fix_good", 0.0, 0.0)
-                + motionWindow(6, 1, 2_000_000_000L, 3_000_000_000L, true)
-                + raw(7, 2, 3_000_000_000L, false)
-                + decision(8, 2, 2, 0, 1, 3_000_000_000L,
-                "reject", "stationary_keepalive", 0.0, 0.0)
-                + motionWindow(9, 2, 3_500_000_000L, 4_500_000_000L, false)
-                + raw(10, 3, 4_000_000_000L, false)
-                + decision(11, 3, 3, 0, 1, 4_000_000_000L,
-                "reject", "stationary_jitter", 0.0, 0.0)
-                + raw(12, 4, 10_000_000_000L, false)
-                + decision(13, 4, 4, 0, 1, 10_000_000_000L,
-                "reject", "stationary_jitter", 0.0, 0.0)
-                + event(14, "session_event", 1_802_000_000_000L,
-                "\"eventType\":\"finish_recording\"");
-        Files.write(new File(dir, "diagnostic.jsonl").toPath(),
-                diagnostic.getBytes(StandardCharsets.UTF_8));
-        Files.write(new File(dir, "track.gpx").toPath(),
-                "<gpx/>".getBytes(StandardCharsets.UTF_8));
-        writeSessionJson(dir, 14, 4, 1, 0, 0, 0.0, 0.0);
-
-        SessionManifest manifest = new SessionManifestReader(new SessionFileStore(dir.getParentFile()))
-                .read(dir);
-        HikingSampleReport report = new HikingSampleReportGenerator().generate(manifest);
-
-        assertEquals(2, report.motionSummaryCount);
-        assertEquals(3, report.stationaryDecisionCount);
-        assertEquals(1, report.stationarySupportedByAccelCount);
-        assertEquals(1, report.stationaryMissingMotionSummaryCount);
-        assertEquals(1.0 / 3.0,
-                report.toJson().getDouble("stationarySupportedByAccelRatio"), 0.0001);
-        assertTrue(report.toText().contains("加速度计静止证据"));
-    }
-
-    @Test
-    public void generate_matchesMotionSummaryWrittenAfterStationaryDecision() throws Exception {
-        File dir = Files.createTempDirectory("hiking-sample-report-motion-order").toFile();
-        String diagnostic = ""
-                + event(1, "session_metadata", 1_000_000_000L,
-                "\"createdElapsedRealtimeNanos\":1000000000")
-                + event(2, "config_snapshot", 1_000_000_000L,
-                "\"locationRequestMinDistanceMeters\":0")
-                + event(3, "sampling_policy", 1_000_000_000L,
-                "\"state\":\"STARTING\",\"locationRequestMinDistanceMeters\":0")
-                + raw(4, 1, 2_000_000_000L, false)
-                + decision(5, 1, 1, 1, 1, 2_000_000_000L,
-                "anchor", "first_fix_good", 0.0, 0.0)
-                + raw(6, 2, 3_000_000_000L, false)
-                + decision(7, 2, 2, 0, 1, 3_000_000_000L,
-                "reject", "stationary_keepalive", 0.0, 0.0)
-                + motion(8, 1, 2_900_000_000L, true)
-                + event(9, "session_event", 1_802_000_000_000L,
-                "\"eventType\":\"finish_recording\"");
-        Files.write(new File(dir, "diagnostic.jsonl").toPath(),
-                diagnostic.getBytes(StandardCharsets.UTF_8));
-        Files.write(new File(dir, "track.gpx").toPath(),
-                "<gpx/>".getBytes(StandardCharsets.UTF_8));
-        writeSessionJson(dir, 9, 2, 1, 0, 0, 0.0, 0.0);
-
-        SessionManifest manifest = new SessionManifestReader(new SessionFileStore(dir.getParentFile()))
-                .read(dir);
-        HikingSampleReport report = new HikingSampleReportGenerator().generate(manifest);
-
-        assertEquals(1, report.stationaryDecisionCount);
-        assertEquals(1, report.stationarySupportedByAccelCount);
-        assertEquals(0, report.stationaryMissingMotionSummaryCount);
-    }
-
-    @Test
-    public void generate_matchesMotionSummaryWindowContainingStationaryDecision() throws Exception {
-        File dir = Files.createTempDirectory("hiking-sample-report-motion-window").toFile();
-        String diagnostic = ""
-                + event(1, "session_metadata", 1_000_000_000L,
-                "\"createdElapsedRealtimeNanos\":1000000000")
-                + event(2, "config_snapshot", 1_000_000_000L,
-                "\"locationRequestMinDistanceMeters\":0")
-                + event(3, "sampling_policy", 1_000_000_000L,
-                "\"state\":\"STARTING\",\"locationRequestMinDistanceMeters\":0")
-                + raw(4, 1, 2_000_000_000L, false)
-                + decision(5, 1, 1, 1, 1, 2_000_000_000L,
-                "anchor", "first_fix_good", 0.0, 0.0)
-                + raw(6, 2, 3_000_000_000L, false)
-                + decision(7, 2, 2, 0, 1, 3_000_000_000L,
-                "reject", "stationary_keepalive", 0.0, 0.0)
-                + motionWindow(8, 1, 2_500_000_000L, 3_500_000_000L, true)
-                + event(9, "session_event", 1_802_000_000_000L,
-                "\"eventType\":\"finish_recording\"");
-        Files.write(new File(dir, "diagnostic.jsonl").toPath(),
-                diagnostic.getBytes(StandardCharsets.UTF_8));
-        Files.write(new File(dir, "track.gpx").toPath(),
-                "<gpx/>".getBytes(StandardCharsets.UTF_8));
-        writeSessionJson(dir, 9, 2, 1, 0, 0, 0.0, 0.0);
-
-        SessionManifest manifest = new SessionManifestReader(new SessionFileStore(dir.getParentFile()))
-                .read(dir);
-        HikingSampleReport report = new HikingSampleReportGenerator().generate(manifest);
-
-        assertEquals(1, report.stationaryDecisionCount);
-        assertEquals(1, report.stationarySupportedByAccelCount);
-        assertEquals(0, report.stationaryMissingMotionSummaryCount);
-    }
-
-    @Test
-    public void generate_countsRestAnchorRefinementAsStationaryMotionEvidence() throws Exception {
-        File dir = Files.createTempDirectory("hiking-sample-report-rest-anchor-motion").toFile();
-        String diagnostic = ""
-                + event(1, "session_metadata", 1_000_000_000L,
-                "\"createdElapsedRealtimeNanos\":1000000000")
-                + raw(2, 1, 2_000_000_000L, false)
-                + decision(3, 1, 1, 1, 1, 2_000_000_000L,
-                "anchor", "first_fix_good", 0.0, 0.0)
-                + motionWindow(4, 1, 2_000_000_000L, 3_000_000_000L, true)
-                + raw(5, 2, 3_000_000_000L, false)
-                + decision(6, 2, 2, 1, 1, 3_000_000_000L,
-                "anchor", "stationary_anchor_refined", 0.0, 0.0)
-                + raw(7, 3, 4_000_000_000L, false)
-                + decision(8, 3, 3, 1, 1, 4_000_000_000L,
-                "reject", "stationary_accel_supported_jitter", 0.0, 0.0)
-                + event(9, "session_event", 6_000_000_000L,
-                "\"eventType\":\"finish_recording\"");
-        Files.write(new File(dir, "diagnostic.jsonl").toPath(),
-                diagnostic.getBytes(StandardCharsets.UTF_8));
-        Files.write(new File(dir, "track.gpx").toPath(),
-                "<gpx/>".getBytes(StandardCharsets.UTF_8));
-        writeSessionJson(dir, 9, 3, 1, 0, 0, 0.0, 0.0);
-
-        SessionManifest manifest = new SessionManifestReader(new SessionFileStore(dir.getParentFile()))
-                .read(dir);
-        HikingSampleReport report = new HikingSampleReportGenerator().generate(manifest);
-
-        assertEquals(1, report.trustedDecisionCount);
-        assertFalse(report.blockingFindings.toString().contains("TrackPoint"));
-        assertEquals(2, report.stationaryDecisionCount);
-        assertEquals(2, report.stationarySupportedByAccelCount);
-        assertEquals(0, report.stationaryMissingMotionSummaryCount);
-    }
-
     private String event(int seq, String eventName, long elapsedRealtimeNanos, String fields) {
         return "{\"event\":\"" + eventName + "\",\"sessionId\":\"S1\",\"eventSeq\":" + seq
                 + ",\"schemaVersion\":1,\"eventElapsedRealtimeNanos\":" + elapsedRealtimeNanos
@@ -552,26 +403,6 @@ public class HikingSampleReportGeneratorTest {
                         + ",\"lowCn0VisibleCount\":" + lowCn0VisibleCount
                         + ",\"weakUsedCount\":" + weakUsedCount
                         + ",\"hasDualFrequency\":" + hasDualFrequency);
-    }
-
-    private String motion(int seq, int motionSummaryId, long elapsedRealtimeNanos,
-                          boolean isDeviceStill) {
-        return motionWindow(seq, motionSummaryId, elapsedRealtimeNanos - 1_000_000_000L,
-                elapsedRealtimeNanos, isDeviceStill);
-    }
-
-    private String motionWindow(int seq, int motionSummaryId, long firstElapsedRealtimeNanos,
-                                long lastElapsedRealtimeNanos, boolean isDeviceStill) {
-        long eventElapsedRealtimeNanos = lastElapsedRealtimeNanos;
-        return event(seq, "motion_summary", eventElapsedRealtimeNanos,
-                "\"motionSummaryId\":" + motionSummaryId
-                        + ",\"firstElapsedRealtimeNanos\":" + firstElapsedRealtimeNanos
-                        + ",\"lastElapsedRealtimeNanos\":" + lastElapsedRealtimeNanos
-                        + ",\"sampleCount\":10"
-                        + ",\"dynamicAccelRmsMps2\":0.08"
-                        + ",\"stillScore\":" + (isDeviceStill ? 0.8 : 0.1)
-                        + ",\"isDeviceStill\":" + isDeviceStill
-                        + ",\"sourceSensorType\":\"TYPE_LINEAR_ACCELERATION\"");
     }
 
     private void writeSessionJson(File dir, long lastEventSeq, int rawPointCount,
