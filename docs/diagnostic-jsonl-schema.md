@@ -102,5 +102,6 @@ movement recovery anchor:
 | `rest_candidate` | `reject` | REST candidate evidence is being collected; the point is not counted as distance. |
 | `rest_paused_keepalive` | `reject` | REST_PAUSED GPS keepalive near the anchor; the point may refine the anchor but does not count distance. |
 | `rest_probing_stationary` | `reject` | REST_PROBING found the point still near the anchor, so the machine returns to REST_PAUSED without distance. |
+| `stationary_motion_blocked_recovery` | `reject` | REST_PROBING saw GPS movement, but recent still motion evidence blocked movement recovery as GPS drift. |
 | `rest_probing_confirming_moving` | `reject` | REST_PROBING is gathering movement confirmation; probing points do not backfill distance. |
 | `rest_moving_recovery` | `accept` | Consecutive REST_PROBING evidence confirmed movement. A new segment anchor is written with zero distance delta. |

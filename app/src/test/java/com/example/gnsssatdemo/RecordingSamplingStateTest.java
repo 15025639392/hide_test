@@ -45,8 +45,9 @@ public class RecordingSamplingStateTest {
         state.onDecisionReason("rest_candidate");
         state.onDecisionReason("rest_paused_keepalive");
         state.onDecisionReason("rest_probing_stationary");
+        state.onDecisionReason("stationary_motion_blocked_recovery");
         state.onDecisionReason("rest_probing_confirming_moving");
 
-        assertEquals(6, state.consecutiveStationaryJitterCount());
+        assertEquals(7, state.consecutiveStationaryJitterCount());
     }
 }

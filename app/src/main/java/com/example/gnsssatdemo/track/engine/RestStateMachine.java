@@ -17,6 +17,8 @@ public class RestStateMachine {
     public static final String REASON_REST_PROBING_STATIONARY = "rest_probing_stationary";
     public static final String REASON_REST_PROBING_CONFIRMING_MOVING =
             "rest_probing_confirming_moving";
+    public static final String REASON_STATIONARY_MOTION_BLOCKED_RECOVERY =
+            "stationary_motion_blocked_recovery";
     public static final String REASON_REST_MOVING_RECOVERY = "rest_moving_recovery";
 
     private static final long REST_CONFIRMATION_NANOS = 20_000_000_000L;
@@ -27,6 +29,13 @@ public class RestStateMachine {
     private static final double FAR_FROM_ANCHOR_METERS = 20.0;
     private static final double MOVING_CONFIRMATION_MIN_DISTANCE_METERS = 8.0;
     private static final double ACCURACY_EXPLAIN_MULTIPLIER = 1.5;
+    private static final long MOTION_EVIDENCE_WINDOW_NANOS = 5_000_000_000L;
+    private static final long LATEST_STILL_MOTION_MAX_AGE_NANOS = 2_000_000_000L;
+    private static final int MIN_STILL_BLOCK_SUMMARY_COUNT = 2;
+    private static final int MIN_STILL_BLOCK_SAMPLE_COUNT = 12;
+    private static final double MIN_STILL_BLOCK_SUMMARY_RATIO = 0.75;
+    private static final double STILL_BLOCK_MIN_STILL_SCORE = 0.70;
+    private static final double STILL_BLOCK_MAX_RMS_MPS2 = 0.10;
 
     private String state = STATE_MOVING;
     private Anchor anchor;
@@ -110,10 +119,10 @@ public class RestStateMachine {
         }
 
         if (STATE_REST_PAUSED.equals(state)) {
-            return applyPaused(outcome, rawPoint);
+            return applyPaused(outcome, rawPoint, recentMotionSummaries);
         }
         if (STATE_REST_PROBING.equals(state)) {
-            return applyProbing(outcome, rawPoint);
+            return applyProbing(outcome, rawPoint, recentMotionSummaries);
         }
 
         boolean restEvidence = hasRestEntryEvidence(rawPoint, previousTrackPoint,
@@ -146,7 +155,8 @@ public class RestStateMachine {
         return Decision.override(reject(REASON_REST_CANDIDATE, outcome), state);
     }
 
-    private Decision applyPaused(TrackDecisionResult outcome, RawPoint rawPoint) {
+    private Decision applyPaused(TrackDecisionResult outcome, RawPoint rawPoint,
+                                 List<MotionSummary> recentMotionSummaries) {
         if (anchor == null) {
             reset();
             return Decision.keep(outcome, state);
@@ -157,10 +167,11 @@ public class RestStateMachine {
         }
         state = STATE_REST_PROBING;
         probingMovingPointCount = 0;
-        return applyProbing(outcome, rawPoint);
+        return applyProbing(outcome, rawPoint, recentMotionSummaries);
     }
 
-    private Decision applyProbing(TrackDecisionResult outcome, RawPoint rawPoint) {
+    private Decision applyProbing(TrackDecisionResult outcome, RawPoint rawPoint,
+                                  List<MotionSummary> recentMotionSummaries) {
         if (anchor == null) {
             reset();
             return Decision.keep(outcome, state);
@@ -171,6 +182,14 @@ public class RestStateMachine {
             probingMovingPointCount = 0;
             recentMotionMoving = false;
             return Decision.override(reject(REASON_REST_PROBING_STATIONARY, outcome), state);
+        }
+        if (hasStillMotionBlockingRecovery(rawPoint.elapsedRealtimeNanos,
+                recentMotionSummaries)) {
+            state = STATE_REST_PAUSED;
+            probingMovingPointCount = 0;
+            recentMotionMoving = false;
+            return Decision.override(reject(REASON_STATIONARY_MOTION_BLOCKED_RECOVERY, outcome),
+                    state);
         }
         if (isMovingConfirmation(outcome, rawPoint)) {
             probingMovingPointCount++;
@@ -233,6 +252,7 @@ public class RestStateMachine {
                 || REASON_REST_CANDIDATE.equals(reason)
                 || REASON_REST_PAUSED_KEEPALIVE.equals(reason)
                 || REASON_REST_PROBING_STATIONARY.equals(reason)
+                || REASON_STATIONARY_MOTION_BLOCKED_RECOVERY.equals(reason)
                 || REASON_REST_PROBING_CONFIRMING_MOVING.equals(reason);
     }
 
@@ -254,6 +274,73 @@ public class RestStateMachine {
                 || "gap_recovery".equals(outcome.reason)
                 || "transport_recovery".equals(outcome.reason));
         return acceptedMoving && (awayFromAnchor || speedMoving || recentMotionMoving);
+    }
+
+    private boolean hasStillMotionBlockingRecovery(long elapsedRealtimeNanos,
+                                                   List<MotionSummary> recentMotionSummaries) {
+        return hasLatestStillMotionEvidence(elapsedRealtimeNanos, recentMotionSummaries)
+                || hasSustainedStillMotionEvidence(elapsedRealtimeNanos, recentMotionSummaries);
+    }
+
+    private boolean hasLatestStillMotionEvidence(long elapsedRealtimeNanos,
+                                                 List<MotionSummary> recentMotionSummaries) {
+        MotionSummary latest = latestMotionSummaryBefore(elapsedRealtimeNanos,
+                recentMotionSummaries);
+        return latest != null
+                && elapsedRealtimeNanos - latest.lastElapsedRealtimeNanos
+                <= LATEST_STILL_MOTION_MAX_AGE_NANOS
+                && isStillBlockSummary(latest);
+    }
+
+    private MotionSummary latestMotionSummaryBefore(long elapsedRealtimeNanos,
+                                                    List<MotionSummary> recentMotionSummaries) {
+        if (recentMotionSummaries == null || recentMotionSummaries.isEmpty()) {
+            return null;
+        }
+        MotionSummary latest = null;
+        for (MotionSummary summary : recentMotionSummaries) {
+            if (summary == null || summary.firstElapsedRealtimeNanos > elapsedRealtimeNanos) {
+                continue;
+            }
+            if (latest == null
+                    || summary.lastElapsedRealtimeNanos > latest.lastElapsedRealtimeNanos) {
+                latest = summary;
+            }
+        }
+        return latest;
+    }
+
+    private boolean hasSustainedStillMotionEvidence(long elapsedRealtimeNanos,
+                                                    List<MotionSummary> recentMotionSummaries) {
+        if (recentMotionSummaries == null || recentMotionSummaries.isEmpty()) {
+            return false;
+        }
+        int summaryCount = 0;
+        int stillBlockCount = 0;
+        int sampleCount = 0;
+        long cutoff = elapsedRealtimeNanos - MOTION_EVIDENCE_WINDOW_NANOS;
+        for (MotionSummary summary : recentMotionSummaries) {
+            if (summary == null || summary.lastElapsedRealtimeNanos < cutoff
+                    || summary.firstElapsedRealtimeNanos > elapsedRealtimeNanos) {
+                continue;
+            }
+            summaryCount++;
+            sampleCount += summary.sampleCount;
+            if (isStillBlockSummary(summary)) {
+                stillBlockCount++;
+            }
+        }
+        if (stillBlockCount < MIN_STILL_BLOCK_SUMMARY_COUNT
+                || sampleCount < MIN_STILL_BLOCK_SAMPLE_COUNT) {
+            return false;
+        }
+        return stillBlockCount / (double) summaryCount >= MIN_STILL_BLOCK_SUMMARY_RATIO;
+    }
+
+    private boolean isStillBlockSummary(MotionSummary summary) {
+        return summary.deviceStill
+                && summary.stillScore >= STILL_BLOCK_MIN_STILL_SCORE
+                && summary.dynamicAccelRmsMps2 <= STILL_BLOCK_MAX_RMS_MPS2;
     }
 
     private boolean isLowSpeed(RawPoint rawPoint) {

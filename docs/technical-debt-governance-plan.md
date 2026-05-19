@@ -90,6 +90,7 @@ Baseline behavior:
 | REST entry evidence while moving | `reject / rest_candidate` until confirmation |
 | REST paused keepalive near anchor | `reject / rest_paused_keepalive` |
 | REST probing still near anchor | `reject / rest_probing_stationary` |
+| REST probing GPS movement blocked by recent still motion | `reject / stationary_motion_blocked_recovery` |
 | REST probing before movement confirmation | `reject / rest_probing_confirming_moving` |
 | Confirmed movement after REST probing | `accept / rest_moving_recovery`, zero delta, new segment |
 | Small movement below noise floor | `stationary_jitter` or `stationary_keepalive` |

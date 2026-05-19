@@ -23,6 +23,7 @@ final class RecordingSamplingState {
                 || "rest_candidate".equals(reason)
                 || "rest_paused_keepalive".equals(reason)
                 || "rest_probing_stationary".equals(reason)
+                || "stationary_motion_blocked_recovery".equals(reason)
                 || "rest_probing_confirming_moving".equals(reason)) {
             consecutiveStationaryJitterCount++;
             return;

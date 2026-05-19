@@ -3573,6 +3573,7 @@ public class MainActivity extends Activity {
             case "rest_candidate":
             case "rest_paused_keepalive":
             case "rest_probing_stationary":
+            case "stationary_motion_blocked_recovery":
             case "rest_probing_confirming_moving":
                 return "静止，不累计距离";
             case "rest_moving_recovery":
@@ -3634,6 +3635,8 @@ public class MainActivity extends Activity {
                 return "已进入休息暂停，GPS 保活点只用于更新休息锚点，不累计距离。";
             case "rest_probing_stationary":
                 return "休息探测后仍在锚点附近，回到休息暂停，不累计距离。";
+            case "stationary_motion_blocked_recovery":
+                return "加速度计持续高置信静止，GPS 漂移不能恢复移动，不累计距离。";
             case "rest_probing_confirming_moving":
                 return "休息探测中，当前点只用于确认是否恢复移动，不累计距离。";
             case "rest_moving_recovery":

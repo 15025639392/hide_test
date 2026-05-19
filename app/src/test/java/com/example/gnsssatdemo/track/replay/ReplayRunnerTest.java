@@ -80,6 +80,7 @@ public class ReplayRunnerTest {
         assertExactFixture("gap_recovery_after_stationary_gap.jsonl", 2);
         assertExactFixture("stationary_anchor_refinement_after_gap.jsonl", 2);
         assertExactFixture("stationary_anchor_refinement_with_motion.jsonl", 2);
+        assertExactFixture("stationary_motion_blocks_rest_recovery.jsonl", 4);
     }
 
     @Test

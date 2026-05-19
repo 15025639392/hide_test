@@ -88,6 +88,37 @@ public class RestStateMachineTest {
     }
 
     @Test
+    public void apply_blocksRestMovingRecoveryWhenMotionRemainsStrongStill() {
+        RestStateMachine machine = pausedMachine();
+
+        RestStateMachine.Decision decision = machine.apply(movingOutcome(),
+                raw(4L, 29.00025, 34_000_000_000L, true, 1.0f),
+                previousTrackPoint(), strongStillSummariesNearRecovery());
+
+        assertEquals("reject", decision.outcome.result);
+        assertEquals(RestStateMachine.REASON_STATIONARY_MOTION_BLOCKED_RECOVERY,
+                decision.outcome.reason);
+        assertFalse(decision.outcome.startsNewSegment);
+        assertTrue(machine.isPaused());
+    }
+
+    @Test
+    public void apply_blocksRestMovingRecoveryFromLatestStillMotionWindow() {
+        RestStateMachine machine = pausedMachine();
+
+        RestStateMachine.Decision decision = machine.apply(movingOutcome(),
+                raw(4L, 29.00025, 34_000_000_000L, true, 1.0f),
+                previousTrackPoint(),
+                Collections.singletonList(motion(4L, 32_500_000_000L,
+                        33_500_000_000L, true)));
+
+        assertEquals("reject", decision.outcome.result);
+        assertEquals(RestStateMachine.REASON_STATIONARY_MOTION_BLOCKED_RECOVERY,
+                decision.outcome.reason);
+        assertTrue(machine.isPaused());
+    }
+
+    @Test
     public void apply_doesNotConfirmMovingFromRejectedFarJump() {
         RestStateMachine machine = pausedMachine();
         machine.onMotionSummary(motion(4L, 32_000_000_000L, 33_000_000_000L, false));
@@ -202,6 +233,12 @@ public class RestStateMachineTest {
         return Arrays.asList(
                 motion(1L, 9_000_000_000L, 11_000_000_000L, true),
                 motion(2L, 30_000_000_000L, 32_000_000_000L, true));
+    }
+
+    private java.util.List<MotionSummary> strongStillSummariesNearRecovery() {
+        return Arrays.asList(
+                motion(3L, 30_000_000_000L, 32_000_000_000L, true),
+                motion(4L, 32_500_000_000L, 33_500_000_000L, true));
     }
 
     private MotionSummary motion(long id, long firstNanos, long lastNanos, boolean still) {
