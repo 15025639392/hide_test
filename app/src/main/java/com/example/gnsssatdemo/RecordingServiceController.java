@@ -32,10 +32,9 @@ class RecordingServiceController {
         context.sendBroadcast(intent);
     }
 
-    void startRecording(boolean forceWeakFirstFix) {
+    void startRecording() {
         Intent intent = new Intent(context, RecordingForegroundService.class);
         intent.setAction(RecordingForegroundService.ACTION_START);
-        intent.putExtra(RecordingForegroundService.EXTRA_FORCE_WEAK_FIRST_FIX, forceWeakFirstFix);
         if (Build.VERSION.SDK_INT >= 26) {
             context.startForegroundService(intent);
         } else {

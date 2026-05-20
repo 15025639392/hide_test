@@ -166,6 +166,39 @@ public class HikingSampleReportGeneratorTest {
     }
 
     @Test
+    public void generate_acceptsIntakeRejectedRawPointAsExplained() throws Exception {
+        File dir = Files.createTempDirectory("hiking-sample-report-intake-reject").toFile();
+        String diagnostic = ""
+                + event(1, "session_metadata", 1_000_000_000L,
+                "\"createdElapsedRealtimeNanos\":1000000000")
+                + event(2, "config_snapshot", 1_000_000_000L,
+                "\"locationRequestMinDistanceMeters\":0")
+                + event(3, "sampling_policy", 1_000_000_000L,
+                "\"state\":\"STARTING\",\"locationRequestMinDistanceMeters\":0")
+                + raw(4, 1, 2_000_000_000L, false)
+                + decision(5, 1, 1, 1, 1, 2_000_000_000L,
+                "anchor", "first_fix_good", 0.0, 0.0)
+                + raw(6, 2, 12_000_000_000L, false)
+                + intakeReject(7, 2, 12_000_000_000L, "accuracy_too_large")
+                + event(8, "session_event", 1_812_000_000_000L,
+                "\"eventType\":\"finish_recording\"");
+        Files.write(new File(dir, "diagnostic.jsonl").toPath(),
+                diagnostic.getBytes(StandardCharsets.UTF_8));
+        Files.write(new File(dir, "track.gpx").toPath(),
+                "<gpx/>".getBytes(StandardCharsets.UTF_8));
+        writeSessionJson(dir, 8, 2, 1, 0, 0, 0.0, 0.0);
+
+        SessionManifest manifest = new SessionManifestReader(new SessionFileStore(dir.getParentFile()))
+                .read(dir);
+        HikingSampleReport report = new HikingSampleReportGenerator().generate(manifest);
+
+        assertTrue(report.blockingFindings.toString(),
+                !report.blockingFindings.toString().contains("每个 RawPoint"));
+        assertTrue(report.blockingFindings.toString(),
+                !report.blockingFindings.toString().contains("decision/intake/integrity"));
+    }
+
+    @Test
     public void generate_summarizesPhase6GnssQualityMetricsWhenPresent() throws Exception {
         File dir = Files.createTempDirectory("hiking-sample-report-gnss-quality").toFile();
         String diagnostic = ""
@@ -226,11 +259,11 @@ public class HikingSampleReportGeneratorTest {
                 + gnss(7, 2, 11_000_000_000L, 18.0, 16.0, 22.0, 5, 3, false)
                 + raw(8, 2, 12_000_000_000L, false)
                 + decisionWithSnapshot(9, 2, 2, 2, 1, 12_000_000_000L,
-                "weak", "weak_signal_stage1", 0.0, 0.0, 2)
+                "weak", "weak_signal_stage2", 0.0, 0.0, 2)
                 + gnss(10, 3, 21_000_000_000L, 12.0, 10.0, 14.0, 7, 4, false)
                 + raw(11, 3, 22_000_000_000L, false)
                 + decisionWithSnapshot(12, 3, 3, 0, 1, 22_000_000_000L,
-                "reject", "impossible_speed", 0.0, 0.0, 3)
+                "reject", "weak_signal_stage2", 0.0, 0.0, 3)
                 + event(13, "session_event", 1_822_000_000_000L,
                 "\"eventType\":\"finish_recording\"");
         Files.write(new File(dir, "diagnostic.jsonl").toPath(),
@@ -371,6 +404,13 @@ public class HikingSampleReportGeneratorTest {
                         + ",\"reason\":\"" + reason + "\""
                         + ",\"distanceDeltaMeters\":" + distanceDelta
                         + ",\"movingTimeDeltaSeconds\":" + movingDelta);
+    }
+
+    private String intakeReject(int seq, int rawPointId, long elapsedRealtimeNanos,
+                                String reason) {
+        return event(seq, "location_intake_rejected", elapsedRealtimeNanos,
+                "\"rawPointId\":" + rawPointId
+                        + ",\"rejectReason\":\"" + reason + "\"");
     }
 
     private String decisionWithSnapshot(int seq, int decisionId, int rawPointId, int trackPointId,

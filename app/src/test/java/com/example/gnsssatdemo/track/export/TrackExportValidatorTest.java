@@ -60,7 +60,7 @@ public class TrackExportValidatorTest {
     public void trustedGpxReferenceError_rejectsRejectedDecisionResult() {
         assertEquals("TrackPoint 指向非接受决策: reject",
                 validator.trustedGpxReferenceError(Arrays.asList(
-                        point(1L, 1L, 1L, "reject", "weak_signal_stage1")
+                        point(1L, 1L, 1L, "reject", "weak_signal_stage2")
                 ), 1L, 1L));
     }
 
@@ -70,7 +70,7 @@ public class TrackExportValidatorTest {
 
         assertEquals("sourceDecisionId 未指向接受决策: 2",
                 validator.trustedGpxReferenceError(Arrays.asList(
-                        point(1L, 2L, 2L, "anchor", "stationary_anchor_refined")
+                        point(1L, 2L, 2L, "anchor", "stationary_anchor")
                 ), 2L, 2L, acceptedDecisionIds));
     }
 

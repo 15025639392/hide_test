@@ -72,6 +72,8 @@ public class WeakGnssReportGenerator {
                 onGnssSnapshot(event);
             } else if ("decision".equals(eventName)) {
                 onDecision(event);
+            } else if ("location_intake_rejected".equals(eventName)) {
+                onLocationIntakeRejected(event);
             } else if ("session_event".equals(eventName)) {
                 onSessionEvent(event);
             }
@@ -114,13 +116,17 @@ public class WeakGnssReportGenerator {
                     transportMetrics.add(raw, snapshot);
                 }
             }
-            if ("transport_recovery".equals(reason) && !"reject".equals(result)) {
-                transportMetrics.add(raw, snapshot);
-            }
             if ("gap_recovery".equals(reason)) {
                 gapRecoveryCount++;
                 gapRecoveryElapsedTimes.add(event.optLong("eventElapsedRealtimeNanos", -1L));
             }
+        }
+
+        void onLocationIntakeRejected(JSONObject event) {
+            RawSummary raw = rawById.get(event.optLong("rawPointId"));
+            GnssMetricSnapshot snapshot = snapshotFor(event, raw);
+            rejectDecisionCount++;
+            rejectMetrics.add(raw, snapshot);
         }
 
         void onSessionEvent(JSONObject event) {

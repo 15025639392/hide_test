@@ -33,7 +33,7 @@ public class DiagnosticTrackPointReaderTest {
                 + "\"segmentId\":1,\"distanceDeltaMeters\":20.0,"
                 + "\"movingTimeDeltaSeconds\":10.0}\n"
                 + "{\"event\":\"decision\",\"decisionId\":3,\"rawPointId\":3,"
-                + "\"result\":\"reject\",\"reason\":\"weak_signal_stage1\"}\n";
+                + "\"result\":\"reject\",\"reason\":\"weak_signal_stage2\"}\n";
         Files.write(diagnostic.toPath(), jsonl.getBytes(StandardCharsets.UTF_8));
 
         List<TrackPoint> points = new DiagnosticTrackPointReader().readTrackPoints(diagnostic);
@@ -58,7 +58,7 @@ public class DiagnosticTrackPointReaderTest {
                 + "\"lat\":29.0,\"lng\":106.0,\"accuracy\":55.0,\"timeMillis\":1000,"
                 + "\"elapsedRealtimeNanos\":2000}\n"
                 + "{\"event\":\"decision\",\"decisionId\":1,\"rawPointId\":1,"
-                + "\"result\":\"weak\",\"reason\":\"weak_first_fix\","
+                + "\"result\":\"weak\",\"reason\":\"weak_signal_stage2\","
                 + "\"trackPointId\":1000000001,\"segmentId\":1,"
                 + "\"distanceDeltaMeters\":0.0,\"movingTimeDeltaSeconds\":0.0}\n";
         Files.write(diagnostic.toPath(), jsonl.getBytes(StandardCharsets.UTF_8));
@@ -68,7 +68,7 @@ public class DiagnosticTrackPointReaderTest {
         assertEquals(1, points.size());
         assertEquals(1_000_000_001L, points.get(0).trackPointId);
         assertEquals("weak", points.get(0).decisionResult);
-        assertEquals("weak_first_fix", points.get(0).decisionReason);
+        assertEquals("weak_signal_stage2", points.get(0).decisionReason);
     }
 
     @Test
@@ -87,7 +87,7 @@ public class DiagnosticTrackPointReaderTest {
                 + "\"lat\":29.00005,\"lng\":106.0,\"accuracy\":5.0,\"timeMillis\":2000,"
                 + "\"elapsedRealtimeNanos\":12000}\n"
                 + "{\"event\":\"decision\",\"decisionId\":2,\"rawPointId\":2,"
-                + "\"result\":\"reject\",\"reason\":\"stationary_anchor_refined\","
+                + "\"result\":\"reject\",\"reason\":\"stationary_cloud_jitter\","
                 + "\"trackPointId\":1,\"segmentId\":1,"
                 + "\"distanceDeltaMeters\":0.0,\"movingTimeDeltaSeconds\":0.0}\n";
         Files.write(diagnostic.toPath(), jsonl.getBytes(StandardCharsets.UTF_8));
@@ -100,7 +100,7 @@ public class DiagnosticTrackPointReaderTest {
     }
 
     @Test
-    public void readTrackPoints_replacesAnchorRefinementDecisionWithSameTrackPointId()
+    public void readTrackPoints_keepsOriginalPointWhenSameTrackPointIdAppearsAgain()
             throws Exception {
         File dir = Files.createTempDirectory("diagnostic-track-reader-refine-anchor").toFile();
         File diagnostic = new File(dir, "diagnostic.jsonl");
@@ -116,7 +116,7 @@ public class DiagnosticTrackPointReaderTest {
                 + "\"lat\":29.00002,\"lng\":106.0,\"accuracy\":8.0,\"timeMillis\":2000,"
                 + "\"elapsedRealtimeNanos\":12000}\n"
                 + "{\"event\":\"decision\",\"decisionId\":2,\"rawPointId\":2,"
-                + "\"result\":\"anchor\",\"reason\":\"stationary_anchor_refined\","
+                + "\"result\":\"anchor\",\"reason\":\"stationary_anchor\","
                 + "\"trackPointId\":1,\"segmentId\":1,"
                 + "\"distanceDeltaMeters\":0.0,\"movingTimeDeltaSeconds\":0.0}\n";
         Files.write(diagnostic.toPath(), jsonl.getBytes(StandardCharsets.UTF_8));
@@ -125,10 +125,10 @@ public class DiagnosticTrackPointReaderTest {
 
         assertEquals(1, points.size());
         assertEquals(1L, points.get(0).trackPointId);
-        assertEquals(2L, points.get(0).sourceRawPointId);
-        assertEquals(2L, points.get(0).sourceDecisionId);
-        assertEquals("stationary_anchor_refined", points.get(0).decisionReason);
-        assertEquals(8.0, points.get(0).accuracyMeters, 0.0);
+        assertEquals(1L, points.get(0).sourceRawPointId);
+        assertEquals(1L, points.get(0).sourceDecisionId);
+        assertEquals("first_fix_relaxed", points.get(0).decisionReason);
+        assertEquals(20.0, points.get(0).accuracyMeters, 0.0);
     }
 
     @Test
@@ -179,7 +179,7 @@ public class DiagnosticTrackPointReaderTest {
                 + "\"lat\":29.0,\"lng\":106.0,\"accuracy\":8.0,\"timeMillis\":1000,"
                 + "\"elapsedRealtimeNanos\":2000}\n"
                 + "{\"event\":\"decision\",\"decisionId\":1,\"rawPointId\":1,"
-                + "\"result\":\"weak\",\"reason\":\"weak_signal_stage1\","
+                + "\"result\":\"weak\",\"reason\":\"weak_signal_stage2\","
                 + "\"trackPointId\":1000000001,\"segmentId\":1,"
                 + "\"distanceDeltaMeters\":0.0,\"movingTimeDeltaSeconds\":0.0}\n";
         Files.write(diagnostic.toPath(), jsonl.getBytes(StandardCharsets.UTF_8));

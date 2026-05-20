@@ -40,8 +40,8 @@ public class TrackAscentCalculatorTest {
     @Test
     public void totalAscentMeters_usesBarometerOutsideMovingGoodFix() {
         double ascent = TrackAscentCalculator.totalAscentMeters(Arrays.asList(
-                barometerPoint(1L, 100.0, "weak", "weak_signal_stage1"),
-                barometerPoint(2L, 110.0, "reject", "stationary_jitter")));
+                barometerPoint(1L, 100.0, "weak", "weak_signal_stage2"),
+                barometerPoint(2L, 110.0, "reject", "stationary_cloud_jitter")));
 
         assertEquals(3.5, ascent, 0.0001);
     }
@@ -49,8 +49,8 @@ public class TrackAscentCalculatorTest {
     @Test
     public void ascentResult_prefersBarometerWhenBothEnginesAreReliable() {
         TrackAscentCalculator.Result result = TrackAscentCalculator.ascentResult(Arrays.asList(
-                barometerPoint(1L, 100.0, "weak", "weak_signal_stage1"),
-                barometerPoint(2L, 110.0, "reject", "stationary_jitter"),
+                barometerPoint(1L, 100.0, "weak", "weak_signal_stage2"),
+                barometerPoint(2L, 110.0, "reject", "stationary_cloud_jitter"),
                 point(3L, 160.0, "accept", "moving_good_fix", 10.0),
                 point(4L, 200.0, "accept", "moving_good_fix", 10.0)));
 

@@ -1,6 +1,6 @@
 {"event":"session_metadata","createdElapsedRealtimeNanos":1000000000}
-{"event":"config_snapshot","forcedWeakFirstFixEnabled":false}
-{"event":"raw_location","rawPointId":1,"provider":"gps","lat":29.0,"lng":106.0,"accuracy":20.0,"timeMillis":1,"elapsedRealtimeNanos":2000000000,"speed":0.0,"expectedResult":"anchor","expectedReason":"first_fix_good"}
+{"event":"config_snapshot","strategyVersion":"stage2-track-trust-v3-sampling-cloud"}
+{"event":"raw_location","rawPointId":1,"provider":"gps","lat":29,"lng":106,"accuracy":20,"timeMillis":1,"elapsedRealtimeNanos":2000000000,"speed":0,"expectedResult":"anchor","expectedReason":"first_fix_good"}
 {"event":"motion_summary","motionSummaryId":1,"firstElapsedRealtimeNanos":7000000000,"lastElapsedRealtimeNanos":8500000000,"sampleCount":6,"dynamicAccelRmsMps2":0.01,"stillScore":0.96,"isDeviceStill":true,"sourceSensorType":"TYPE_LINEAR_ACCELERATION"}
 {"event":"motion_summary","motionSummaryId":2,"firstElapsedRealtimeNanos":9000000000,"lastElapsedRealtimeNanos":11000000000,"sampleCount":6,"dynamicAccelRmsMps2":0.01,"stillScore":0.97,"isDeviceStill":true,"sourceSensorType":"TYPE_LINEAR_ACCELERATION"}
-{"event":"raw_location","rawPointId":2,"provider":"gps","lat":29.00008,"lng":106.0,"accuracy":3.0,"timeMillis":1,"elapsedRealtimeNanos":12000000000,"speed":0.0,"expectedResult":"anchor","expectedReason":"stationary_anchor_refined"}
+{"event":"raw_location","rawPointId":2,"provider":"gps","lat":29.00008,"lng":106,"accuracy":3,"timeMillis":1,"elapsedRealtimeNanos":12000000000,"speed":0,"expectedResult":"accept","expectedReason":"moving_good_fix"}

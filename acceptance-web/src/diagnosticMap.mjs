@@ -4,6 +4,7 @@ const REJECT_RESULTS = new Set(['reject']);
 const LOW_USED_AVG_CN0_DBHZ = 25;
 const LOW_USED_IN_FIX_TOTAL = 5;
 const STALE_RAW_RATIO_REVIEW = 0.2;
+const CALLBACK_DELAY_REVIEW_NANOS = 10_000_000_000;
 const DECISION_REASON_EXPLANATIONS = {
   first_fix_good: {
     title: '首点质量好',
@@ -15,117 +16,52 @@ const DECISION_REASON_EXPLANATIONS = {
     meaning: '第一颗定位点未达到最优首点阈值，但仍在放宽阈值内，可作为起始 anchor。',
     evidence: '重点看 accuracy 是否处于放宽区间，以及后续点是否稳定延续。'
   },
-  forced_weak_first_fix: {
-    title: '强制弱首点 anchor',
-    meaning: '测试或特殊模式下，弱精度首点被强制作为 anchor，方便验证后续链路。',
-    evidence: '重点确认 forcedWeakFirstFixEnabled、accuracy 和 strategyVersion。'
-  },
-  weak_first_fix: {
-    title: '首点偏弱',
-    meaning: '第一颗定位点精度不足以作为可信起点，但仍保留为 weak 诊断证据。',
-    evidence: '重点看 accuracy、usedInFixTotal、usedAvgCn0、top4AvgCn0 和 snapshot 是否过期。'
-  },
-  first_fix_accuracy_too_large: {
-    title: '首点精度过差',
-    meaning: '第一颗定位点精度超过首点可接受范围，不能作为可信轨迹起点。',
-    evidence: '重点看 accuracy 是否明显过大，以及是否伴随低 C/N0 或少 used 卫星。'
-  },
   moving_good_fix: {
     title: '移动好点',
     meaning: '该点通过移动距离、时间和精度检查，进入可信轨迹并累计距离/运动时间。',
     evidence: '重点看 accuracy、距上一可信点距离、时间间隔、推算速度和距离增量。'
   },
-  weak_signal_stage1: {
-    title: '移动中弱信号',
-    meaning: '移动过程中精度超过普通好点阈值，因此保留为 weak 诊断点，不累计可信距离。',
-    evidence: '重点看 accuracy、usedAvgCn0、top4AvgCn0、usedInFixTotal、weakUsedCount 和 stale 状态。'
+  weak_signal_stage2: {
+    title: '弱点云',
+    meaning: '当前合法样本进入 WEAK_CLOUD，只保留为 weak 诊断点，不进入 GPX，也不累计距离。',
+    evidence: '重点看 cloudSampleCount、cloudWeightedRadiusMeters、accuracy、GNSS 质量和 contributingRawPointIds。'
   },
   gap_recovery: {
     title: '长 GAP 后恢复',
     meaning: '距上一可信点间隔过长，恢复点开启或延续 segment，但当前恢复 delta 不回填距离。',
     evidence: '重点看间隔秒数、no_location_timeout、sampling_policy、GAP 前后 GNSS snapshot。'
   },
-  impossible_speed: {
-    title: '不可能速度跳点',
-    meaning: '从上一可信点推算速度超过徒步策略允许范围，通常是跳点或漂移。',
-    evidence: '重点看直线距离、时间差、推算速度、accuracy 和该点 GNSS 质量。'
-  },
   transport_suspected: {
     title: '疑似交通工具',
     meaning: '速度和位移更像交通工具移动，当前点不进入徒步可信距离。',
     evidence: '重点看推算速度、系统 reported speed、持续时间，以及 GNSS 质量是否并不差。'
   },
-  transport_confirmed: {
-    title: '交通工具确认中',
-    meaning: '策略仍处于交通工具移动段，继续阻止这些点污染徒步距离。',
-    evidence: '重点看连续速度、距离变化、decision state 和 transport 恢复条件。'
+  recovery_cloud_pending: {
+    title: '恢复点云等待稳定',
+    meaning: 'GAP、transport 或静止边界后第一个恢复样本还不足以建立新连续性。',
+    evidence: '重点看 RECOVERY_CLOUD 的样本数、半径、GNSS 质量和 samplingEpochId。'
   },
-  transport_recovery: {
-    title: '交通工具后恢复徒步',
-    meaning: '速度回到徒步范围，策略从交通工具段恢复，并从新 segment 继续记录。',
-    evidence: '重点看恢复前后速度、稳定时长、startsNewSegment 和 GNSS 质量。'
+  stationary_anchor: {
+    title: '静止点云 anchor',
+    meaning: '静止点云稳定且有近期 motion_summary 静止证据后，输出零 delta anchor，用作可信静止位置。',
+    evidence: '重点看 cloudWeightedRadiusMeters、cloudSampleCount、motion_summary 和 representativeRawPointId。'
   },
-  stationary_keepalive: {
-    title: '静止保活点',
-    meaning: '点位接近上一可信点，被认为是静止保活，不累计距离。',
-    evidence: '重点看距休息 anchor 的距离、accuracy、motion_summary 和 keepalive 间隔。'
+  stationary_cloud_jitter: {
+    title: '静止点云漂移',
+    meaning: '点位接近静止区域，但没有足够 still-motion 支持成为 anchor；不累计距离，也不单独触发 PAUSED。',
+    evidence: '重点看点云半径、accuracy、motion_summary 和距上一可信 TrackPoint 的距离，慢速移动也可能落在这里。'
   },
-  stationary_jitter: {
-    title: '静止漂移',
-    meaning: '点位变化小且落在静止漂移范围内，被拒绝以避免累计虚假距离。',
-    evidence: '重点看距离是否小于静止阈值、accuracy 倍数、motion_summary 和 C/N0。'
-  },
-  stationary_anchor_refined: {
-    title: '静止锚点优化',
-    meaning: '静止或休息中出现更好的定位点，替换原 anchor 但不新增距离。',
-    evidence: '重点看新旧 anchor accuracy、GNSS 质量和附近 motion_summary stillScore。'
-  },
-  stationary_accel_supported_jitter: {
-    title: '加速度支持的静止漂移',
-    meaning: '传感器显示设备接近静止，附近 GPS 小位移被视为漂移并拒绝。',
-    evidence: '重点看 motion_summary 的 isDeviceStill、stillScore、dynamicAccelRmsMps2 和点位距离。'
-  },
-  rest_candidate: {
-    title: '休息候选',
-    meaning: 'REST 状态机正在收集休息证据，该点暂不累计距离。',
-    evidence: '重点看连续低移动、motion_summary、与 rest anchor 的距离和时间窗口。'
-  },
-  rest_paused_keepalive: {
-    title: '休息暂停保活',
-    meaning: '已进入 REST_PAUSED，附近 GPS 保活点不累计距离，只作为诊断或锚点优化证据。',
-    evidence: '重点看点到 rest anchor 距离、accuracy、motion_summary 和保活间隔。'
-  },
-  rest_probing_stationary: {
-    title: '休息探测仍静止',
-    meaning: 'REST_PROBING 检查后仍判断为静止，返回休息暂停状态。',
-    evidence: '重点看 probing 点位移、motion_summary still 状态和连续确认次数。'
-  },
-  stationary_motion_blocked_recovery: {
-    title: '静止证据阻止恢复移动',
-    meaning: 'GPS 看似移动，但近期 motion_summary 显示设备仍静止，因此阻止恢复为可信移动。',
-    evidence: '重点看 GPS 位移、推算速度、recent motion_summary stillScore 和动态加速度。'
-  },
-  rest_probing_confirming_moving: {
-    title: '休息后确认移动中',
-    meaning: 'REST_PROBING 正在等待连续移动证据；探测点不回填距离。',
-    evidence: '重点看连续 probing 点、位移方向、速度和 motion_summary 是否不再静止。'
-  },
-  rest_moving_recovery: {
-    title: '休息后恢复移动',
-    meaning: '连续证据确认离开休息状态，写入新 segment anchor，当前点通常不回填距离。',
-    evidence: '重点看 startsNewSegment、连续移动点、motion_summary 和恢复点 distanceDelta。'
-  },
-  non_positive_delta_time: {
-    title: '时间未前进',
-    meaning: '该点与上一可信点相比 elapsedRealtime 没有前进，无法计算有效速度和距离。',
-    evidence: '重点看 elapsedRealtimeNanos 是否乱序、重复或缺失。'
+  moving_cloud_unstable: {
+    title: '移动点云未稳定',
+    meaning: '移动点云已有证据但尚未满足稳定条件，因此只输出 weak 诊断点。',
+    evidence: '重点看 weightedRadius、minCloudWeight、speedPlausibilityScore 和 contributingRawPointIds。'
   },
   provider_not_gps: {
     title: '非 GPS Provider',
     meaning: '可信轨迹只允许 LocationManager.GPS_PROVIDER，其他 provider 必须拒绝。',
     evidence: '重点看 raw_location.provider，不能用 network/fused 点进入可信轨迹。'
   },
-  missing_elapsed_realtime: {
+  missing_fix_elapsed_realtime: {
     title: '缺少 elapsedRealtime',
     meaning: '缺少连续时间基准，无法可靠计算点序、速度、GAP 和回放一致性。',
     evidence: '重点看 hasElapsedRealtimeNanos 和 elapsedRealtimeNanos 字段。'
@@ -135,10 +71,30 @@ const DECISION_REASON_EXPLANATIONS = {
     meaning: 'Location 时间早于本次记录起点，不应进入当前 session 的可信轨迹。',
     evidence: '重点看 createdElapsedRealtimeNanos 与 raw elapsedRealtimeNanos 的关系。'
   },
-  location_too_old: {
-    title: '系统回调位置过旧',
-    meaning: 'Location 年龄超过策略允许范围，可能是系统缓存点，不适合作为当前轨迹证据。',
-    evidence: '重点看 eventElapsedRealtimeNanos、elapsedRealtimeNanos 和 maxLocationAgeNanos。'
+  sampling_contract_violation: {
+    title: '采样契约破坏',
+    meaning: 'Location callback 没有绑定 SamplingEpoch，属于 session 完整性错误。',
+    evidence: '重点看 callback 发起方是否随请求保存并回传 samplingEpochId。'
+  },
+  sampling_epoch_mismatch: {
+    title: '采样归因不匹配',
+    meaning: '定位点时间落在当前 SamplingEpoch 之前，不能归给当前采样发起者。',
+    evidence: '重点看 samplingEpochId、epoch startedElapsedRealtimeNanos 和 fix elapsedRealtimeNanos。'
+  },
+  duplicate_fix: {
+    title: '重复定位点',
+    meaning: '同一个 SamplingEpoch 下已接收过相同 fix，不能重复进入点云。',
+    evidence: '重点看 provider、elapsedRealtimeNanos、lat/lng 和 accuracy 是否完全重复。'
+  },
+  out_of_order_fix: {
+    title: '定位时间倒退',
+    meaning: 'fix 测量时间没有严格向前，无法建立连续轨迹。',
+    evidence: '重点看 elapsedRealtimeNanos 是否小于或等于上一合法 fix。'
+  },
+  accuracy_too_large: {
+    title: '精度过大',
+    meaning: 'Location accuracy 超过 intake 上限，只能作为拒绝诊断，不能进入点云。',
+    evidence: '重点看 accuracy 是否超过 maxIntakeAccuracyMeters。'
   }
 };
 
@@ -190,6 +146,7 @@ function buildDiagnosticModel(events, parseErrors, filePath) {
   const metadata = events.find((event) => event.event === 'session_metadata') || {};
   const rawById = new Map();
   const decisions = [];
+  const intakeRejections = [];
   const gnssById = new Map();
   const pressureSamples = [];
   const motionSummaries = [];
@@ -201,6 +158,8 @@ function buildDiagnosticModel(events, parseErrors, filePath) {
       rawById.set(Number(event.rawPointId), normalizeRawPoint(event));
     } else if (event.event === 'decision') {
       decisions.push(event);
+    } else if (event.event === 'location_intake_rejected') {
+      intakeRejections.push(event);
     } else if (event.event === 'gnss_snapshot') {
       gnssById.set(Number(event.snapshotId), event);
     } else if (event.event === 'pressure_sample') {
@@ -223,6 +182,18 @@ function buildDiagnosticModel(events, parseErrors, filePath) {
     point.decision = normalizeDecision(decision);
     point.kind = classifyDecision(point.decision.result);
     const snapshotId = Number(decision.sourceGnssSnapshotId || point.sourceGnssSnapshotId);
+    if (gnssById.has(snapshotId)) {
+      point.gnss = gnssById.get(snapshotId);
+    }
+  }
+  for (const rejection of intakeRejections) {
+    const point = rawById.get(Number(rejection.rawPointId));
+    if (!point || point.decision) {
+      continue;
+    }
+    point.decision = normalizeIntakeRejection(rejection);
+    point.kind = 'reject';
+    const snapshotId = Number(point.sourceGnssSnapshotId);
     if (gnssById.has(snapshotId)) {
       point.gnss = gnssById.get(snapshotId);
     }
@@ -267,6 +238,7 @@ function buildDiagnosticModel(events, parseErrors, filePath) {
     summary: {
       rawCount: points.length,
       decisionCount: decisions.length,
+      intakeRejectedCount: intakeRejections.length,
       trustedCount: trustedPoints.length,
       rejectedCount: rejectedPoints.length,
       weakCount: weakPoints.length,
@@ -301,6 +273,8 @@ function normalizeRawPoint(event) {
     bearing: nullableNumber(event.bearing),
     elapsedRealtimeNanos: nullableNumber(event.elapsedRealtimeNanos),
     timeMillis: nullableNumber(event.timeMillis),
+    callbackReceivedElapsedRealtimeNanos: nullableNumber(event.callbackReceivedElapsedRealtimeNanos),
+    callbackDelayNanos: nullableNumber(event.callbackDelayNanos),
     sourceGnssSnapshotId: nullableNumber(event.sourceGnssSnapshotId),
     sourceGnssSnapshotAgeNanos: nullableNumber(event.sourceGnssSnapshotAgeNanos),
     sourceGnssSnapshotMatchedFromFuture: event.sourceGnssSnapshotMatchedFromFuture === true,
@@ -325,6 +299,25 @@ function normalizeDecision(event) {
     sourceGnssSnapshotId: nullableNumber(event.sourceGnssSnapshotId),
     eventElapsedRealtimeNanos: nullableNumber(event.eventElapsedRealtimeNanos),
     startsNewSegment: event.startsNewSegment === true
+  };
+}
+
+function normalizeIntakeRejection(event) {
+  const reason = String(event.rejectReason || event.reason || '');
+  return {
+    decisionId: null,
+    result: 'intake_rejected',
+    reason,
+    reasonExplanation: explainDecisionReason('intake_rejected', reason),
+    state: String(event.samplingState || ''),
+    segmentId: null,
+    trackPointId: null,
+    distanceDeltaMeters: 0,
+    movingTimeDeltaSeconds: 0,
+    sourceGnssSnapshotId: null,
+    eventElapsedRealtimeNanos: nullableNumber(event.eventElapsedRealtimeNanos),
+    startsNewSegment: false,
+    intakeRejected: true
   };
 }
 
@@ -426,11 +419,33 @@ function buildPointInsights(point) {
     return insights;
   }
 
+  if (decision.intakeRejected) {
+    insights.push({
+      level: 'review',
+      text: `该点在 SamplingIntake 被拒绝，原因=${decision.reason}；不会进入点云、decision 或 TrackPoint。`
+    });
+  }
+
   if (point.gnssQualityStale) {
     insights.push({
       level: 'review',
       text: '该点关联的 GNSS snapshot 已过期，卫星质量解释存在缺口。'
     });
+  }
+
+  if (point.callbackDelayNanos !== null) {
+    const callbackDelaySeconds = point.callbackDelayNanos / 1_000_000_000;
+    if (point.callbackDelayNanos >= CALLBACK_DELAY_REVIEW_NANOS) {
+      insights.push({
+        level: 'review',
+        text: `Location callback 延迟约 ${formatOneDecimal(callbackDelaySeconds)} 秒；v3 仅用于诊断展示，不作为 callback age 硬拒绝。`
+      });
+    } else if (point.callbackDelayNanos > 0) {
+      insights.push({
+        level: 'info',
+        text: `Location callback 延迟约 ${formatOneDecimal(callbackDelaySeconds)} 秒，仅用于诊断展示。`
+      });
+    }
   }
 
   if (!point.gnss && (point.kind === 'weak' || point.kind === 'reject')) {
@@ -485,7 +500,7 @@ function buildPointInsights(point) {
     }
   }
 
-  if (decision.reason === 'impossible_speed' || decision.reason.startsWith('transport_')) {
+  if (decision.reason === 'weak_signal_stage2' || decision.reason.startsWith('transport_')) {
     const speed = point.diagnosticContext.requiredSpeedMetersPerSecond;
     if (speed !== null) {
       insights.push({
@@ -495,7 +510,7 @@ function buildPointInsights(point) {
     }
   }
 
-  if (decision.reason.startsWith('stationary_') || decision.reason.startsWith('rest_')) {
+  if (decision.reason.startsWith('stationary_')) {
     const motion = point.nearestMotionSummary;
     if (motion) {
       insights.push({
@@ -602,6 +617,7 @@ function buildFindings({
   transportMetrics
 }) {
   const findings = [];
+  const explainedPointCount = points.filter((point) => point.decision).length;
   if (parseErrors.length > 0) {
     findings.push({
       level: 'fail',
@@ -616,18 +632,18 @@ function buildFindings({
       detail: '没有原始定位点，无法复盘采集和判点过程。'
     });
   }
-  if (decisions.length === 0) {
+  if (explainedPointCount === 0) {
     findings.push({
       level: 'fail',
-      title: '缺少 decision',
-      detail: '没有判点结果，不能解释哪些点进入可信轨迹。'
+      title: '缺少解释事件',
+      detail: '没有 decision 或 location_intake_rejected，不能解释原始点是否进入可信轨迹。'
     });
   }
-  if (points.length > 0 && decisions.length > 0 && points.length !== decisions.length) {
+  if (points.length > 0 && explainedPointCount > 0 && points.length !== explainedPointCount) {
     findings.push({
       level: 'review',
-      title: 'raw 与 decision 数量不一致',
-      detail: `raw_location=${points.length}，decision=${decisions.length}，需要确认是否有未决或丢失事件。`
+      title: 'raw 与解释事件数量不一致',
+      detail: `raw_location=${points.length}，解释事件=${explainedPointCount}，需要确认是否有未决或丢失事件。`
     });
   }
   if (weakPoints.length > weakMetrics.linkedGnssCount) {

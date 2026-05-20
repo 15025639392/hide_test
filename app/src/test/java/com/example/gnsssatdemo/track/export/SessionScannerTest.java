@@ -57,7 +57,7 @@ public class SessionScannerTest {
         json.put("completionState", "FINISHED");
         json.put("integrityState", "OK");
         json.put("schemaVersion", 1);
-        json.put("strategyVersion", "stage1-gnss-track-v1");
+        json.put("strategyVersion", "stage2-track-trust-v3-sampling-cloud");
         json.put("diagnosticLogFileName", "diagnostic.jsonl");
         json.put("trustedGpxFileName", "track.gpx");
         json.put("lastEventSeq", lastEventSeq);

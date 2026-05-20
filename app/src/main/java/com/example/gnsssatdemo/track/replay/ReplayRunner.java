@@ -2,18 +2,15 @@ package com.example.gnsssatdemo.track.replay;
 
 import android.location.LocationManager;
 
-import com.example.gnsssatdemo.track.engine.LocationValidator;
-import com.example.gnsssatdemo.track.engine.RestAnchorRefiner;
-import com.example.gnsssatdemo.track.engine.RestStateMachine;
-import com.example.gnsssatdemo.track.engine.TrackDecisionCoordinator;
-import com.example.gnsssatdemo.track.engine.TrackDecisionResult;
-import com.example.gnsssatdemo.track.engine.TrackStrategyConfig;
+import com.example.gnsssatdemo.track.engine.SamplingEpoch;
+import com.example.gnsssatdemo.track.engine.SamplingIntake;
+import com.example.gnsssatdemo.track.engine.TrackTrustDecision;
+import com.example.gnsssatdemo.track.engine.TrackTrustEngine;
 import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
 import com.example.gnsssatdemo.track.model.GnssSnapshotDiagnosticFields;
 import com.example.gnsssatdemo.track.model.MotionSummary;
 import com.example.gnsssatdemo.track.model.RawPoint;
 import com.example.gnsssatdemo.track.model.TrackPoint;
-import com.example.gnsssatdemo.track.model.ValidationResult;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -30,9 +27,6 @@ import java.util.Map;
 public class ReplayRunner {
     private static final int RECENT_SUMMARY_LIMIT = 8;
 
-    private final TrackStrategyConfig strategyConfig = TrackStrategyConfig.defaultStage1();
-    private final LocationValidator validator = new LocationValidator(strategyConfig);
-
     public ReplayReport run(InputStream inputStream) throws IOException {
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
         byte[] buffer = new byte[4096];
@@ -46,15 +40,15 @@ public class ReplayRunner {
     public ReplayReport run(String jsonl) {
         long recordStartElapsedRealtimeNanos = -1L;
         long nowElapsedRealtimeNanos = -1L;
-        boolean forcedWeakFirstFixEnabled = false;
         long decisionSeq = 0L;
         long trackPointSeq = 0L;
         long segmentId = 1L;
-        long lastStationaryKeepaliveElapsedRealtimeNanos = 0L;
-        TrackDecisionCoordinator decisionCoordinator = new TrackDecisionCoordinator(strategyConfig);
-        RestAnchorRefiner restAnchorRefiner = new RestAnchorRefiner();
-        RestStateMachine restStateMachine = new RestStateMachine();
+        long samplingEpochSeq = 0L;
+        SamplingEpoch activeEpoch = null;
+        SamplingIntake samplingIntake = new SamplingIntake();
+        TrackTrustEngine trustEngine = new TrackTrustEngine();
         Map<Long, GnssQualitySnapshot> gnssSnapshots = new HashMap<>();
+        Map<Long, SamplingEpoch> samplingEpochs = new HashMap<>();
         List<TrackPoint> trackPoints = new ArrayList<>();
         List<MotionSummary> recentMotionSummaries = new ArrayList<>();
         List<ReplayDecision> decisions = new ArrayList<>();
@@ -79,87 +73,83 @@ public class ReplayRunner {
                 recordStartElapsedRealtimeNanos = event.optLong("createdElapsedRealtimeNanos", -1L);
                 nowElapsedRealtimeNanos = Math.max(nowElapsedRealtimeNanos,
                         recordStartElapsedRealtimeNanos);
+                activeEpoch = new SamplingEpoch(++samplingEpochSeq, "STARTING",
+                        1000L, 0f, recordStartElapsedRealtimeNanos);
+                samplingEpochs.put(activeEpoch.samplingEpochId, activeEpoch);
             } else if ("config_snapshot".equals(eventName)) {
-                forcedWeakFirstFixEnabled = event.optBoolean("forcedWeakFirstFixEnabled", false);
+                // Strategy parameters are owned by TrackTrustEngine v3.
+            } else if ("sampling_policy".equals(eventName)) {
+                long eventTime = event.optLong("eventElapsedRealtimeNanos",
+                        nowElapsedRealtimeNanos);
+                long epochId = event.has("samplingEpochId")
+                        ? event.optLong("samplingEpochId") : ++samplingEpochSeq;
+                samplingEpochSeq = Math.max(samplingEpochSeq, epochId);
+                activeEpoch = new SamplingEpoch(epochId,
+                        event.optString("state", ""),
+                        event.optLong("locationRequestMinTimeMs", 1000L),
+                        (float) event.optDouble("locationRequestMinDistanceMeters", 0.0),
+                        eventTime);
+                samplingEpochs.put(activeEpoch.samplingEpochId, activeEpoch);
             } else if (GnssSnapshotDiagnosticFields.EVENT.equals(eventName)) {
                 GnssQualitySnapshot snapshot = gnssSnapshotFromEvent(event);
                 gnssSnapshots.put(snapshot.snapshotId, snapshot);
             } else if ("motion_summary".equals(eventName)) {
                 MotionSummary summary = motionSummaryFromEvent(event);
                 rememberMotionSummary(recentMotionSummaries, summary);
-                restStateMachine.onMotionSummary(summary);
             } else if ("raw_location".equals(eventName)) {
                 if (recordStartElapsedRealtimeNanos <= 0L) {
                     return ReplayReport.invalid("missing_session_metadata_before_raw_location");
                 }
                 RawPoint rawPoint = rawPointFromEvent(event);
-                long receivedElapsedRealtimeNanos = event.optLong("eventElapsedRealtimeNanos",
-                        rawPoint.elapsedRealtimeNanos + 1_000_000L);
+                long receivedElapsedRealtimeNanos = event.optLong(
+                        "callbackReceivedElapsedRealtimeNanos",
+                        event.optLong("eventElapsedRealtimeNanos",
+                                rawPoint.elapsedRealtimeNanos + 1_000_000L));
                 nowElapsedRealtimeNanos = Math.max(nowElapsedRealtimeNanos,
                         receivedElapsedRealtimeNanos);
-                ValidationResult validationResult = validator.validate(rawPoint,
-                        recordStartElapsedRealtimeNanos, nowElapsedRealtimeNanos);
                 String actualResult;
                 String actualReason;
-                TrackDecisionResult outcome = null;
+                SamplingEpoch rawEpoch = samplingEpochForRawEvent(event, activeEpoch,
+                        samplingEpochs, recordStartElapsedRealtimeNanos);
+                SamplingIntake.Result intakeResult = samplingIntake.accept(rawPoint, rawEpoch,
+                        recordStartElapsedRealtimeNanos, nowElapsedRealtimeNanos);
                 long decisionId = decisionSeq + 1L;
-                if (!validationResult.valid) {
-                    actualResult = "reject";
-                    actualReason = validationResult.rejectReason;
+                if (!intakeResult.accepted) {
+                    actualResult = "intake_rejected";
+                    actualReason = intakeResult.reason;
                 } else {
                     TrackPoint previousTrackPoint = lastTrackPoint(trackPoints);
-                    TrackDecisionCoordinator.Decision decision = decisionCoordinator.decide(rawPoint,
-                            previousTrackPoint,
-                            lastStationaryKeepaliveElapsedRealtimeNanos,
-                            forcedWeakFirstFixEnabled);
-                    outcome = decision.outcome;
-                    boolean replacedPreviousTrackPoint = false;
-                    RestAnchorRefiner.Decision restAnchorDecision = restAnchorRefiner.refine(outcome,
-                            rawPoint, previousTrackPoint,
+                    TrackTrustDecision decision = trustEngine.decide(rawPoint, rawEpoch,
                             snapshotById(gnssSnapshots, rawPoint.sourceGnssSnapshotId),
-                            previousTrackPoint == null ? null
-                                    : snapshotById(gnssSnapshots,
-                                    previousTrackPoint.sourceGnssSnapshotId),
-                            recentMotionSummaries);
-                    if (restAnchorDecision.handled) {
-                        long nextStationaryKeepaliveElapsedRealtimeNanos =
-                                outcome.nextStationaryKeepaliveElapsedRealtimeNanos;
-                        if (restAnchorDecision.refineAnchor && previousTrackPoint != null) {
-                            TrackPoint trackPoint = refinedTrackPoint(previousTrackPoint,
-                                    decisionId, rawPoint, restAnchorDecision.reason);
-                            trackPoints.set(trackPoints.size() - 1, trackPoint);
-                            replacedPreviousTrackPoint = true;
-                            outcome = new TrackDecisionResult("anchor", restAnchorDecision.reason,
-                                    0.0, 0.0, nextStationaryKeepaliveElapsedRealtimeNanos,
-                                    0, 0);
-                        } else {
-                            outcome = new TrackDecisionResult("reject", restAnchorDecision.reason,
-                                    0.0, 0.0, nextStationaryKeepaliveElapsedRealtimeNanos,
-                                    0, 1);
-                        }
-                    }
-                    RestStateMachine.Decision restDecision = restStateMachine.apply(outcome,
-                            rawPoint, previousTrackPoint, recentMotionSummaries);
-                    outcome = restDecision.outcome;
-                    actualResult = outcome.result;
-                    actualReason = outcome.reason;
-                    if (!replacedPreviousTrackPoint && shouldRecordTrustedTrackPoint(outcome)) {
-                        if (outcome.startsNewSegment && previousTrackPoint != null) {
+                            recentMotionSummaries, previousTrackPoint);
+                    actualResult = decision.result;
+                    actualReason = decision.reason;
+                    if (decision.createsTrustedTrackPoint()) {
+                        if (decision.startsNewSegment && previousTrackPoint != null) {
                             segmentId++;
                         }
-                        TrackPoint trackPoint = new TrackPoint(++trackPointSeq, decisionId,
-                                segmentId, rawPoint, outcome.result, outcome.reason,
-                                outcome.distanceDeltaMeters, outcome.movingTimeDeltaSeconds);
+                        TrackPoint trackPoint = new TrackPoint(++trackPointSeq,
+                                rawPoint.rawPointId, decisionId, segmentId,
+                                decision.cloudCenterLatitude, decision.cloudCenterLongitude,
+                                rawPoint.hasAltitude, rawPoint.altitude,
+                                rawPoint.hasVerticalAccuracy, rawPoint.verticalAccuracyMeters,
+                                rawPoint.accuracyMeters,
+                                rawPoint.hasSpeed, rawPoint.speedMetersPerSecond,
+                                rawPoint.hasBearing, rawPoint.bearingDegrees,
+                                rawPoint.timeMillis, rawPoint.elapsedRealtimeNanos,
+                                decision.result, decision.reason,
+                                decision.distanceDeltaMeters, decision.movingTimeDeltaSeconds,
+                                rawPoint.sourceGnssSnapshotId,
+                                decision.trustGrade, decision.cloudId,
+                                decision.representativeRawPointId, "", true,
+                                decision.cloudCenterLatitude, decision.cloudCenterLongitude,
+                                decision.cloudWeightedRadiusMeters,
+                                false, 0L, 0.0, 0.0);
                         trackPoints.add(trackPoint);
                     }
                 }
 
                 decisionSeq = decisionId;
-                if (outcome != null) {
-                    lastStationaryKeepaliveElapsedRealtimeNanos =
-                            outcome.nextStationaryKeepaliveElapsedRealtimeNanos;
-                }
-
                 decisions.add(new ReplayDecision(lineNumber, rawPoint.rawPointId,
                         actualResult, actualReason,
                         optionalString(event, "expectedResult"),
@@ -190,6 +180,27 @@ public class ReplayRunner {
                 hasElapsedRealtimeNanos, event.optLong("elapsedRealtimeNanos", 0L),
                 event.optBoolean("mock", false),
                 event.has("sourceGnssSnapshotId") ? event.optLong("sourceGnssSnapshotId") : null);
+    }
+
+    private SamplingEpoch samplingEpochForRawEvent(JSONObject event, SamplingEpoch activeEpoch,
+                                                   Map<Long, SamplingEpoch> samplingEpochs,
+                                                   long recordStartElapsedRealtimeNanos) {
+        if (!event.has("samplingEpochId")) {
+            return activeEpoch;
+        }
+        long epochId = event.optLong("samplingEpochId");
+        SamplingEpoch epoch = samplingEpochs.get(epochId);
+        if (epoch != null) {
+            return epoch;
+        }
+        long startedNanos = event.optLong("samplingEpochStartedElapsedRealtimeNanos",
+                recordStartElapsedRealtimeNanos);
+        epoch = new SamplingEpoch(epochId, event.optString("samplingState", ""),
+                event.optLong("requestedMinTimeMs", 1000L),
+                (float) event.optDouble("requestedMinDistanceMeters", 0.0),
+                startedNanos);
+        samplingEpochs.put(epochId, epoch);
+        return epoch;
     }
 
     private MotionSummary motionSummaryFromEvent(JSONObject event) {
@@ -248,35 +259,6 @@ public class ReplayRunner {
         while (recentMotionSummaries.size() > RECENT_SUMMARY_LIMIT) {
             recentMotionSummaries.remove(0);
         }
-    }
-
-    private boolean shouldRecordTrustedTrackPoint(TrackDecisionResult outcome) {
-        return outcome != null
-                && ("accept".equals(outcome.result) || "anchor".equals(outcome.result));
-    }
-
-    private TrackPoint refinedTrackPoint(TrackPoint previousTrackPoint, long decisionId,
-                                         RawPoint rawPoint, String reason) {
-        return new TrackPoint(previousTrackPoint.trackPointId,
-                rawPoint.rawPointId,
-                decisionId,
-                previousTrackPoint.segmentId,
-                rawPoint.latitude,
-                rawPoint.longitude,
-                rawPoint.hasAltitude,
-                rawPoint.altitude,
-                rawPoint.accuracyMeters,
-                rawPoint.hasSpeed,
-                rawPoint.speedMetersPerSecond,
-                rawPoint.hasBearing,
-                rawPoint.bearingDegrees,
-                rawPoint.timeMillis,
-                rawPoint.elapsedRealtimeNanos,
-                "anchor",
-                reason,
-                0.0,
-                0.0,
-                rawPoint.sourceGnssSnapshotId);
     }
 
     private String optionalString(JSONObject event, String key) {

@@ -118,7 +118,7 @@ public class GpxExporterTest {
         TrackPoint trustedBefore = point(1L, 1L, 1L, 100L,
                 "anchor", "first_fix_good");
         TrackPoint weak = point(1_000_000_001L, 2L, 2L, 200L,
-                "weak", "weak_signal_stage1");
+                "weak", "weak_signal_stage2");
         TrackPoint trustedAfter = point(2L, 3L, 3L, 300L,
                 "accept", "moving_good_fix");
 

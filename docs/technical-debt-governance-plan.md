@@ -15,9 +15,8 @@ Authoritative recording chain:
 RecordingForegroundService
   -> LocationManager.GPS_PROVIDER
   -> RawPoint / GnssQualitySnapshot / diagnostic.jsonl
-  -> LocationValidator
-  -> TrackDecisionEngine
-  -> RestAnchorRefiner / RestStateMachine
+  -> SamplingEpoch / SamplingIntake
+  -> TrackTrustEngine / TrackCloudWindow
   -> TrackPoint / session.json
   -> track.gpx / partial.gpx
   -> replay fixtures（回放样本） / reports
@@ -31,12 +30,10 @@ Key files:
 | Foreground recording | `app/src/main/java/com/example/gnsssatdemo/RecordingForegroundService.java` |
 | Sampling state | `app/src/main/java/com/example/gnsssatdemo/RecordingSamplingState.java` |
 | Session orchestration | `app/src/main/java/com/example/gnsssatdemo/track/engine/BasicTrackSession.java` |
-| Validation policy | `app/src/main/java/com/example/gnsssatdemo/track/engine/LocationValidator.java` |
-| Decision policy | `app/src/main/java/com/example/gnsssatdemo/track/engine/TrackDecisionEngine.java` |
-| Decision coordination | `app/src/main/java/com/example/gnsssatdemo/track/engine/TrackDecisionCoordinator.java` |
-| REST state policy | `app/src/main/java/com/example/gnsssatdemo/track/engine/RestStateMachine.java` |
-| Rest anchor refinement | `app/src/main/java/com/example/gnsssatdemo/track/engine/RestAnchorRefiner.java` |
-| Strategy thresholds | `app/src/main/java/com/example/gnsssatdemo/track/engine/TrackStrategyConfig.java` |
+| Sampling intake | `app/src/main/java/com/example/gnsssatdemo/track/engine/SamplingIntake.java` |
+| Cloud window | `app/src/main/java/com/example/gnsssatdemo/track/engine/TrackCloudWindow.java` |
+| Trust engine | `app/src/main/java/com/example/gnsssatdemo/track/engine/TrackTrustEngine.java` |
+| Strategy thresholds | `app/src/main/java/com/example/gnsssatdemo/track/engine/TrackTrustConfig.java` |
 | Replay policy runner | `app/src/main/java/com/example/gnsssatdemo/track/replay/ReplayRunner.java` |
 | Session files | `app/src/main/java/com/example/gnsssatdemo/track/export/SessionFileStore.java` |
 | GPX export | `app/src/main/java/com/example/gnsssatdemo/track/export/GpxExporter.java` |
@@ -51,15 +48,15 @@ Preserve these unless the user explicitly asks for a strategy change:
 - Trusted `TrackPoint` entries are only created from accepted or anchor
   decisions.
 - Weak points do not contribute to trusted distance or moving time.
-- `gap_recovery` creates a trusted recovery point, starts a new internal
-  segment, and has zero distance and moving-time delta only when the recovery
-  point is outside stationary noise. Stationary recovery refines the existing
-  zero-distance anchor instead.
+- `gap_recovery` is emitted only after `RECOVERY_CLOUD` is stable; it starts a
+  new internal segment and has zero distance and moving-time delta.
 - Transport mode does not contribute to hiking distance.
-- REST_PAUSED and REST_PROBING do not contribute to hiking distance, and probing
-  points are not backfilled after movement is confirmed.
+- Paused, recovery-pending, and transport-cloud points do not contribute to hiking distance, and recovery points are not backfilled after stability is confirmed.
 - Trusted GPX contains only `anchor` and `accept` TrackPoints.
 - `elapsedRealtimeNanos` remains the internal continuity clock.
+- Sampling continuity must be attributable to the active sampling request or
+  policy epoch; callback receive time is diagnostic evidence, not the continuity
+  clock for trusted trajectory decisions.
 - Replay must reproduce the same policy semantics as real recording.
 
 ## Strategy Version Baseline
@@ -67,7 +64,7 @@ Preserve these unless the user explicitly asks for a strategy change:
 Current strategy version:
 
 ```text
-stage1-gnss-track-v2-rest-state
+stage2-track-trust-v3-sampling-cloud
 ```
 
 Baseline behavior:
@@ -75,25 +72,21 @@ Baseline behavior:
 | Scenario | Expected result |
 | --- | --- |
 | First fix accuracy <= 20m | `anchor / first_fix_good` |
-| First fix accuracy <= 30m | `anchor / first_fix_relaxed` |
-| Forced weak first fix <= 50m | `anchor / forced_weak_first_fix` |
-| First fix weak <= 80m | `weak / weak_first_fix` |
-| Moving accuracy > 30m | `weak / weak_signal_stage1` |
-| Accuracy > 80m | hard reject |
-| Implied speed > 12m/s without transport evidence | `reject / impossible_speed` |
-| Gap > 120s outside stationary noise | `accept / gap_recovery`, zero delta, new segment |
+| First fix 20m < accuracy <= 30m | `anchor / first_fix_relaxed` |
+| First fix accuracy > 30m and <= 80m | `weak / weak_signal_stage2` |
+| Accuracy > 80m | intake reject `accuracy_too_large` |
+| Implied speed > 12m/s | `weak / weak_signal_stage2` |
+| Gap > 120s | `weak / recovery_cloud_pending` until RECOVERY_CLOUD is stable |
 | Sustained vehicle-like movement | `reject / transport_suspected`, enter transport mode |
-| Continued transport mode | `reject / transport_confirmed` |
-| Stable walking after transport | `accept / transport_recovery`, zero delta, new segment |
-| Still evidence near an existing zero-distance anchor with better quality | `anchor / stationary_anchor_refined` |
-| Still evidence near the anchor without quality improvement | `reject / stationary_accel_supported_jitter` |
-| REST entry evidence while moving | `reject / rest_candidate` until confirmation |
-| REST paused keepalive near anchor | `reject / rest_paused_keepalive` |
-| REST probing still near anchor | `reject / rest_probing_stationary` |
-| REST probing GPS movement blocked by recent still motion | `reject / stationary_motion_blocked_recovery` |
-| REST probing before movement confirmation | `reject / rest_probing_confirming_moving` |
-| Confirmed movement after REST probing | `accept / rest_moving_recovery`, zero delta, new segment |
-| Small movement below noise floor | `stationary_jitter` or `stationary_keepalive` |
+| Stable walking after transport | `accept / gap_recovery`, zero delta, new segment |
+| Stable stationary cloud with recent still-motion evidence | `anchor / stationary_anchor` |
+| Stationary cloud without still-motion evidence, before stability, or paused keepalive near the anchor | `reject / stationary_cloud_jitter` |
+| Paused or boundary recovery pending | `weak / recovery_cloud_pending` until cloud stability |
+| Paused keepalive near anchor | `reject / stationary_cloud_jitter` |
+| Recovery cloud still near anchor | `reject / recovery_cloud_pending` |
+| Recovery cloud before stability confirmation | `reject / recovery_cloud_pending` |
+| Confirmed movement after recovery cloud | `accept / gap_recovery`, zero delta, new segment |
+| Small movement below noise floor without still-motion evidence | `reject / stationary_cloud_jitter` |
 | Normal movement | `accept / moving_good_fix` |
 
 ## Replay Fixture Catalog
@@ -110,13 +103,13 @@ app/src/test/resources/replay-fixtures
 | Category | Fixture | Purpose |
 | --- | --- | --- |
 | Normal | `good_walk.jsonl` | Nominal accepted hiking movement |
-| Weak signal | `weak_signal_stage1.jsonl` | Moving weak accuracy points |
-| Weak signal | `forced_weak_first_fix.jsonl` | Test-only weak first fix anchor |
+| Weak signal | `weak_signal_stage2.jsonl` | Moving weak accuracy points |
+| Weak start | `weak_start_cloud.jsonl` | Weak first cloud remains diagnostic |
 | Validation reject | `validation_rejects.jsonl` | Hard validator rejects |
-| Speed reject | `impossible_speed.jsonl` | Implausible jump filtering |
-| Stationary | `stationary_filter.jsonl` | Nearby stationary fixes remain non-trusted jitter after rest-anchor checks |
-| Stationary | `stationary_anchor_refinement_after_gap.jsonl` | Static long-gap recovery refines the existing zero-distance anchor |
-| Stationary | `stationary_anchor_refinement_with_motion.jsonl` | Still motion evidence refines a nearby moving-looking fix into the rest anchor |
+| Speed reject | `weak_signal_stage2.jsonl` | Implausible jump filtering |
+| Stationary | `stationary_filter.jsonl` | Nearby stationary fixes remain non-trusted jitter after stationary-cloud checks |
+| Stationary | `stationary_recovery_after_gap.jsonl` | Static long-gap recovery stays in recovery/stationary cloud semantics |
+| Stationary | `stationary_recovery_with_motion.jsonl` | Still motion evidence keeps nearby drift in the stationary or recovery cloud |
 | Gap | `gap_recovery_after_stationary_gap.jsonl` | Long-gap recovery outside stationary noise remains `gap_recovery` |
 | Transport | `transport_mode.jsonl` | Vehicle-like movement isolation and recovery |
 | Invalid input | `malformed_line.jsonl` | Malformed JSON handling |
@@ -221,10 +214,10 @@ These implementations must not drift.
 Target shape:
 
 ```text
-TrackDecisionCoordinator
+TrackTrustEngine
   - owns transport-mode state
-  - calls TrackDecisionEngine
-  - returns TrackDecisionResult
+  - calls TrackTrustEngine
+  - returns TrackTrustDecision
   - exposes state changes needed by BasicTrackSession
   - can be reused by ReplayRunner
 ```
@@ -318,20 +311,20 @@ behavior.
 Target shape:
 
 ```text
-TrackStrategyConfig.defaultStage1()
+TrackTrustConfig.defaultV3()
 ```
 
 Use the config from:
 
-- `LocationValidator`
-- `TrackDecisionEngine`
+- `SamplingIntake`
+- `TrackTrustEngine`
 - `BasicTrackSession.appendConfigSnapshot`
 - `ReplayRunner`
 
 Rules:
 
 - Default values must match the published compatibility thresholds used by
-  `stage1-gnss-track-v2-rest-state`.
+  `stage2-track-trust-v3-sampling-cloud`.
 - Do not add runtime settings in this phase.
 - Do not change fixture（回放样本） expectations.
 
@@ -522,7 +515,7 @@ Completed:
 - Phase 1 / Task 1: create this governance document.
 - Phase 1 / Task 2: link this governance plan from the system GNSS plan.
 - Phase 1 / Task 3: catalog replay fixture（回放样本） categories.
-- Phase 2 implementation has introduced a shared `TrackDecisionCoordinator`.
+- Phase 2 implementation has introduced a shared `TrackTrustEngine`.
 - Phase 2 validation passed:
   - `source scripts/use-jdk17.sh && ./gradlew testDebugUnitTest`
   - `source scripts/use-jdk17.sh && ./gradlew :app:runReplay`
@@ -557,7 +550,7 @@ Completed:
   passed:
   - `source scripts/use-jdk17.sh && ./gradlew testDebugUnitTest`
   - `source scripts/use-jdk17.sh && ./gradlew :app:runReplay`
-- Phase 5 / Task 1: extracted `TrackStrategyConfig.defaultStage1()` as the
+- Phase 5 / Task 1: extracted `TrackTrustConfig.defaultV3()` as the
   shared source of strategy thresholds for validation, decision policy, session
   config snapshots, and replay; validation passed:
   - `source scripts/use-jdk17.sh && ./gradlew testDebugUnitTest`

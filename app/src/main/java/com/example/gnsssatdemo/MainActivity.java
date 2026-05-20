@@ -1217,7 +1217,7 @@ public class MainActivity extends Activity {
                     .append("s\n");
             sb.append("静止保活点=").append(trackSession.getStationaryKeepaliveCount())
                     .append(" 静止抖动点=").append(trackSession.getStationaryJitterCount()).append('\n');
-            sb.append("REST 状态=").append(trackSession.getRestStateName()).append('\n');
+            sb.append("轨迹可信状态=").append(trackSession.getTrackTrustStateName()).append('\n');
             if (trackSession.getLastRawAccuracyMeters() > 0f) {
                 sb.append("最近 RawPoint 精度=")
                         .append(one.format(trackSession.getLastRawAccuracyMeters()))
@@ -1240,12 +1240,9 @@ public class MainActivity extends Activity {
                 sb.append("可信 GPX 暂不可导出=")
                         .append(trackSession.trustedGpxUnavailableReason()).append('\n');
             }
-            if ("stationary_keepalive".equals(trackSession.getLastDecisionReason())
-                    || "stationary_jitter".equals(trackSession.getLastDecisionReason())) {
+            if ("stationary_anchor".equals(trackSession.getLastDecisionReason())
+                    || "stationary_cloud_jitter".equals(trackSession.getLastDecisionReason())) {
                 sb.append("提示=当前判断为静止，RawPoint 仍记录诊断，但不增加 GPX 距离。\n");
-            }
-            if (trackSession.isForcedWeakFirstFixEnabled()) {
-                sb.append("测试模式=允许弱首点，GPX 中会写 forced_weak_first_fix。\n");
             }
             List<String> recentSummaries = trackSession.getRecentSummaries();
             if (!recentSummaries.isEmpty()) {
@@ -1673,8 +1670,7 @@ public class MainActivity extends Activity {
             return;
         }
         requestNotificationPermissionIfUseful();
-        boolean forceWeakFirstFix = false;
-        recordingServiceController.startRecording(forceWeakFirstFix);
+        recordingServiceController.startRecording();
         foregroundServiceRecording = true;
         updateRecordButtonState();
         updateHistoryActionRows();
@@ -3487,12 +3483,11 @@ public class MainActivity extends Activity {
 
         private boolean isTransportTravelPoint(TrackPoint point) {
             return "transport".equals(point.decisionResult)
-                    || "transport_suspected".equals(point.decisionReason)
-                    || "transport_confirmed".equals(point.decisionReason);
+                    || "transport_suspected".equals(point.decisionReason);
         }
 
         private boolean isTransportRecoveryPoint(TrackPoint point) {
-            return "transport_recovery".equals(point.decisionReason);
+            return "gap_recovery".equals(point.decisionReason);
         }
 
         private void drawCurrentLocation(Canvas canvas) {
@@ -3928,28 +3923,17 @@ public class MainActivity extends Activity {
                 return "已取得轨迹起点";
             case "moving_good_fix":
                 return "有效移动点";
-            case "stationary_keepalive":
-            case "stationary_jitter":
-            case "stationary_anchor_refined":
-            case "stationary_accel_supported_jitter":
-            case "rest_candidate":
-            case "rest_paused_keepalive":
-            case "rest_probing_stationary":
-            case "stationary_motion_blocked_recovery":
-            case "rest_probing_confirming_moving":
+            case "stationary_anchor":
+            case "stationary_cloud_jitter":
                 return "静止，不累计距离";
-            case "rest_moving_recovery":
-                return "恢复移动，重新锚定";
             case "accuracy_too_large":
-            case "first_fix_accuracy_too_large":
-            case "weak_signal_stage1":
+            case "weak_signal_stage2":
+            case "moving_cloud_unstable":
+            case "recovery_cloud_pending":
                 return "精度不足，暂不进 GPX";
-            case "impossible_speed":
-                return "疑似跳点";
             case "transport_suspected":
-            case "transport_confirmed":
                 return "疑似交通工具，不累计";
-            case "transport_recovery":
+            case "gap_recovery":
                 return "恢复徒步，重新锚定";
             default:
                 return reason;
@@ -3975,53 +3959,35 @@ public class MainActivity extends Activity {
                 return "首个可信定位点，精度很好，作为 GPX 起点。";
             case "first_fix_relaxed":
                 return "首个定位点精度可接受，作为 GPX 起点。";
-            case "forced_weak_first_fix":
-                return "测试模式强制接受弱首点，仅用于诊断，不代表真实推荐策略。";
-            case "first_fix_accuracy_too_large":
-                return "首点精度还不够好，先只记录诊断，不进入 GPX。";
             case "accuracy_too_large":
                 return "系统给出的定位精度太差，拒绝进入正式轨迹。";
-            case "weak_signal_stage1":
-                return "弱信号点，第一阶段只记录诊断，不进入 GPX。";
-            case "stationary_keepalive":
-                return "判断用户基本静止，保留诊断点，但不增加距离。";
-            case "stationary_jitter":
-                return "静止时的定位抖动，避免把漂移算成行走距离。";
-            case "stationary_anchor_refined":
-                return "加速度计支持静止，当前点质量更好，作为休息锚点优化候选但不累计距离。";
-            case "stationary_accel_supported_jitter":
-                return "加速度计支持静止，当前点未优于休息点，作为定位漂移丢弃。";
-            case "rest_candidate":
-                return "连续低速、位移小且加速度静止，进入休息候选确认；当前点不累计距离。";
-            case "rest_paused_keepalive":
-                return "已进入休息暂停，GPS 保活点只用于更新休息锚点，不累计距离。";
-            case "rest_probing_stationary":
-                return "休息探测后仍在锚点附近，回到休息暂停，不累计距离。";
-            case "stationary_motion_blocked_recovery":
-                return "加速度计持续高置信静止，GPS 漂移不能恢复移动，不累计距离。";
-            case "rest_probing_confirming_moving":
-                return "休息探测中，当前点只用于确认是否恢复移动，不累计距离。";
-            case "rest_moving_recovery":
-                return "休息探测已连续确认移动，重新锚定轨迹；探测阶段距离不回补。";
-            case "impossible_speed":
-                return "两点之间需要的速度不合理，疑似跳点。";
+            case "weak_signal_stage2":
+                return "弱信号点云，v3 只记录诊断，不进入 GPX。";
+            case "moving_cloud_unstable":
+                return "移动点云暂不稳定，继续收集证据。";
+            case "recovery_cloud_pending":
+                return "恢复点云仍在确认中，暂不建立新轨迹段。";
+            case "stationary_anchor":
+                return "静止点云代表锚点，不累计距离。";
+            case "stationary_cloud_jitter":
+                return "静止点云中的定位漂移，不累计距离。";
             case "transport_suspected":
                 return "检测到明显超过徒步范围的移动，疑似坐车或骑行，暂不进入可信徒步距离。";
-            case "transport_confirmed":
-                return "仍处于疑似交通工具移动状态，继续记录诊断但不累计徒步距离。";
-            case "transport_recovery":
-                return "疑似交通工具移动后恢复到徒步速度，重新锚定轨迹；这段连接不累计距离。";
-            case "non_positive_delta_time":
-                return "定位时间没有前进，不能用于轨迹连续性。";
             case "provider_not_gps":
                 return "不是 GPS_PROVIDER 输出，当前系统 GNSS 测试不接受。";
-            case "missing_elapsed_realtime":
+            case "missing_fix_elapsed_realtime":
                 return "缺少 elapsedRealtimeNanos，无法可靠计算连续性。";
             case "before_record_start":
                 return "这是记录开始前的系统缓存旧点。";
-            case "location_too_old":
-                return "定位结果过旧，只保留诊断。";
-            case "zero_coordinate":
+            case "location_from_future":
+                return "定位时间来自未来，采样时间线异常。";
+            case "duplicate_fix":
+                return "重复定位 fix，已在采样入口丢弃。";
+            case "out_of_order_fix":
+                return "定位 fix 时间乱序，已在采样入口丢弃。";
+            case "sampling_epoch_mismatch":
+                return "定位 fix 与采样周期不匹配。";
+            case "invalid_coordinate":
                 return "经纬度无效。";
             case "invalid_accuracy":
                 return "缺少有效精度。";

@@ -124,7 +124,7 @@
 当前策略版本：
 
 ```text
-stage1-gnss-track-v2-rest-state
+stage2-track-trust-v3-sampling-cloud
 ```
 
 当前治理游标：
@@ -150,7 +150,7 @@ Phase 11 complete
 - 被拒绝点和弱信号点仍然要保留为诊断证据。
 - 可信 GPX 只能包含可信的 `anchor` 和 `accept` TrackPoint。
 - 弱 GPS 指标默认只用于解释，不参与策略硬判，除非任务明确要求改策略。
-- 必须兼容旧 session 和旧 `diagnostic.jsonl`。
+- 当前 v3 是破坏式策略升级；历史 session 只作为历史产物，不作为新策略兼容目标。
 - Replay 行为必须和真实记录行为一致。
 - 做清理或结构调整时，不要顺手改阈值、decision result、decision reason、
   segment 逻辑、距离、运动时间、GPX 输出或诊断 schema。
@@ -162,10 +162,10 @@ Phase 11 complete
 | Android 原型入口 | `app/src/main/java/com/example/gnsssatdemo/MainActivity.java` |
 | 前台记录服务 | `app/src/main/java/com/example/gnsssatdemo/RecordingForegroundService.java` |
 | Session 编排 | `app/src/main/java/com/example/gnsssatdemo/track/engine/BasicTrackSession.java` |
-| 策略阈值 | `app/src/main/java/com/example/gnsssatdemo/track/engine/TrackStrategyConfig.java` |
-| 位置校验策略 | `app/src/main/java/com/example/gnsssatdemo/track/engine/LocationValidator.java` |
-| 判点策略 | `app/src/main/java/com/example/gnsssatdemo/track/engine/TrackDecisionEngine.java` |
-| 共享判点协调器 | `app/src/main/java/com/example/gnsssatdemo/track/engine/TrackDecisionCoordinator.java` |
+| 策略阈值 | `app/src/main/java/com/example/gnsssatdemo/track/engine/TrackTrustConfig.java` |
+| 采样入口校验 | `app/src/main/java/com/example/gnsssatdemo/track/engine/SamplingIntake.java` |
+| 点云窗口 | `app/src/main/java/com/example/gnsssatdemo/track/engine/TrackCloudWindow.java` |
+| 轨迹可信引擎 | `app/src/main/java/com/example/gnsssatdemo/track/engine/TrackTrustEngine.java` |
 | GPX 和 session 导出 | `app/src/main/java/com/example/gnsssatdemo/track/export/` |
 | Replay 运行器 | `app/src/main/java/com/example/gnsssatdemo/track/replay/` |
 | 回放样本（replay fixtures） | `app/src/test/resources/replay-fixtures/` |

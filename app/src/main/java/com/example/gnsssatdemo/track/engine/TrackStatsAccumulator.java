@@ -17,14 +17,9 @@ public class TrackStatsAccumulator {
         movingTimeSeconds = 0.0;
     }
 
-    public void addAcceptedMovement(TrackDecisionResult outcome) {
-        totalDistanceMeters += outcome.distanceDeltaMeters;
-        movingTimeSeconds += outcome.movingTimeDeltaSeconds;
-    }
-
-    public void addStationaryDecision(TrackDecisionResult outcome) {
-        stationaryKeepaliveCount += outcome.stationaryKeepaliveIncrement;
-        stationaryJitterCount += outcome.stationaryJitterIncrement;
+    public void addAcceptedMovement(double distanceDeltaMeters, double movingTimeDeltaSeconds) {
+        totalDistanceMeters += distanceDeltaMeters;
+        movingTimeSeconds += movingTimeDeltaSeconds;
     }
 
     public void incrementGapCount() {
@@ -33,6 +28,14 @@ public class TrackStatsAccumulator {
 
     public void incrementTransportCount() {
         transportCount++;
+    }
+
+    public void incrementStationaryKeepaliveCount() {
+        stationaryKeepaliveCount++;
+    }
+
+    public void incrementStationaryJitterCount() {
+        stationaryJitterCount++;
     }
 
     public int getStationaryKeepaliveCount() {

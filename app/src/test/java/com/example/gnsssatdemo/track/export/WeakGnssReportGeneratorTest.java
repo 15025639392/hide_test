@@ -20,7 +20,7 @@ public class WeakGnssReportGeneratorTest {
                 + gnss(2, 1, 1_500_000_000L, 4, 18.0, 23.0)
                 + raw(3, 1, 2_000_000_000L, 35.0, false, 1)
                 + decision(4, 1, 1, 2_000_000_000L,
-                "weak", "weak_signal_stage1", 1)
+                "weak", "weak_signal_stage2", 1)
                 + gnss(5, 2, 10_000_000_000L, 7, 30.0, 36.0)
                 + raw(6, 2, 12_000_000_000L, 8.0, false, 2)
                 + decision(7, 2, 2, 12_000_000_000L,
@@ -28,10 +28,10 @@ public class WeakGnssReportGeneratorTest {
                 + gnss(8, 5, 20_000_000_000L, 6, 26.0, 32.0)
                 + raw(9, 5, 22_000_000_000L, 9.0, false, 5)
                 + decision(10, 5, 5, 22_000_000_000L,
-                "accept", "transport_recovery", 5)
+                "accept", "moving_good_fix", 5)
                 + raw(11, 3, 40_000_000_000L, 12.0, true, null)
                 + decision(12, 3, 3, 40_000_000_000L,
-                "reject", "impossible_speed", null)
+                "reject", "weak_signal_stage2", null)
                 + gnss(13, 3, 90_000_000_000L, 3, 16.0, 21.0)
                 + raw(14, 4, 100_000_000_000L, 10.0, false, 3)
                 + decision(15, 4, 4, 100_000_000_000L,
@@ -60,9 +60,9 @@ public class WeakGnssReportGeneratorTest {
         assertEquals(18.0, report.averageWeakUsedAvgCn0, 0.0);
         assertEquals(2, report.rejectDecisionCount);
         assertEquals(1, report.rejectDecisionWithGnssCount);
-        assertEquals(2, report.transportDecisionCount);
-        assertEquals(2, report.transportDecisionWithGnssCount);
-        assertEquals(28.0, report.averageTransportUsedAvgCn0, 0.0);
+        assertEquals(1, report.transportDecisionCount);
+        assertEquals(1, report.transportDecisionWithGnssCount);
+        assertEquals(30.0, report.averageTransportUsedAvgCn0, 0.0);
         assertEquals(1, report.gapRecoveryCount);
         assertEquals(1, report.gapRecoveryWithBeforeWindowCount);
         assertEquals(1, report.gapRecoveryWithAfterWindowCount);
@@ -87,7 +87,7 @@ public class WeakGnssReportGeneratorTest {
                         + "\"visibleTotal\":8,\"usedInFixTotal\":4,\"usedAvgCn0\":18.0")
                 + raw(3, 1, 2_000_000_000L, 35.0, false, 1)
                 + decision(4, 1, 1, 2_000_000_000L,
-                "weak", "weak_signal_stage1", 1);
+                "weak", "weak_signal_stage2", 1);
         Files.write(new File(dir, "diagnostic.jsonl").toPath(),
                 diagnostic.getBytes(StandardCharsets.UTF_8));
         writeSessionJson(dir, 4, 1, 0, 1, 0);
@@ -103,6 +103,30 @@ public class WeakGnssReportGeneratorTest {
         assertEquals(35.0, report.averageWeakAccuracyMeters, 0.0);
         assertEquals(0.0, report.averageWeakUsedAvgCn0, 0.0);
         assertTrue(report.findings.toString().contains("weak 决策缺少可关联 GNSS snapshot"));
+    }
+
+    @Test
+    public void generate_countsLocationIntakeRejectedAsRejectEvidence() throws Exception {
+        File dir = Files.createTempDirectory("weak-gnss-report-intake-reject").toFile();
+        String diagnostic = ""
+                + event(1, "session_metadata", 1_000_000_000L,
+                "\"createdElapsedRealtimeNanos\":1000000000")
+                + gnss(2, 1, 1_500_000_000L, 4, 18.0, 23.0)
+                + raw(3, 1, 2_000_000_000L, 90.0, false, 1)
+                + intakeReject(4, 1, 2_000_000_000L, "accuracy_too_large");
+        Files.write(new File(dir, "diagnostic.jsonl").toPath(),
+                diagnostic.getBytes(StandardCharsets.UTF_8));
+        writeSessionJson(dir, 4, 1, 0, 0, 0);
+
+        SessionManifest manifest = new SessionManifestReader(new SessionFileStore(dir.getParentFile()))
+                .read(dir);
+        WeakGnssReport report = new WeakGnssReportGenerator().generate(manifest);
+
+        assertEquals(1, report.rejectDecisionCount);
+        assertEquals(1, report.rejectDecisionWithGnssCount);
+        assertEquals(90.0, report.averageRejectAccuracyMeters, 0.0);
+        assertEquals(4.0, report.averageRejectUsedInFixTotal, 0.0);
+        assertEquals(18.0, report.averageRejectUsedAvgCn0, 0.0);
     }
 
     private String event(int seq, String eventName, long elapsedRealtimeNanos, String fields) {
@@ -124,6 +148,13 @@ public class WeakGnssReportGeneratorTest {
                         + ",\"gnssQualityStale\":" + stale
                         + (sourceGnssSnapshotId == null
                         ? "" : ",\"sourceGnssSnapshotId\":" + sourceGnssSnapshotId));
+    }
+
+    private String intakeReject(int seq, int rawPointId, long elapsedRealtimeNanos,
+                                String reason) {
+        return event(seq, "location_intake_rejected", elapsedRealtimeNanos,
+                "\"rawPointId\":" + rawPointId
+                        + ",\"rejectReason\":\"" + reason + "\"");
     }
 
     private String decision(int seq, int decisionId, int rawPointId, long elapsedRealtimeNanos,

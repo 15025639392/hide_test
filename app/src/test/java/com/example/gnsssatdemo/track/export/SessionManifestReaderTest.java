@@ -24,7 +24,7 @@ public class SessionManifestReaderTest {
         json.put("completionState", "FINISHED");
         json.put("integrityState", "OK");
         json.put("schemaVersion", 1);
-        json.put("strategyVersion", "stage1-gnss-track-v1");
+        json.put("strategyVersion", "stage2-track-trust-v3-sampling-cloud");
         json.put("deviceManufacturer", "Google");
         json.put("deviceBrand", "google");
         json.put("deviceModel", "Pixel 8");
@@ -68,7 +68,7 @@ public class SessionManifestReaderTest {
         assertEquals("FINISHED", manifest.completionState);
         assertEquals("OK", manifest.integrityState);
         assertEquals(1, manifest.schemaVersion);
-        assertEquals("stage1-gnss-track-v1", manifest.strategyVersion);
+        assertEquals("stage2-track-trust-v3-sampling-cloud", manifest.strategyVersion);
         assertEquals("Google", manifest.deviceManufacturer);
         assertEquals("google", manifest.deviceBrand);
         assertEquals("Pixel 8", manifest.deviceModel);

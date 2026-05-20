@@ -2,8 +2,6 @@ package com.example.gnsssatdemo;
 
 final class RecordingSamplingState {
     private static final int PAUSED_KEEPALIVE_THRESHOLD = 2;
-    private static final int PAUSED_JITTER_THRESHOLD = 10;
-
     private int consecutiveStationaryKeepaliveCount;
     private int consecutiveStationaryJitterCount;
 
@@ -13,27 +11,19 @@ final class RecordingSamplingState {
     }
 
     void onDecisionReason(String reason) {
-        if ("stationary_keepalive".equals(reason)) {
-            consecutiveStationaryKeepaliveCount++;
+        if ("stationary_cloud_jitter".equals(reason)) {
+            consecutiveStationaryJitterCount++;
             return;
         }
-        if ("stationary_jitter".equals(reason)
-                || "stationary_anchor_refined".equals(reason)
-                || "stationary_accel_supported_jitter".equals(reason)
-                || "rest_candidate".equals(reason)
-                || "rest_paused_keepalive".equals(reason)
-                || "rest_probing_stationary".equals(reason)
-                || "stationary_motion_blocked_recovery".equals(reason)
-                || "rest_probing_confirming_moving".equals(reason)) {
-            consecutiveStationaryJitterCount++;
+        if ("stationary_anchor".equals(reason)) {
+            consecutiveStationaryKeepaliveCount++;
             return;
         }
         reset();
     }
 
     boolean shouldUsePausedPolicy() {
-        return consecutiveStationaryKeepaliveCount >= PAUSED_KEEPALIVE_THRESHOLD
-                || consecutiveStationaryJitterCount >= PAUSED_JITTER_THRESHOLD;
+        return consecutiveStationaryKeepaliveCount >= PAUSED_KEEPALIVE_THRESHOLD;
     }
 
     int consecutiveStationaryKeepaliveCount() {

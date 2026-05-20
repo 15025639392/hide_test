@@ -25,13 +25,13 @@ public class ReplayRunnerTest {
 
     @Test
     public void run_reportsBestEffortWhenExpectationDiffers() {
-        ReplayReport report = runner.run(baseHeader(false)
+        ReplayReport report = runner.run(baseHeader()
                 + raw(1, 45, 29.0, 106.0, 2_000_000_000L,
-                "anchor", "forced_weak_first_fix"));
+                "anchor", "first_fix_good"));
 
         assertEquals(ReplayReport.BEST_EFFORT, report.status);
         assertEquals(1, report.mismatchCount());
-        assertEquals("weak_first_fix", report.decisions.get(0).actualReason);
+        assertEquals("weak_signal_stage2", report.decisions.get(0).actualReason);
     }
 
     @Test
@@ -64,28 +64,68 @@ public class ReplayRunnerTest {
     }
 
     @Test
-    public void run_replaysForcedWeakFirstFixFixture() throws IOException {
-        ReplayReport report = fixture("forced_weak_first_fix.jsonl");
+    public void run_rejectsDuplicateFixAtIntake() {
+        ReplayReport report = runner.run(baseHeader()
+                + raw(1, 5, 29.0, 106.0, 2_000_000_000L,
+                "anchor", "first_fix_good")
+                + raw(1, 5, 29.0, 106.0, 2_000_000_000L,
+                "intake_rejected", "duplicate_fix"));
 
         assertEquals(ReplayReport.EXACT, report.status);
         assertEquals(0, report.mismatchCount());
+        assertEquals("intake_rejected", report.decisions.get(1).actualResult);
+        assertEquals("duplicate_fix", report.decisions.get(1).actualReason);
     }
 
     @Test
-    public void run_returnsExactForStrategyRejectFixtures() throws IOException {
-        assertExactFixture("weak_signal_stage1.jsonl", 2);
-        assertExactFixture("impossible_speed.jsonl", 2);
-        assertExactFixture("stationary_filter.jsonl", 3);
-        assertExactFixture("transport_mode.jsonl", 4);
-        assertExactFixture("gap_recovery_after_stationary_gap.jsonl", 2);
-        assertExactFixture("stationary_anchor_refinement_after_gap.jsonl", 2);
-        assertExactFixture("stationary_anchor_refinement_with_motion.jsonl", 2);
-        assertExactFixture("stationary_motion_blocks_rest_recovery.jsonl", 4);
+    public void run_outputsV3MovingDecision() {
+        ReplayReport report = runner.run(baseHeader()
+                + raw(1, 5, 29.0, 106.0, 2_000_000_000L,
+                "anchor", "first_fix_good")
+                + raw(2, 5, 29.0001, 106.0, 5_000_000_000L,
+                "accept", "moving_good_fix"));
+
+        assertEquals(ReplayReport.EXACT, report.status);
+        assertEquals(0, report.mismatchCount());
+        assertEquals("moving_good_fix", report.decisions.get(1).actualReason);
     }
 
     @Test
-    public void run_returnsExactForValidationRejectFixtures() throws IOException {
-        assertExactFixture("validation_rejects.jsonl", 4);
+    public void run_usesRawLocationCapturedSamplingEpoch() {
+        ReplayReport report = runner.run(baseHeader()
+                + "{\"event\":\"sampling_policy\",\"samplingEpochId\":2,"
+                + "\"state\":\"SIGNAL_WEAK\",\"locationRequestMinTimeMs\":2000,"
+                + "\"locationRequestMinDistanceMeters\":0,"
+                + "\"eventElapsedRealtimeNanos\":10000000000}\n"
+                + rawWithEpoch(1, 5, 29.0, 106.0, 2_000_000_000L,
+                1L, 1_000_000_000L, "anchor", "first_fix_good"));
+
+        assertEquals(ReplayReport.EXACT, report.status);
+        assertEquals(0, report.mismatchCount());
+        assertEquals("anchor", report.decisions.get(0).actualResult);
+    }
+
+    @Test
+    public void run_usesCallbackReceivedTimeForIntakeFutureCheck() {
+        ReplayReport report = runner.run(baseHeader()
+                + "{\"event\":\"raw_location\""
+                + ",\"rawPointId\":1"
+                + ",\"provider\":\"gps\""
+                + ",\"lat\":29.0"
+                + ",\"lng\":106.0"
+                + ",\"accuracy\":5"
+                + ",\"timeMillis\":1"
+                + ",\"elapsedRealtimeNanos\":3000000000"
+                + ",\"eventElapsedRealtimeNanos\":3000000000"
+                + ",\"callbackReceivedElapsedRealtimeNanos\":1000000000"
+                + ",\"expectedResult\":\"intake_rejected\""
+                + ",\"expectedReason\":\"location_from_future\""
+                + "}\n");
+
+        assertEquals(ReplayReport.EXACT, report.status);
+        assertEquals(0, report.mismatchCount());
+        assertEquals("intake_rejected", report.decisions.get(0).actualResult);
+        assertEquals("location_from_future", report.decisions.get(0).actualReason);
     }
 
     @Test
@@ -128,10 +168,10 @@ public class ReplayRunnerTest {
         }
     }
 
-    private String baseHeader(boolean forcedWeakFirstFixEnabled) {
+    private String baseHeader() {
         return "{\"event\":\"session_metadata\",\"createdElapsedRealtimeNanos\":1000000000}\n"
-                + "{\"event\":\"config_snapshot\",\"forcedWeakFirstFixEnabled\":"
-                + forcedWeakFirstFixEnabled + "}\n";
+                + "{\"event\":\"config_snapshot\",\"strategyVersion\":\""
+                + "stage2-track-trust-v3-sampling-cloud\"}\n";
     }
 
     private String raw(long rawPointId, float accuracyMeters, double lat, double lng,
@@ -144,6 +184,29 @@ public class ReplayRunnerTest {
                 + ",\"accuracy\":" + accuracyMeters
                 + ",\"timeMillis\":1"
                 + ",\"elapsedRealtimeNanos\":" + elapsedRealtimeNanos
+                + ",\"expectedResult\":\"" + expectedResult + "\""
+                + ",\"expectedReason\":\"" + expectedReason + "\""
+                + "}\n";
+    }
+
+    private String rawWithEpoch(long rawPointId, float accuracyMeters, double lat, double lng,
+                                long elapsedRealtimeNanos, long samplingEpochId,
+                                long samplingEpochStartedElapsedRealtimeNanos,
+                                String expectedResult, String expectedReason) {
+        return "{\"event\":\"raw_location\""
+                + ",\"rawPointId\":" + rawPointId
+                + ",\"provider\":\"gps\""
+                + ",\"lat\":" + lat
+                + ",\"lng\":" + lng
+                + ",\"accuracy\":" + accuracyMeters
+                + ",\"timeMillis\":1"
+                + ",\"elapsedRealtimeNanos\":" + elapsedRealtimeNanos
+                + ",\"samplingEpochId\":" + samplingEpochId
+                + ",\"samplingState\":\"STARTING\""
+                + ",\"requestedMinTimeMs\":1000"
+                + ",\"requestedMinDistanceMeters\":0"
+                + ",\"samplingEpochStartedElapsedRealtimeNanos\":"
+                + samplingEpochStartedElapsedRealtimeNanos
                 + ",\"expectedResult\":\"" + expectedResult + "\""
                 + ",\"expectedReason\":\"" + expectedReason + "\""
                 + "}\n";

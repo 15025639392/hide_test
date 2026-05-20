@@ -8,7 +8,7 @@
 
 当前项目已经有第一阶段弱信号口径：
 
-- `accuracy > 30m` 的移动中点进入 `weak_signal_stage1`。
+- `accuracy > 30m` 的移动中点进入 `weak_signal_stage2`。
 - `accuracy > 80m` 硬拒绝。
 - weak 点进入诊断和 `partial.gpx`，不参与可信距离。
 - 长时间无定位通过 `gap_recovery` 表达，恢复点 delta 为 0。
@@ -78,7 +78,7 @@ GnssStatus
 
 - weak 点发生时的 `usedInFixTotal`、`usedAvgCn0`、`top4AvgCn0`。
 - GAP 前 30 秒与恢复后 30 秒的卫星质量变化。
-- `weak_signal_stage1` 与 `accuracy`、C/N0、used satellite count 的对应分布。
+- `weak_signal_stage2` 与 `accuracy`、C/N0、used satellite count 的对应分布。
 - `gnssQualityStale` 占比。
 - 各星座参与 fix 情况。
 
@@ -126,12 +126,12 @@ GnssMeasurementsEvent
 
 | 当前 reason | 弱 GPS 诊断应补充什么 |
 | --- | --- |
-| `weak_first_fix` | 首点 accuracy 偏弱时的 used satellite count、top4 CN0、星座分布 |
-| `weak_signal_stage1` | weak 点附近的 CN0 下降、used 卫星变化、snapshot 是否 stale |
+| `weak_signal_stage2` | 首点 accuracy 偏弱时的 used satellite count、top4 CN0、星座分布 |
+| `weak_signal_stage2` | weak 点附近的 CN0 下降、used 卫星变化、snapshot 是否 stale |
 | `gap_recovery` | GAP 前后是否存在无卫星、低 CN0、后台无回调或 snapshot 中断 |
-| `impossible_speed` | 是否同时伴随低 C/N0 或 used satellite count 下降，辅助区分漂移和真实高速 |
+| `weak_signal_stage2` | 是否同时伴随低 C/N0 或 used satellite count 下降，辅助区分漂移和真实高速 |
 | `transport_suspected` | 证明其主要由速度证据触发，而不是弱 GPS 误判 |
-| `stationary_jitter` | 静止小漂移是否伴随弱 C/N0 或低 used satellite count |
+| `stationary_cloud_jitter` | 静止小漂移是否伴随弱 C/N0 或低 used satellite count |
 
 ## 建议优先级
 

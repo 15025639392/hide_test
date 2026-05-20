@@ -99,12 +99,10 @@ SDK 不负责：
 
 重点阅读：
 - app/src/main/java/com/example/gnsssatdemo/track/model/
-- app/src/main/java/com/example/gnsssatdemo/track/engine/TrackStrategyConfig.java
-- app/src/main/java/com/example/gnsssatdemo/track/engine/LocationValidator.java
-- app/src/main/java/com/example/gnsssatdemo/track/engine/TrackDecisionEngine.java
-- app/src/main/java/com/example/gnsssatdemo/track/engine/TrackDecisionCoordinator.java
-- app/src/main/java/com/example/gnsssatdemo/track/engine/RestStateMachine.java
-- app/src/main/java/com/example/gnsssatdemo/track/engine/RestAnchorRefiner.java
+- app/src/main/java/com/example/gnsssatdemo/track/engine/TrackTrustConfig.java
+- app/src/main/java/com/example/gnsssatdemo/track/engine/SamplingIntake.java
+- app/src/main/java/com/example/gnsssatdemo/track/engine/TrackCloudWindow.java
+- app/src/main/java/com/example/gnsssatdemo/track/engine/TrackTrustEngine.java
 
 请输出一份平台中立 SDK 契约草案，至少包含：
 1. 输入模型：RawPoint、GNSS 质量摘要、运动摘要、气压计样本。
@@ -112,7 +110,7 @@ SDK 不负责：
 3. 策略阈值：所有默认值、单位和来源文件。
 4. 判点规则：首点、弱信号、静止漂移、GAP、疑似交通工具、休息恢复。
 5. 不变量：哪些行为跨平台必须保持一致。
-6. 兼容要求：旧 session 和旧 diagnostic.jsonl 如何处理。
+6. 历史数据口径：历史 session 仅用历史版本工具读取，新 v3 SDK 不继承旧判点结果。
 7. SDK 公共 API：初始化、输入采样、结束 session、导出诊断、运行回放样本。
 8. SDK 不负责的边界：UI、地图展示、账号、云同步等非策略功能。
 

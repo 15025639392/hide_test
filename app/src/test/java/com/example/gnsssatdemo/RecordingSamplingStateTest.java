@@ -11,8 +11,8 @@ public class RecordingSamplingStateTest {
     public void shouldUsePausedPolicy_requiresConsecutiveStationaryReasons() {
         RecordingSamplingState state = new RecordingSamplingState();
 
-        state.onDecisionReason("stationary_keepalive");
-        state.onDecisionReason("stationary_keepalive");
+        state.onDecisionReason("stationary_anchor");
+        state.onDecisionReason("stationary_anchor");
         assertTrue(state.shouldUsePausedPolicy());
 
         state.onDecisionReason("moving_good_fix");
@@ -23,31 +23,24 @@ public class RecordingSamplingStateTest {
     }
 
     @Test
-    public void shouldUsePausedPolicy_usesConsecutiveJitterThreshold() {
+    public void shouldUsePausedPolicy_doesNotUseJitterAlone() {
         RecordingSamplingState state = new RecordingSamplingState();
 
-        for (int i = 0; i < 9; i++) {
-            state.onDecisionReason("stationary_jitter");
+        for (int i = 0; i < 20; i++) {
+            state.onDecisionReason("stationary_cloud_jitter");
         }
+
         assertFalse(state.shouldUsePausedPolicy());
-
-        state.onDecisionReason("stationary_jitter");
-
-        assertTrue(state.shouldUsePausedPolicy());
     }
 
     @Test
-    public void shouldUsePausedPolicy_treatsRestAnchorRefinementAsStationary() {
+    public void shouldUsePausedPolicy_treatsV3StationaryCloudAsStationary() {
         RecordingSamplingState state = new RecordingSamplingState();
 
-        state.onDecisionReason("stationary_anchor_refined");
-        state.onDecisionReason("stationary_accel_supported_jitter");
-        state.onDecisionReason("rest_candidate");
-        state.onDecisionReason("rest_paused_keepalive");
-        state.onDecisionReason("rest_probing_stationary");
-        state.onDecisionReason("stationary_motion_blocked_recovery");
-        state.onDecisionReason("rest_probing_confirming_moving");
+        state.onDecisionReason("stationary_cloud_jitter");
+        state.onDecisionReason("stationary_cloud_jitter");
+        state.onDecisionReason("stationary_cloud_jitter");
 
-        assertEquals(7, state.consecutiveStationaryJitterCount());
+        assertEquals(3, state.consecutiveStationaryJitterCount());
     }
 }

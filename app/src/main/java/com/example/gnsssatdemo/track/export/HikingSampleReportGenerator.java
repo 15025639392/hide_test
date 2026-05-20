@@ -87,10 +87,11 @@ public class HikingSampleReportGenerator {
                 accumulator.weakDecisionCount, "weak decision");
         addCountMismatch(blocking, "GAP", manifest.gapCount,
                 accumulator.gapRecoveryCount, "gap_recovery decision");
-        if (accumulator.rawLocationCount != accumulator.decisionCount) {
+        if (accumulator.rawLocationCount != accumulator.explainedRawPointIds.size()) {
             blocking.add("diagnostic raw_location=" + accumulator.rawLocationCount
-                    + " 与 decision=" + accumulator.decisionCount
-                    + " 不一致，不能保证每个 RawPoint 都有 accept/reject/weak 解释");
+                    + " 与 decision/intake/integrity 解释数="
+                    + accumulator.explainedRawPointIds.size()
+                    + " 不一致，不能保证每个 RawPoint 都有 accept/reject/weak 或 intake 解释");
         }
         if (accumulator.nonZeroDistanceSamplingCount > 0) {
             blocking.add("发现 minDistanceMeters 非 0 的采样请求: "
@@ -129,11 +130,9 @@ public class HikingSampleReportGenerator {
                     + " 次，最大 " + oneDecimal(accumulator.maxNoLocationTimeoutSeconds) + " 秒");
         }
         int transportSuspectedCount = accumulator.reasonCount("reject:transport_suspected");
-        int transportConfirmedCount = accumulator.reasonCount("reject:transport_confirmed");
-        int transportRecoveryCount = accumulator.reasonCount("accept:transport_recovery");
-        if (transportSuspectedCount > 0 || transportConfirmedCount > 0 || transportRecoveryCount > 0) {
+        int transportRecoveryCount = accumulator.reasonCount("accept:gap_recovery");
+        if (transportSuspectedCount > 0 || transportRecoveryCount > 0) {
             review.add("检测到疑似交通工具移动: suspected=" + transportSuspectedCount
-                    + " confirmed=" + transportConfirmedCount
                     + " recovery=" + transportRecoveryCount
                     + "，车程未计入可信徒步距离");
         }
@@ -282,7 +281,10 @@ public class HikingSampleReportGenerator {
         int trustedDecisionCount;
         int weakDecisionCount;
         int rejectDecisionCount;
+        int intakeRejectedCount;
+        int sessionIntegrityErrorCount;
         final Set<Long> trustedTrackPointIds = new HashSet<>();
+        final Set<Long> explainedRawPointIds = new HashSet<>();
         int gapRecoveryCount;
         int gapRecoveryZeroDeltaCount;
         int noLocationTimeoutCount;
@@ -325,6 +327,10 @@ public class HikingSampleReportGenerator {
                 onRawLocation(event);
             } else if ("decision".equals(eventName)) {
                 onDecision(event);
+            } else if ("location_intake_rejected".equals(eventName)) {
+                onLocationIntakeRejected(event);
+            } else if ("session_integrity_error".equals(eventName)) {
+                onSessionIntegrityError(event);
             } else if ("sampling_policy".equals(eventName)) {
                 onSamplingPolicy(event, eventTime);
             } else if ("session_event".equals(eventName)) {
@@ -392,6 +398,7 @@ public class HikingSampleReportGenerator {
 
         void onDecision(JSONObject event) {
             decisionCount++;
+            rememberExplainedRawPoint(event);
             String result = event.optString("result", "");
             String reason = event.optString("reason", "unknown");
             increment(decisionReasonCounts, result + ":" + reason);
@@ -419,6 +426,23 @@ public class HikingSampleReportGenerator {
                             + " distanceDelta=" + distanceDelta
                             + " movingTimeDelta=" + movingDelta);
                 }
+            }
+        }
+
+        void onLocationIntakeRejected(JSONObject event) {
+            intakeRejectedCount++;
+            rememberExplainedRawPoint(event);
+        }
+
+        void onSessionIntegrityError(JSONObject event) {
+            sessionIntegrityErrorCount++;
+            rememberExplainedRawPoint(event);
+        }
+
+        void rememberExplainedRawPoint(JSONObject event) {
+            long rawPointId = event.optLong("rawPointId", -1L);
+            if (rawPointId > 0L) {
+                explainedRawPointIds.add(rawPointId);
             }
         }
 

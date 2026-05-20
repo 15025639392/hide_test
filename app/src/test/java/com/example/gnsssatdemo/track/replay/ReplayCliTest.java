@@ -18,7 +18,8 @@ public class ReplayCliTest {
         File outputDir = Files.createTempDirectory("replay-cli-output").toFile();
         Files.write(new File(inputDir, "good.jsonl").toPath(),
                 ("{\"event\":\"session_metadata\",\"createdElapsedRealtimeNanos\":1000000000}\n"
-                        + "{\"event\":\"config_snapshot\",\"forcedWeakFirstFixEnabled\":false}\n"
+                        + "{\"event\":\"config_snapshot\",\"strategyVersion\":"
+                        + "\"stage2-track-trust-v3-sampling-cloud\"}\n"
                         + "{\"event\":\"raw_location\",\"rawPointId\":1,\"provider\":\"gps\","
                         + "\"lat\":29.0,\"lng\":106.0,\"accuracy\":10.0,\"timeMillis\":1,"
                         + "\"elapsedRealtimeNanos\":2000000000,"

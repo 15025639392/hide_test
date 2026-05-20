@@ -71,9 +71,7 @@ public class DiagnosticTrackPointReader {
                     RawPoint rawPoint = rawPoints.get(event.optLong("rawPointId", -1L));
                     if (rawPoint != null) {
                         TrackPoint trackPoint = trackPointFromEvent(event, rawPoint);
-                        if (isAnchorRefinementDecision(event)) {
-                            upsertRefinedTrackPoint(trackPoints, trackPoint);
-                        } else {
+                        if (!hasTrackPointId(trackPoints, trackPoint.trackPointId)) {
                             trackPoints.add(trackPoint);
                         }
                     }
@@ -157,12 +155,19 @@ public class DiagnosticTrackPointReader {
                 && event.opt("pressureHpa") != JSONObject.NULL
                 && event.has("rawBarometerAltitudeMeters")
                 && event.opt("rawBarometerAltitudeMeters") != JSONObject.NULL;
+        double latitude = event.optBoolean("isVirtualTrackPointCoordinate", false)
+                ? event.optDouble("cloudCenterLatitude", rawPoint.latitude)
+                : rawPoint.latitude;
+        double longitude = event.optBoolean("isVirtualTrackPointCoordinate", false)
+                ? event.optDouble("cloudCenterLongitude", rawPoint.longitude)
+                : rawPoint.longitude;
+        Object contributingRawPointIds = event.opt("contributingRawPointIds");
         return new TrackPoint(trackPointId,
                 rawPoint.rawPointId,
                 event.optLong("decisionId"),
                 event.optLong("segmentId", 1L),
-                rawPoint.latitude,
-                rawPoint.longitude,
+                latitude,
+                longitude,
                 rawPoint.hasAltitude,
                 rawPoint.altitude,
                 rawPoint.hasVerticalAccuracy,
@@ -179,6 +184,15 @@ public class DiagnosticTrackPointReader {
                 distanceDeltaMeters,
                 movingTimeDeltaSeconds,
                 rawPoint.sourceGnssSnapshotId,
+                event.optString("trustGrade", null),
+                event.has("cloudId") ? event.optLong("cloudId") : null,
+                event.has("representativeRawPointId")
+                        ? event.optLong("representativeRawPointId") : null,
+                contributingRawPointIds == null ? "" : contributingRawPointIds.toString(),
+                event.optBoolean("isVirtualTrackPointCoordinate", false),
+                event.optDouble("cloudCenterLatitude", latitude),
+                event.optDouble("cloudCenterLongitude", longitude),
+                event.optDouble("cloudWeightedRadiusMeters", 0.0),
                 hasPressureSample, event.optLong("pressureSampleElapsedRealtimeNanos", 0L),
                 hasPressureSample ? event.optDouble("pressureHpa", 0.0) : 0.0,
                 hasPressureSample
@@ -187,8 +201,7 @@ public class DiagnosticTrackPointReader {
 
     private boolean isTransportDisplayDecision(JSONObject event) {
         String reason = event.optString("reason", "");
-        return "transport_suspected".equals(reason)
-                || "transport_confirmed".equals(reason);
+        return "transport_suspected".equals(reason);
     }
 
     private boolean isRecordedTrackPointDecision(JSONObject event) {
@@ -199,18 +212,13 @@ public class DiagnosticTrackPointReader {
         return "anchor".equals(result) || "accept".equals(result) || "weak".equals(result);
     }
 
-    private boolean isAnchorRefinementDecision(JSONObject event) {
-        return "stationary_anchor_refined".equals(event.optString("reason", ""));
-    }
-
-    private void upsertRefinedTrackPoint(List<TrackPoint> trackPoints, TrackPoint refinedPoint) {
-        for (int i = trackPoints.size() - 1; i >= 0; i--) {
-            if (trackPoints.get(i).trackPointId == refinedPoint.trackPointId) {
-                trackPoints.set(i, refinedPoint);
-                return;
+    private boolean hasTrackPointId(List<TrackPoint> trackPoints, long trackPointId) {
+        for (TrackPoint trackPoint : trackPoints) {
+            if (trackPoint.trackPointId == trackPointId) {
+                return true;
             }
         }
-        trackPoints.add(refinedPoint);
+        return false;
     }
 
     public static class AscentInputs {

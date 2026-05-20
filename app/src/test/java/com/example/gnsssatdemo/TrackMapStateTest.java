@@ -17,7 +17,7 @@ public class TrackMapStateTest {
         List<TrackPoint> points = Arrays.asList(
                 point(1L, 29.0, 106.0, "anchor", "first_fix_good", false, 0f),
                 point(2L, 29.0002, 106.0, "accept", "moving_good_fix", false, 0f),
-                point(3L, 29.0004, 106.0, "weak", "weak_signal_stage1", false, 0f));
+                point(3L, 29.0004, 106.0, "weak", "weak_signal_stage2", false, 0f));
 
         TrackMapState state = TrackMapState.build(points, new TrackMapState.Fallback());
 
@@ -43,7 +43,7 @@ public class TrackMapStateTest {
         fallback.foregroundTotalAscentMeters = 9.0;
 
         TrackMapState state = TrackMapState.build(Arrays.asList(
-                point(1L, 29.0, 106.0, "weak", "weak_signal_stage1", false, 0f)), fallback);
+                point(1L, 29.0, 106.0, "weak", "weak_signal_stage2", false, 0f)), fallback);
 
         assertEquals(29.5, state.currentPoint.latitude, 0.0);
         assertEquals(106.5, state.currentPoint.longitude, 0.0);
@@ -58,18 +58,18 @@ public class TrackMapStateTest {
         TrackMapState state = TrackMapState.build(Arrays.asList(
                 point(1L, 29.0, 106.0, "anchor", "first_fix_good", false, 0f, 0.0),
                 point(2L, 29.0002, 106.0, "accept", "moving_good_fix", false, 0f, 10.0),
-                point(3L, 29.0004, 106.0, "transport", "transport_confirmed", false, 0f, 99.0),
-                point(4L, 29.0005, 106.0, "weak", "weak_signal_stage1", false, 0f, 99.0)),
+                point(3L, 29.0004, 106.0, "transport", "transport_suspected", false, 0f, 99.0),
+                point(4L, 29.0005, 106.0, "weak", "weak_signal_stage2", false, 0f, 99.0)),
                 new TrackMapState.Fallback());
 
         assertEquals(10.0, state.totalDistanceMeters, 0.0);
     }
 
     @Test
-    public void build_treatsStationaryAnchorRefinementAsAscentAnchor() {
+    public void build_treatsStationaryCloudAnchorAsAscentAnchor() {
         TrackMapState state = TrackMapState.build(Arrays.asList(
                 altitudePoint(1L, 29.0, 100.0, "accept", "moving_good_fix"),
-                altitudePoint(2L, 29.0001, 150.0, "anchor", "stationary_anchor_refined"),
+                altitudePoint(2L, 29.0001, 150.0, "anchor", "stationary_anchor"),
                 altitudePoint(3L, 29.0002, 151.0, "accept", "moving_good_fix")),
                 new TrackMapState.Fallback());
 

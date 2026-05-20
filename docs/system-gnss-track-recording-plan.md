@@ -5,7 +5,7 @@
 当前策略版本：
 
 ```text
-stage1-gnss-track-v2-rest-state
+stage2-track-trust-v3-sampling-cloud
 ```
 
 技术债治理、AI 执行顺序、策略不变量和回放样本（replay fixture）分类见
@@ -27,9 +27,9 @@ Non-Negotiable Invariants、Change Checklist 和 Governance Phases。
 ```text
 前台服务采集 GPS_PROVIDER
   -> RawPoint / GNSS Snapshot / diagnostic.jsonl
-  -> LocationValidator
-  -> TrackDecisionEngine
-  -> TrackPoint / session.json
+  -> SamplingEpoch / SamplingIntake
+  -> TrackTrustEngine / TrackCloudWindow
+  -> virtual-coordinate TrackPoint / session.json
   -> track.gpx / partial.gpx
   -> 历史记录与地图展示
 ```
@@ -84,7 +84,7 @@ LocationManager.GPS_PROVIDER
 - `FUSED_PROVIDER`
 - mock location
 - 缺失或异常 `elapsedRealtimeNanos` 的点
-- 明显过旧或来自未来的点
+- 早于记录起点、早于绑定 `SamplingEpoch` 起点或来自未来的点
 
 如果未来要测试系统融合定位，应作为独立数据源标记，不混入当前纯 GNSS 可信轨迹。
 
@@ -105,8 +105,6 @@ START_NOT_STICKY
 | STARTING | 1000 | 0 |
 | MOVING | 3000 | 0 |
 | SIGNAL_WEAK | 2000 | 0 |
-| REST_PROBING | 1000 | 0 |
-| REST_PAUSED | 10000 | 0 |
 | PAUSED | 10000 | 0 |
 
 关键原则：
@@ -114,8 +112,25 @@ START_NOT_STICKY
 - `minDistanceMeters` 固定为 0。
 - 不把 5m、10m 等距离过滤交给 Android 系统。
 - App 必须拿到漂移、弱信号、静止抖动和 GAP 恢复过程，才能解释为何不累计距离。
-- PAUSED 采样只由连续静止证据触发；一旦出现可信移动或其他非静止决策，采样状态回到 MOVING/SIGNAL_WEAK 等对应状态。
+- PAUSED 采样只由连续 still-motion 支持的 `stationary_anchor` 触发；单纯
+  `stationary_cloud_jitter` 不足以降频，避免慢速真实徒步被误吞成休息。
 - 每次采样切换写入 `sampling_policy` 诊断事件。
+
+采样连续性原则：
+
+- 轨迹连续性不能只看已经返回的 `Location` 点序列，还必须能解释采样请求本身是否连续。
+- 每次注册系统 `requestLocationUpdates` 时创建新的 `SamplingEpoch`，并让该次
+  `LocationListener` 捕获这个 epoch；回调进入 session 时必须携带捕获的 epoch。
+- `Location.getElapsedRealtimeNanos()` 表示定位 fix 的测量时刻；它用于点与点之间的
+  GAP、速度、segment 和点云连续性判断。
+- 采样策略周期表示 App/前台服务在何时、以什么参数持续请求系统 GNSS；它用于解释
+  GAP 是系统没有产出有效 fix、回调延迟/批量返回、策略主动降频，还是服务/系统采样中断。
+- 每个定位回调必须绑定采样发起时捕获的 `SamplingEpoch`；缺失是
+  `sampling_contract_violation`，属于 session 完整性错误。
+- callback 接收时间只能作为交付延迟诊断，不能替代 fix 测量时刻，也不能参与点云权重。
+- 每个系统 `Location` 先写完整 `raw_location` 诊断证据，再进入 `SamplingIntake`。
+- duplicate、out-of-order、epoch mismatch 等 intake 拒绝点会追加
+  `location_intake_rejected`，但不生成 decision、TrackPoint 或 cloud sample。
 
 ## 时间基准
 
@@ -128,15 +143,15 @@ START_NOT_STICKY
 | 项 | 值 |
 | --- | ---: |
 | `START_TOLERANCE_NANOS` | 1s |
-| `MAX_LOCATION_AGE_NANOS` | 30s |
 | `GAP_LINE_BREAK_NANOS` | 120s |
 
 硬拒绝时间异常：
 
-- `missing_elapsed_realtime`
+- `missing_fix_elapsed_realtime`
+- `duplicate_fix`
+- `out_of_order_fix`
 - `before_record_start`
 - `location_from_future`
-- `location_too_old`
 
 ## 数据分层
 
@@ -163,138 +178,106 @@ TrackPoint：
 
 ## 判点规则
 
-硬拒绝：
+每个系统 `Location` 必须先转为 `RawPoint` 并写入完整 `raw_location`
+诊断证据，然后才进入 `SamplingIntake`。`SamplingIntake` 做采样契约、
+时间线和基础 Location 合法性校验；被 intake 拒绝的点会追加
+`location_intake_rejected` 或 `session_integrity_error`，但不生成
+decision、TrackPoint、weak point、cloud sample、distance delta、
+moving time delta 或 segment change。
 
-- provider 不是 `GPS_PROVIDER`。
-- 缺失有效 `elapsedRealtimeNanos`。
-- 点早于记录开始容差之外。
-- 点来自未来。
-- 点过旧。
-- 经纬度非法或为 0,0。
-- 缺失精度或精度小于等于 0。
-- 精度大于 80m。
-- mock location。
-
-首点：
-
-| 条件 | 结果 | reason |
-| --- | --- | --- |
-| accuracy <= 20m | anchor | `first_fix_good` |
-| 20m < accuracy <= 30m | anchor | `first_fix_relaxed` |
-| 测试开关开启且 accuracy <= 50m | anchor | `forced_weak_first_fix` |
-| 30m 或 50m < accuracy <= 80m | weak | `weak_first_fix` |
-| accuracy > 80m | reject | `first_fix_accuracy_too_large` |
-
-移动中：
-
-- accuracy > 30m -> `weak_signal_stage1`。
-- delta time <= 0 -> `non_positive_delta_time`。
-- 两点所需速度 > 12m/s 且没有合理车辆速度证据 -> `impossible_speed`。
-- 非 GAP 下明显超过徒步范围但未达到跳点速度的持续移动 -> `transport_suspected`。
-- 距离 < `max(5m, accuracy * 1.5)` -> 静止抖动或静止保活。
-- delta time > 120s -> `gap_recovery`，但若恢复点仍在精度可解释的静止范围内，优先按静止/锚点优化处理。
-- 其他可信移动 -> `moving_good_fix`。
-
-静止噪声点级过滤：
-
-- 静止点默认不累计距离。
-- 每 30 秒允许一次 `stationary_keepalive` 诊断。
-- 更频繁的小范围漂移记为 `stationary_jitter`。
-- 该规则优先防止静止漂移累计距离；在弱信号、低速移动、拍照挪步或短距离折返场景下，可能保守少算短距离位移。
-
-### 静止锚点优化
-
-`stationary_anchor_refinement` 指在静止或近静止小范围内，把多个可信点聚成一个
-stationary cluster，并选择其中最可信的点作为代表锚点。候选评分可参考 accuracy、
-GNSS snapshot 新鲜度、used satellite count、C/N0 和前后连接是否产生异常速度。
-
-当前版本已经把静止锚点优化接入主链路，但只允许在保守条件下影响零距离锚点，
-不回补距离、不新增真实移动段：
+采样契约异常：
 
 ```text
-候选条件:
-  当前点低速或无明显移动速度
-  与上一可信 TrackPoint 的距离处在 15m 或 accuracy 可解释范围内
-  对 moving_good_fix 候选，必须有最近加速度静止证据
-
-可替换条件:
-  上一可信 TrackPoint 的 distanceDeltaMeters = 0
-  上一可信 TrackPoint 的 movingTimeDeltaSeconds = 0
-  当前点 accuracy 明显更好，或 accuracy 接近但 GNSS snapshot 更好
-
-结果:
-  更好的静止点 -> result = anchor, reason = stationary_anchor_refined
-  未改善的近距离静止漂移 -> result = reject, reason = stationary_accel_supported_jitter
+sampling_contract_violation
+sampling_epoch_mismatch
 ```
 
-实际收益：
-
-- 静止或休息时地图点位更稳定。
-- 静止簇能有一个更可解释的代表点。
-- GAP 后仍在原地的恢复点不会新建一段虚假线路。
-- REST_PAUSED / REST_PROBING 周期内的小范围漂移不污染可信距离。
-
-主要风险：
-
-- 真实徒步中的慢速移动、拍照挪步、折返、窄路绕行可能被误吞成静止。
-- 弱信号环境下 accuracy 不一定可靠，所谓“最可信点”仍可能是漂移点。
-- 需要依赖回放样本（replay fixture）和真实样本持续校验，不应继续扩大到非零距离移动点替换。
-
-边界：
-
-- 不替换已经产生非零距离或非零 moving time 的 TrackPoint。
-- 不把 GNSS snapshot 单独作为 accept/reject 输入，只用于同等 accuracy 附近的锚点择优。
-- 不修改已经累计的 `totalDistanceMeters` 和 `movingTimeSeconds`。
-
-## REST 状态机策略
-
-休息状态恢复移动时，产品口径优先防止静止漂移贡献距离。允许少算休息后
-起步的短距离，不允许把室内、休息点附近或弱 GPS 恢复过程中的漂移累计为
-徒步距离。
-
-显式 REST 状态机是休息/恢复场景的主策略，运行时对应
-`RestStateMachine`。它应遵守：
+时间线完整性异常：
 
 ```text
-MOVING:
-  连续 20-30s:
-    speed <= 0.5m/s
-    位移未超过精度可解释范围
-    加速度静止占比高
-  -> REST_CANDIDATE
-
-REST_CANDIDATE:
-  收集 2-3 个低频/正常频率点
-  选出可信休息锚点 anchor
-  -> REST_PAUSED
-
-REST_PAUSED:
-  GPS 降频 keepalive，不完全暂停
-  不累计距离
-  加速度变化 -> REST_PROBING
-
-REST_PROBING:
-  GPS 立即提频
-  前 1-2 个点只用于确认，不累计距离
-  仍在 anchor 附近 -> 更新/择优 anchor，回 REST_PAUSED
-  连续可信 moving/gap recovery 点离开 anchor，或 speed > 0.5m/s 且方向/位移合理
-    -> MOVING
+missing_fix_elapsed_realtime
+duplicate_fix
+out_of_order_fix
+before_record_start
+location_from_future
 ```
 
-距离口径：
+Location 基础合法性异常：
 
 ```text
-进入 REST：保守，需要连续时间、低速、位移小、加速度静止等组合证据
-退出 REST：响应快，但先进入 REST_PROBING
-REST_PAUSED / REST_PROBING 期间：一律不累计距离
-REST_PROBING 点：只用于确认移动或更新休息锚点，默认不回补距离
-确认 MOVING：需要连续可信定位证据，从确认点开始累计，不回补 probing 点
-GPS：降频 keepalive，不完全暂停
+provider_not_gps
+mock_location
+invalid_coordinate
+invalid_accuracy
+accuracy_too_large
 ```
 
-这意味着从休息点起步时可能少算几米，但该误差比休息漂移多算几十米更可
-接受，也更容易向用户解释。诊断应记录 `REST_PROBING`、未累计原因和
-恢复 `MOVING` 的确认原因，便于复盘。
+合法 `RawPoint` 进入 `TrackTrustEngine` 后按点云窗口判定：
+
+| Cloud | 输出口径 |
+| --- | --- |
+| START_CLOUD | `anchor / first_fix_good` 或 `anchor / first_fix_relaxed`，0 delta |
+| MOVING_CLOUD | 稳定后 `accept / moving_good_fix`，累计距离和运动时间 |
+| STATIONARY_CLOUD | 稳定且有近期 still-motion 支持时为 `anchor / stationary_anchor`；否则为 `reject / stationary_cloud_jitter` |
+| RECOVERY_CLOUD | 未稳定为 `weak / recovery_cloud_pending`，稳定后 `accept / gap_recovery`，新 segment，0 delta |
+| WEAK_CLOUD | `weak / weak_signal_stage2`，不进 GPX，不累计 |
+| TRANSPORT_CLOUD | `reject / transport_suspected`，不进入徒步距离 |
+
+点云稳定条件至少同时满足：
+
+```text
+sampleCount >= minSamples
+weightSum >= minCloudWeight
+weightedRadius <= radiusThreshold
+weightedCenter exists
+```
+
+`stationary_anchor` 还必须满足近期 motion summary 显示设备静止。仅凭
+GNSS 小位移或点云稳定不能写入可信静止 anchor，也不能触发 PAUSED；
+这用于保护慢速行走、拍照挪步和短距离折返不被零 delta anchor 吃掉距离。
+
+当前默认 `minCloudWeight`：
+
+```text
+START_CLOUD: 0.03
+MOVING_CLOUD: 0.03
+STATIONARY_CLOUD: 0.08
+RECOVERY_CLOUD: 0.08
+```
+
+点云样本权重：
+
+```text
+weight = accuracyWeight * gnssWeight * motionWeight * temporalWeight * spatialWeight
+```
+
+`temporalWeight` 只用 cloud 内合法 fix 的测量时间差：
+
+```text
+sampleAgeInCloudSeconds =
+  (latestFixElapsedRealtimeNanosInCloud - sample.fixElapsedRealtimeNanos) / 1e9
+```
+
+TrackPoint 坐标直接使用点云局部平面加权中心，允许是虚拟经纬度；`representativeRawPointId` 只用于诊断回溯，不决定 GPX 坐标。
+
+## GAP / transport / paused 恢复策略
+
+GAP、transport 和 paused 后不允许直接把第一个点当作连续移动点，也不允许跨边界混合点云。边界后的合法样本必须进入 `RECOVERY_CLOUD`：
+
+```text
+RECOVERY_CLOUD pending:
+  样本不足或半径不稳定 -> weak / recovery_cloud_pending
+
+RECOVERY_CLOUD stable:
+  输出加权中心 -> accept / gap_recovery
+  startsNewSegment = true
+  distanceDeltaMeters = 0
+  movingTimeDeltaSeconds = 0
+```
+
+这会少算恢复起步时的极短距离，但能避免把 GAP 后串线回调、交通工具残留点或原地漂移误算进徒步距离。
+
+v3 不按 callback age 对合法 fix 做硬拒绝。系统 `Location` 的归因由注册请求时捕获的 `SamplingEpoch` 负责；`callbackReceivedElapsedRealtimeNanos` 和 `callbackDelayNanos` 只用于诊断回调延迟，不作为判点硬门槛，也不能替代 fix 自身的 `elapsedRealtimeNanos` 参与 GAP、速度或 segment 计算。
 
 ## GAP 与连续轨迹
 
@@ -303,12 +286,12 @@ GAP 的产品口径：
 ```text
 最终轨迹线保持连续
 GAP 两端直线不计入可信距离
-恢复点进入 TrackPoint；若仍属于静止锚点优化，则替换原零距离 anchor
-移动恢复点标记 decisionReason = gap_recovery
+恢复点进入 TrackPoint；若恢复点云未稳定则等待，不立即建立新段
+恢复点云稳定后标记 decisionReason = gap_recovery
 恢复点 distanceDeltaMeters = 0
 恢复点 movingTimeDeltaSeconds = 0
-移动恢复时内部 segmentId 增加
-移动恢复时 session gapCount 增加
+恢复点云稳定时内部 segmentId 增加
+恢复点云稳定时 session gapCount 增加
 ```
 
 也就是说，`segmentId` 是诊断和统计语义，不等同于地图视觉断开。
@@ -329,14 +312,13 @@ GAP 两端直线不计入可信距离
 
 transport mode 中:
   RawPoint 继续记录
-  decisionReason = transport_confirmed
-  不生成可信 TrackPoint
+  非恢复阶段不生成可信 TrackPoint
   不累计 totalDistanceMeters
   地图使用红色轨迹线连接交通工具混入段
 
 恢复到稳定徒步速度后:
   decisionResult = accept
-  decisionReason = transport_recovery
+  decisionReason = gap_recovery
   当前点需满足普通可信点精度门槛
   distanceDeltaMeters = 0
   movingTimeDeltaSeconds = 0
@@ -344,10 +326,10 @@ transport mode 中:
   最终 GPX 仍保持连续线
 ```
 
-`transport_recovery` 和 `gap_recovery` 的区别：
+`gap_recovery` 和 `gap_recovery` 的区别：
 
 - `gap_recovery` 表示中间没有足够定位证据。
-- `transport_recovery` 表示中间有移动证据，但判断不是徒步。
+- `gap_recovery` 表示中间有移动证据，但判断不是徒步。
 
 当前交通工具判断仍是第一阶段启发式：速度明显超过徒步范围时才拦截。非常慢的车、拥堵路段或和徒步速度接近的移动，仍可能需要通过真实样本报告人工复核。
 
@@ -469,7 +451,7 @@ transport mode 中:
 - `gradle runReplay` 通过。
 - GAP 回放样本（fixture）产生 `gap_recovery`。
 - GAP 恢复点 delta 为 0。
-- 交通工具回放样本（fixture）产生 `transport_suspected` / `transport_confirmed` / `transport_recovery`。
+- 交通工具回放样本（fixture）产生 `transport_suspected` / `transport_suspected` / `gap_recovery`。
 - GPX 保持连续可信轨迹。
 
 构建与真机：
@@ -623,9 +605,9 @@ GNSS 爬升计算口径：
 
 ```text
 只在可信 moving_good_fix 段内累计 GNSS 爬升
-first_fix_good / first_fix_relaxed / forced_weak_first_fix 只设海拔 anchor
-gap_recovery / transport_recovery / rest_moving_recovery / stationary_anchor_refined 只重置海拔 anchor
-weak / transport / stationary / REST_PAUSED / REST_PROBING / reject 不参与爬升
+first_fix_good / first_fix_relaxed / first_fix_relaxed 只设海拔 anchor
+gap_recovery / gap_recovery / gap_recovery / stationary_anchor 只重置海拔 anchor
+weak / transport / stationary / recovery pending / reject 不参与爬升
 
 使用滤波后的 altitude，不直接累计原始 altitude
 使用趋势确认，不按单点正差直接累计
@@ -662,14 +644,14 @@ BAROMETER 爬升计算口径：
 
 仍可使用:
   weak GNSS 场景下的 pressure_sample
-  stationary_keepalive / stationary_jitter 附近的 pressure_sample
+  stationary_anchor / stationary_cloud_jitter 附近的 pressure_sample
   低速、短水平距离但垂直变化稳定的 pressure_sample
 
 后续活动归因版本:
   在 BAROMETER 设备上升之外新增或派生 hikingAscent
-  transport_suspected / transport_confirmed 期间暂停徒步爬升累计
+  transport_suspected / transport_suspected 期间暂停徒步爬升累计
   GNSS 决策进入/离开 transport mode 时重置徒步爬升 anchor
-  gap_recovery / transport_recovery / rest_moving_recovery 时重置徒步爬升 anchor
+  gap_recovery / gap_recovery / gap_recovery 时重置徒步爬升 anchor
   设备静止锚点被重估时，只重置徒步爬升趋势，不把跨锚点高度差计入徒步爬升
 ```
 
@@ -805,7 +787,7 @@ BarometerElevationSample:
   pressureHpa
   rawBarometerAltitudeMeters
   sensorAccuracy
-  motion/transport/rest state snapshot  // 仅用于门控与 anchor，不作为定位点海拔
+  motion/transport/paused state snapshot  // 仅用于门控与 anchor，不作为定位点海拔
 ```
 
 每条 ascent engine 独立状态：
@@ -879,7 +861,7 @@ source == DEM:
 filteredAltitude =
   alpha * currentAltitude + (1 - alpha) * previousFilteredAltitude
 
-GNSS source 发生切换、REST/GAP/transport recovery 重置时:
+GNSS source 发生切换、paused/GAP/transport recovery 重置时:
   重置 filteredAltitude/baseAltitude/peakAltitude
   不跨源或跨恢复点延续爬升趋势
 
@@ -940,10 +922,10 @@ BAROMETER 后续 hikingAscent 活动归因流程会额外读取 stateSnapshot，
 ```text
 first_fix_good
 first_fix_relaxed
-forced_weak_first_fix
+first_fix_relaxed
 gap_recovery
-transport_recovery
-rest_moving_recovery
+gap_recovery
+gap_recovery
 ```
 
 趋势确认算法：
@@ -1006,7 +988,7 @@ abs(verticalSpeed) > 2.0m/s 的高度变化不计入徒步爬升
 GNSS horizontalDistance < 5m 时不累计 GNSS 海拔变化
 GNSS verticalAccuracy > 12m 时不累计爬升
 GNSS horizontal accuracy > 30m 时不累计爬升
-不跨 REST / GAP / transport recovery 累计爬升
+不跨 paused / GAP / transport recovery 累计爬升
 ```
 
 信息栏展示：

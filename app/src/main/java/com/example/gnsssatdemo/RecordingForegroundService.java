@@ -27,6 +27,7 @@ import android.os.Looper;
 import android.os.SystemClock;
 
 import com.example.gnsssatdemo.track.engine.BasicTrackSession;
+import com.example.gnsssatdemo.track.engine.SamplingEpoch;
 import com.example.gnsssatdemo.track.engine.TrackAscentCalculator;
 import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
 import com.example.gnsssatdemo.track.model.MotionSummary;
@@ -49,7 +50,6 @@ public class RecordingForegroundService extends Service {
             "com.example.gnsssatdemo.action.FOREGROUND_RECORDING_STATUS";
     public static final String ACTION_QUERY_STATUS =
             "com.example.gnsssatdemo.action.QUERY_FOREGROUND_RECORDING_STATUS";
-    public static final String EXTRA_FORCE_WEAK_FIRST_FIX = "forceWeakFirstFix";
     public static final String EXTRA_ACTIVE = "active";
     public static final String EXTRA_FINISHED = "finished";
     public static final String EXTRA_SESSION_ID = "sessionId";
@@ -85,7 +85,7 @@ public class RecordingForegroundService extends Service {
     public static final String EXTRA_RAW_BAROMETER_ALTITUDE_METERS =
             "rawBarometerAltitudeMeters";
 
-    private static final String CHANNEL_ID = "gnss_recording_visible_v2";
+    private static final String CHANNEL_ID = "gnss_recording_visible_v3";
     private static final int NOTIFICATION_ID = 42;
     private static final long NO_LOCATION_TIMEOUT_MILLIS = 30_000L;
     private static final long STARTING_INTERVAL_MILLIS = 1_000L;
@@ -94,8 +94,6 @@ public class RecordingForegroundService extends Service {
     private static final float MOVING_DISTANCE_METERS = 0f;
     private static final long PAUSED_INTERVAL_MILLIS = 10_000L;
     private static final float PAUSED_DISTANCE_METERS = 0f;
-    private static final long REST_PROBING_INTERVAL_MILLIS = 1_000L;
-    private static final float REST_PROBING_DISTANCE_METERS = 0f;
     private static final long SIGNAL_WEAK_INTERVAL_MILLIS = 2_000L;
     private static final float SIGNAL_WEAK_DISTANCE_METERS = 0f;
 
@@ -116,6 +114,7 @@ public class RecordingForegroundService extends Service {
     private boolean pressureSensorRegistered;
     private boolean stopRequested;
     private SamplingPolicy currentSamplingPolicy;
+    private LocationListener activeLocationListener;
     private long lastPressureSampleElapsedRealtimeNanos;
     private static final long PRESSURE_SAMPLE_MIN_INTERVAL_NANOS = 1_000_000_000L;
     private final RecordingSamplingState samplingState = new RecordingSamplingState();
@@ -198,27 +197,6 @@ public class RecordingForegroundService extends Service {
         }
     };
 
-    private final LocationListener locationListener = new LocationListener() {
-        @Override
-        public void onLocationChanged(Location location) {
-            lastLocation = location;
-            lastLocationReceivedElapsedRealtimeMillis = SystemClock.elapsedRealtime();
-            noLocationTimeoutLogged = false;
-            if (trackSession != null) {
-                trackSession.onLocation(location);
-                samplingState.onDecisionReason(trackSession.getLastDecisionReason());
-                String statusText = "TrackPoint " + trackSession.getTrackPointCount()
-                        + " / RawPoint " + trackSession.getRawPointCount()
-                        + " / " + oneDecimal(trackSession.getTotalDistanceMeters()) + "m"
-                        + " / " + samplingPolicyLabel();
-                updateNotification(statusText);
-                sendStatus(statusText);
-            }
-            scheduleNoLocationTimeout();
-            updateLocationRequestForCurrentPolicy(false);
-        }
-    };
-
     private final GnssStatus.Callback gnssStatusCallback = new GnssStatus.Callback() {
         @Override
         public void onSatelliteStatusChanged(GnssStatus status) {
@@ -259,10 +237,8 @@ public class RecordingForegroundService extends Service {
             return START_NOT_STICKY;
         }
 
-        boolean forceWeakFirstFix = intent != null
-                && intent.getBooleanExtra(EXTRA_FORCE_WEAK_FIRST_FIX, false);
         startForeground(NOTIFICATION_ID, buildNotification("正在启动真实徒步记录"));
-        startRecording(forceWeakFirstFix);
+        startRecording();
         return START_NOT_STICKY;
     }
 
@@ -288,7 +264,7 @@ public class RecordingForegroundService extends Service {
         return null;
     }
 
-    private void startRecording(boolean forceWeakFirstFix) {
+    private void startRecording() {
         stopRequested = false;
         if (trackSession != null && trackSession.isActive()) {
             updateNotification("真实徒步记录中");
@@ -304,17 +280,14 @@ public class RecordingForegroundService extends Service {
         try {
             samplingState.reset();
             motionSampler.reset();
-            trackSession.start(isGpsProviderEnabled(), true, forceWeakFirstFix, true,
-                    pressureSensor != null);
+            trackSession.start(isGpsProviderEnabled(), true, true, pressureSensor != null);
             startMotionCallbacks();
             startPressureCallbacks();
             startLocationCallbacks();
             lastLocationReceivedElapsedRealtimeMillis = SystemClock.elapsedRealtime();
             noLocationTimeoutLogged = false;
             scheduleNoLocationTimeout();
-            String statusText = forceWeakFirstFix
-                    ? "记录中，测试模式允许弱首点"
-                    : "记录中，等待首个可信 GNSS 点";
+            String statusText = "记录中，等待首个可信 GNSS 点云";
             updateNotification(statusText);
             sendStatus(statusText);
         } catch (IOException | JSONException e) {
@@ -366,8 +339,8 @@ public class RecordingForegroundService extends Service {
             return;
         }
         try {
-            if (listening) {
-                locationManager.removeUpdates(locationListener);
+            if (listening && activeLocationListener != null) {
+                locationManager.removeUpdates(activeLocationListener);
             }
             if (gnssStatusRegistered) {
                 locationManager.unregisterGnssStatusCallback(gnssStatusCallback);
@@ -378,6 +351,7 @@ public class RecordingForegroundService extends Service {
         listening = false;
         gnssStatusRegistered = false;
         currentSamplingPolicy = null;
+        activeLocationListener = null;
     }
 
     private void startMotionCallbacks() {
@@ -425,23 +399,52 @@ public class RecordingForegroundService extends Service {
             return;
         }
         try {
-            if (listening) {
-                locationManager.removeUpdates(locationListener);
+            if (listening && activeLocationListener != null) {
+                locationManager.removeUpdates(activeLocationListener);
             }
-            requestGpsLocationUpdates(nextPolicy.intervalMillis, nextPolicy.distanceMeters);
+            if (trackSession == null) {
+                return;
+            }
+            SamplingEpoch epoch = trackSession.onSamplingPolicyChanged(nextPolicy.state,
+                            nextPolicy.intervalMillis, nextPolicy.distanceMeters);
+            LocationListener listener = locationListenerForEpoch(epoch);
+            requestGpsLocationUpdates(nextPolicy.intervalMillis, nextPolicy.distanceMeters,
+                    listener);
             listening = true;
             currentSamplingPolicy = nextPolicy;
-            if (trackSession != null) {
-                trackSession.onSamplingPolicyChanged(nextPolicy.state,
-                        nextPolicy.intervalMillis, nextPolicy.distanceMeters);
-            }
-        } catch (RuntimeException e) {
+            activeLocationListener = listener;
+        } catch (IOException | JSONException | RuntimeException e) {
             updateNotification("GPS 采样策略切换失败: " + e.getMessage());
             sendStatus("GPS 采样策略切换失败: " + e.getMessage());
         }
     }
 
-    private void requestGpsLocationUpdates(long intervalMillis, float distanceMeters) {
+    private LocationListener locationListenerForEpoch(
+            final SamplingEpoch epoch) {
+        return new LocationListener() {
+            @Override
+            public void onLocationChanged(Location location) {
+                lastLocation = location;
+                lastLocationReceivedElapsedRealtimeMillis = SystemClock.elapsedRealtime();
+                noLocationTimeoutLogged = false;
+                if (trackSession != null) {
+                    trackSession.onLocation(location, epoch);
+                    samplingState.onDecisionReason(trackSession.getLastDecisionReason());
+                    String statusText = "TrackPoint " + trackSession.getTrackPointCount()
+                            + " / RawPoint " + trackSession.getRawPointCount()
+                            + " / " + oneDecimal(trackSession.getTotalDistanceMeters()) + "m"
+                            + " / " + samplingPolicyLabel();
+                    updateNotification(statusText);
+                    sendStatus(statusText);
+                }
+                scheduleNoLocationTimeout();
+                updateLocationRequestForCurrentPolicy(false);
+            }
+        };
+    }
+
+    private void requestGpsLocationUpdates(long intervalMillis, float distanceMeters,
+                                           LocationListener listener) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             LocationRequest request = new LocationRequest.Builder(intervalMillis)
                     .setMinUpdateIntervalMillis(intervalMillis)
@@ -449,11 +452,11 @@ public class RecordingForegroundService extends Service {
                     .setQuality(LocationRequest.QUALITY_HIGH_ACCURACY)
                     .build();
             locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, request,
-                    getMainExecutor(), locationListener);
+                    getMainExecutor(), listener);
             return;
         }
         locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, intervalMillis,
-                distanceMeters, locationListener, Looper.getMainLooper());
+                distanceMeters, listener, Looper.getMainLooper());
     }
 
     private SamplingPolicy chooseSamplingPolicy() {
@@ -469,14 +472,6 @@ public class RecordingForegroundService extends Service {
             return new SamplingPolicy("STARTING", STARTING_INTERVAL_MILLIS,
                     STARTING_DISTANCE_METERS);
         }
-        if (trackSession.isRestProbing()) {
-            return new SamplingPolicy("REST_PROBING", REST_PROBING_INTERVAL_MILLIS,
-                    REST_PROBING_DISTANCE_METERS);
-        }
-        if (trackSession.isRestPaused()) {
-            return new SamplingPolicy("REST_PAUSED", PAUSED_INTERVAL_MILLIS,
-                    PAUSED_DISTANCE_METERS);
-        }
         if (samplingState.shouldUsePausedPolicy()) {
             return new SamplingPolicy("PAUSED", PAUSED_INTERVAL_MILLIS,
                     PAUSED_DISTANCE_METERS);
@@ -487,12 +482,11 @@ public class RecordingForegroundService extends Service {
 
     private boolean isWeakSignalReason(String reason) {
         return "accuracy_too_large".equals(reason)
-                || "first_fix_accuracy_too_large".equals(reason)
-                || "weak_first_fix".equals(reason)
-                || "weak_signal_stage1".equals(reason)
+                || "weak_signal_stage2".equals(reason)
+                || "moving_cloud_unstable".equals(reason)
+                || "recovery_cloud_pending".equals(reason)
                 || "invalid_accuracy".equals(reason)
-                || "location_too_old".equals(reason)
-                || "impossible_speed".equals(reason);
+                || "sampling_epoch_mismatch".equals(reason);
     }
 
     private String samplingPolicyLabel() {

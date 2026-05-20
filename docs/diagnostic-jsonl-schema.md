@@ -82,19 +82,14 @@ Phase 6 diagnostic fields:
 
 ## Compatibility Rules
 
-- Treat Phase 6 fields as optional when reading old logs.
+- v3 diagnostics are the active schema. Old session logs are historical artifacts, not a compatibility target for new strategy behavior.
 - Do not fail manifest scanning because a recognized event has extra fields.
-- Do not infer trusted distance, moving time, segment id, or GPX output from
-  `gnss_snapshot`.
-- Keep field names in `GnssSnapshotDiagnosticFields` aligned with this document.
+- Do not infer trusted distance, moving time, segment id, or GPX output from `gnss_snapshot`.
+- Keep field names in diagnostic writers aligned with this document.
 
 ## `motion_summary`
 
-Motion summary events explain whether the device was close to still near
-stationary decisions and rest-anchor refinement decisions. Starting with the
-rest-anchor refinement phase, recent still summaries may suppress a nearby
-`moving_good_fix` from becoming a new trusted track point. Non-still summaries
-are evidence absence only; they must not by themselves prove user movement.
+Motion summary events are optional evidence for cloud motion weighting. They can support STATIONARY_CLOUD, MOVING_CLOUD, and RECOVERY_CLOUD consistency, but they do not by themselves prove user movement.
 
 | Field | Type | Notes |
 | --- | --- | --- |
@@ -109,21 +104,41 @@ are evidence absence only; they must not by themselves prove user movement.
 
 Compatibility rules:
 
-- Treat `motion_summary` as optional when reading old logs.
-- `motion_summary` is runtime evidence for the REST state machine and replay.
-  Sample reports may count these events, but must not derive an acceptance
-  metric from legacy stationary-decision correlation.
+- Treat `motion_summary` as optional evidence.
+- Sample reports may count these events, but trusted distance still comes only from Track Trust decisions.
 
 ## `raw_location`
 
 Raw location events preserve Android `Location` fields used by replay and
 post-run analysis. Optional fields must be tolerated when reading older logs.
 
+Sampling continuity rule:
+
+- `elapsedRealtimeNanos` belongs to the Android `Location` fix measurement time
+  and remains the point-to-point continuity clock for GAP, speed, and segment
+  decisions.
+- `raw_location` must be attributable to the `SamplingEpoch` captured by the
+  `LocationListener` registered for that system request. Missing attribution is
+  a sampling contract violation.
+- `samplingEpochId`, `samplingState`, `requestedMinTimeMs`,
+  `requestedMinDistanceMeters`, `samplingEpochStartedElapsedRealtimeNanos`,
+  `callbackReceivedElapsedRealtimeNanos`, and `callbackDelayNanos` explain
+  App-side GNSS requests and delivery delay. They must not replace the fix
+  measurement timestamp.
+- Track Trust v3 does not hard-reject a fix by callback age. Sampling
+  attribution is enforced by `SamplingEpoch`; callback delay is diagnostic
+  evidence only.
+
 | Field | Type | Notes |
 | --- | --- | --- |
 | `accuracy` | float/null | Horizontal accuracy in meters when `Location.hasAccuracy()` is true. |
 | `altitude` | double/null | GNSS altitude when `Location.hasAltitude()` is true. |
 | `verticalAccuracy` | float/null | Vertical accuracy in meters when Android O+ reports `Location.hasVerticalAccuracy()`. Required for GNSS ascent accumulation. |
+| `samplingEpochId` | long | Sampling request epoch captured by the callback owner. |
+| `samplingState` | string | Sampling policy state for the captured epoch. |
+| `samplingEpochStartedElapsedRealtimeNanos` | long | App time when this sampling request was registered. |
+| `callbackReceivedElapsedRealtimeNanos` | long | App time when the callback was delivered. Diagnostic only. |
+| `callbackDelayNanos` | long | Non-negative delivery delay estimate. Diagnostic only; not used as cloud weight or as a hard callback-age gate. |
 
 ## `pressure_sample` and `pressure_summary`
 
@@ -209,19 +224,32 @@ history; ascent remains based on relative BAROMETER changes.
 | `horizontalAccuracyMeters` | float | GNSS horizontal accuracy for GNSS-sourced calibration. |
 | `pressureSampleElapsedRealtimeNanos` | long | Pressure sample timestamp used by the TrackPoint. |
 
-## Stationary and REST Decision Reasons
-
-These reasons are emitted when rest-anchor refinement or the explicit REST state
-machine keeps a point out of distance accumulation, or writes a zero-distance
-movement recovery anchor:
+## Track Trust v3 Decision Reasons
 
 | Reason | Result | Notes |
 | --- | --- | --- |
-| `stationary_anchor_refined` | `anchor` | The current raw point had better rest-anchor quality and replaced the previous zero-distance anchor instead of adding a line segment. |
-| `stationary_accel_supported_jitter` | `reject` | The current raw point stayed near the rest anchor but did not improve anchor quality, so it was discarded as stationary drift. |
-| `rest_candidate` | `reject` | REST candidate evidence is being collected; the point is not counted as distance. |
-| `rest_paused_keepalive` | `reject` | REST_PAUSED GPS keepalive near the anchor; the point may refine the anchor but does not count distance. |
-| `rest_probing_stationary` | `reject` | REST_PROBING found the point still near the anchor, so the machine returns to REST_PAUSED without distance. |
-| `stationary_motion_blocked_recovery` | `reject` | REST_PROBING saw GPS movement, but recent still motion evidence blocked movement recovery as GPS drift. |
-| `rest_probing_confirming_moving` | `reject` | REST_PROBING is gathering movement confirmation; probing points do not backfill distance. |
-| `rest_moving_recovery` | `accept` | Consecutive REST_PROBING evidence confirmed movement. A new segment anchor is written with zero distance delta. |
+| `first_fix_good` | `anchor` | START_CLOUD accepted as the first trusted anchor with good accuracy. |
+| `first_fix_relaxed` | `anchor` | START_CLOUD accepted as the first trusted anchor under the relaxed first-fix threshold. |
+| `moving_good_fix` | `accept` | MOVING_CLOUD is stable; distance and moving time are accumulated from weighted TrackPoint coordinates. |
+| `weak_signal_stage2` | `weak` | WEAK_CLOUD has evidence but is not trusted for GPX or distance. |
+| `moving_cloud_unstable` | `weak` | MOVING_CLOUD has not met stability requirements. |
+| `recovery_cloud_pending` | `weak` | RECOVERY_CLOUD has not yet rebuilt continuity after GAP, transport, paused sampling, or epoch boundary. |
+| `gap_recovery` | `accept` | RECOVERY_CLOUD is stable; starts a new segment with zero distance and moving-time delta. |
+| `stationary_anchor` | `anchor` | STATIONARY_CLOUD weighted center is used as a zero-delta anchor only when recent motion summary supports stillness. |
+| `stationary_cloud_jitter` | `reject` | Stationary-region drift or low-displacement motion without still evidence is rejected and does not affect GPX, distance, or paused sampling. |
+| `transport_suspected` | `reject` | Vehicle-like movement is isolated from hiking distance until recovery cloud stability. |
+
+Intake rejection flow:
+
+```text
+system Location
+  -> RawPoint
+  -> raw_location
+  -> SamplingIntake
+  -> location_intake_rejected or session_integrity_error
+```
+
+Intake rejection reasons are emitted as `location_intake_rejected` or
+`session_integrity_error`, not as Track Trust decisions. The corresponding
+`raw_location` must already exist so replay and reports can inspect the full
+Location evidence even when the point never enters a cloud window.

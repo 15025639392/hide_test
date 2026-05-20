@@ -23,6 +23,14 @@ public class TrackPoint {
     public final double distanceDeltaMeters;
     public final double movingTimeDeltaSeconds;
     public final Long sourceGnssSnapshotId;
+    public final String trustGrade;
+    public final Long sourceCloudId;
+    public final Long representativeRawPointId;
+    public final String contributingRawPointIds;
+    public final boolean virtualTrackPointCoordinate;
+    public final double cloudCenterLatitude;
+    public final double cloudCenterLongitude;
+    public final double cloudWeightedRadiusMeters;
     public final boolean hasPressureSample;
     public final long pressureSampleElapsedRealtimeNanos;
     public final double pressureHpa;
@@ -88,6 +96,34 @@ public class TrackPoint {
                       Long sourceGnssSnapshotId,
                       boolean hasPressureSample, long pressureSampleElapsedRealtimeNanos,
                       double pressureHpa, double rawBarometerAltitudeMeters) {
+        this(trackPointId, sourceRawPointId, sourceDecisionId, segmentId, latitude, longitude,
+                hasAltitude, altitude, hasVerticalAccuracy, verticalAccuracyMeters,
+                accuracyMeters, hasSpeed, speedMetersPerSecond, hasBearing, bearingDegrees,
+                timeMillis, elapsedRealtimeNanos, decisionResult, decisionReason,
+                distanceDeltaMeters, movingTimeDeltaSeconds, sourceGnssSnapshotId,
+                legacyTrustGrade(decisionResult), null, null, "", false,
+                latitude, longitude, 0.0,
+                hasPressureSample, pressureSampleElapsedRealtimeNanos,
+                pressureHpa, rawBarometerAltitudeMeters);
+    }
+
+    public TrackPoint(long trackPointId, long sourceRawPointId, long sourceDecisionId,
+                      long segmentId, double latitude, double longitude,
+                      boolean hasAltitude, double altitude,
+                      boolean hasVerticalAccuracy, float verticalAccuracyMeters,
+                      float accuracyMeters,
+                      boolean hasSpeed, float speedMetersPerSecond,
+                      boolean hasBearing, float bearingDegrees,
+                      long timeMillis, long elapsedRealtimeNanos,
+                      String decisionResult, String decisionReason,
+                      double distanceDeltaMeters, double movingTimeDeltaSeconds,
+                      Long sourceGnssSnapshotId,
+                      String trustGrade, Long sourceCloudId, Long representativeRawPointId,
+                      String contributingRawPointIds, boolean virtualTrackPointCoordinate,
+                      double cloudCenterLatitude, double cloudCenterLongitude,
+                      double cloudWeightedRadiusMeters,
+                      boolean hasPressureSample, long pressureSampleElapsedRealtimeNanos,
+                      double pressureHpa, double rawBarometerAltitudeMeters) {
         this.trackPointId = trackPointId;
         this.sourceRawPointId = sourceRawPointId;
         this.sourceDecisionId = sourceDecisionId;
@@ -110,9 +146,31 @@ public class TrackPoint {
         this.distanceDeltaMeters = distanceDeltaMeters;
         this.movingTimeDeltaSeconds = movingTimeDeltaSeconds;
         this.sourceGnssSnapshotId = sourceGnssSnapshotId;
+        this.trustGrade = trustGrade == null ? legacyTrustGrade(decisionResult) : trustGrade;
+        this.sourceCloudId = sourceCloudId;
+        this.representativeRawPointId = representativeRawPointId;
+        this.contributingRawPointIds = contributingRawPointIds == null
+                ? "" : contributingRawPointIds;
+        this.virtualTrackPointCoordinate = virtualTrackPointCoordinate;
+        this.cloudCenterLatitude = cloudCenterLatitude;
+        this.cloudCenterLongitude = cloudCenterLongitude;
+        this.cloudWeightedRadiusMeters = cloudWeightedRadiusMeters;
         this.hasPressureSample = hasPressureSample;
         this.pressureSampleElapsedRealtimeNanos = pressureSampleElapsedRealtimeNanos;
         this.pressureHpa = pressureHpa;
         this.rawBarometerAltitudeMeters = rawBarometerAltitudeMeters;
+    }
+
+    private static String legacyTrustGrade(String decisionResult) {
+        if ("anchor".equals(decisionResult)) {
+            return "ANCHOR";
+        }
+        if ("accept".equals(decisionResult)) {
+            return "TRUSTED";
+        }
+        if ("weak".equals(decisionResult)) {
+            return "WEAK";
+        }
+        return "REJECT";
     }
 }

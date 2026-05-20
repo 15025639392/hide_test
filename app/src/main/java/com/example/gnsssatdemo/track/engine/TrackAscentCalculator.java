@@ -160,19 +160,14 @@ public class TrackAscentCalculator {
     }
 
     private static boolean isBarometerEligible(TrackPoint point) {
-        return !"transport_suspected".equals(point.decisionReason)
-                && !"transport_confirmed".equals(point.decisionReason)
-                && !"impossible_speed".equals(point.decisionReason);
+        return !"transport_suspected".equals(point.decisionReason);
     }
 
     private static boolean isAnchorReason(String reason) {
         return "first_fix_good".equals(reason)
                 || "first_fix_relaxed".equals(reason)
-                || "forced_weak_first_fix".equals(reason)
                 || "gap_recovery".equals(reason)
-                || "transport_recovery".equals(reason)
-                || "rest_moving_recovery".equals(reason)
-                || "stationary_anchor_refined".equals(reason);
+                || "stationary_anchor".equals(reason);
     }
 
     private static double alpha(ElevationSource source) {
