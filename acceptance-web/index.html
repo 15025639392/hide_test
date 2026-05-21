@@ -3,88 +3,99 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>气压计爬升验收台</title>
+    <title>目标函数 Diagnostic 预览</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
+    />
     <link rel="stylesheet" href="./src/styles.css" />
   </head>
   <body>
-    <main class="shell">
-      <section class="toolbar" aria-label="批次设置">
-        <div class="identity">
-          <h1>气压计爬升验收台</h1>
-          <p>多设备同路线累计爬升一致性检查</p>
-        </div>
-        <div class="upload-actions">
-          <a class="nav-link" href="./diagnostic-map.html">诊断地图</a>
-          <label class="file-drop">
-            <span>上传本批目录</span>
+    <main class="workspace">
+      <header class="topbar">
+        <section class="identity" aria-label="页面标题">
+          <h1>目标函数 Diagnostic 预览</h1>
+          <p>多个 diagnostic.jsonl -> 轨迹 / 累计爬升 / 里程 / 配速 / 运动耗时</p>
+        </section>
+        <section class="toolbar" aria-label="导入和地图操作">
+          <label class="file-button">
+            导入目录
             <input id="folderInput" type="file" webkitdirectory directory multiple />
           </label>
-          <label class="file-drop secondary">
-            <span>选择 session.json</span>
-            <input id="fileInput" type="file" accept=".json,application/json" multiple />
+          <label class="file-button secondary">
+            选择多个 diagnostic.jsonl
+            <input id="fileInput" type="file" multiple />
           </label>
-        </div>
-      </section>
+          <button id="fitBoundsButton" type="button">适配地图</button>
+          <button id="clearButton" type="button">清空</button>
+          <label class="toggle"><input id="showRaw" type="checkbox" checked /> raw</label>
+          <label class="toggle"><input id="showTrusted" type="checkbox" checked /> 可信</label>
+          <label class="toggle"><input id="showPoints" type="checkbox" checked /> 点</label>
+        </section>
+        <div id="importText" class="import-text">等待导入 diagnostic.jsonl</div>
+      </header>
 
-      <section class="import-status" aria-live="polite">
-        <span id="importText">等待导入本批数据</span>
-      </section>
+      <section class="layout">
+        <aside class="left-panel" aria-label="文件预览面板">
+          <section class="panel">
+            <div class="panel-title">
+              <h2>文件</h2>
+              <span id="datasetCountText">0 个</span>
+            </div>
+            <div class="dataset-table">
+              <div class="dataset-head">
+                <span>文件名</span>
+                <span>设备</span>
+                <span>轨迹点</span>
+                <span>里程</span>
+                <span>运动耗时</span>
+                <span>配速</span>
+                <span>累计爬升</span>
+              </div>
+              <div id="datasetRows" class="dataset-rows">
+                <p class="empty-note">导入一个或多个 diagnostic.jsonl</p>
+              </div>
+            </div>
+          </section>
 
-      <section class="summary-grid" aria-label="验收结论">
-        <article>
-          <span>结论</span>
-          <strong id="verdictText">等待数据</strong>
-        </article>
-        <article>
-          <span>中位爬升</span>
-          <strong id="medianText">-</strong>
-        </article>
-        <article>
-          <span>最大偏差</span>
-          <strong id="maxDeviationText">-</strong>
-        </article>
-        <article>
-          <span>有效 / 排除</span>
-          <strong id="countText">0 / 0</strong>
-        </article>
-      </section>
+          <section class="panel summary-panel">
+            <div class="panel-title">
+              <h2>选中文件摘要</h2>
+              <span id="selectedFileText">-</span>
+            </div>
+            <div id="sampleSummary" class="summary-list">
+              <p class="empty-note">选择文件后查看 raw、decision、GNSS、pressure、motion 摘要</p>
+            </div>
+          </section>
+        </aside>
 
-      <section class="actions" aria-label="报告操作">
-        <button id="downloadJson" type="button" disabled>导出 JSON</button>
-        <button id="downloadMarkdown" type="button" disabled>导出 Markdown</button>
-        <button id="clearData" type="button">清空</button>
-      </section>
+        <section class="map-area" aria-label="地图预览">
+          <div id="mapView" class="map-view"></div>
+          <div class="map-legend">
+            <span><i class="line raw"></i>raw 轨迹</span>
+            <span><i class="line trusted"></i>可信轨迹</span>
+            <span><i class="dot trusted"></i>anchor/accept</span>
+            <span><i class="dot weak"></i>weak</span>
+            <span><i class="dot reject"></i>reject/intake</span>
+            <span><i class="dot raw"></i>未解释 raw</span>
+          </div>
+        </section>
 
-      <section class="panel">
-        <div class="panel-header">
-          <h2>设备明细</h2>
-          <span id="ruleText">规则未选择</span>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>结论</th>
-                <th>设备</th>
-                <th>Session</th>
-                <th>来源</th>
-                <th>爬升</th>
-                <th>绝对差</th>
-                <th>相对差</th>
-                <th>样本 / 拒绝</th>
-                <th>说明</th>
-              </tr>
-            </thead>
-            <tbody id="sessionRows">
-              <tr>
-                <td colspan="9" class="empty">上传本批目录或多个 session.json 开始验收</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <aside class="right-panel" aria-label="点详情面板">
+          <section class="panel details-panel">
+            <div class="panel-title">
+              <h2>点详情</h2>
+              <span id="selectedPointText">-</span>
+            </div>
+            <div id="pointDetails" class="point-details">
+              <p class="empty-note">点击地图上的点查看 raw、decision/intake、GNSS 和上一可信点关系</p>
+            </div>
+          </section>
+        </aside>
       </section>
     </main>
 
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script type="module" src="./src/main.mjs"></script>
   </body>
 </html>

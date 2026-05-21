@@ -1,11 +1,12 @@
-# 轨迹验收与诊断 Web
+# Diagnostic 目标函数预览 Web
 
-本项目是一个本地 PC 分析工具，包含：
+这是一个本地 PC 人工核验工具，用于导入多个 `diagnostic.jsonl`，在全屏地图上叠加预览：
 
-- 气压计爬升验收页：导入多台设备导出的 session 目录，自动计算同一路线、
-  同一时间下的 BAROMETER 累计爬升一致性。
-- 诊断日志地图页：导入 `diagnostic.jsonl`，可视化 raw 点、可信轨迹、
-  reject / weak 点、decision reason 分布和时间线明细。
+```text
+采样样本数据 -> 合理的轨迹 / 累计爬升 / 里程 / 配速 / 运动耗时
+```
+
+第一版只做预览和人工核验，不修复、不编辑、不回写 `diagnostic.jsonl`。
 
 ## 运行
 
@@ -20,71 +21,26 @@ npm run dev
 http://localhost:4173
 ```
 
-诊断地图页：
+## 输入
+
+- 可以选择多个 `diagnostic.jsonl`。
+- 可以上传 session 目录，页面会自动收集目录内所有路径末尾为 `diagnostic.jsonl` 的文件。
+
+## 页面能力
+
+- MapLibre GL 全屏地图。
+- Google 卫星瓦片源：
 
 ```text
-http://localhost:4173/diagnostic-map.html
+https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}
 ```
 
-## 爬升验收输入
-
-第一版读取目录内所有路径末尾为 `session.json` 的文件；也可以手动选择多个
-`session.json`。文件要求至少包含：
-
-```text
-sessionId
-strategyVersion
-deviceManufacturer
-deviceBrand
-deviceModel
-deviceName
-androidSdkInt
-selectedAscentSource
-barometerTotalAscentMeters
-barometerAscentSampleCount
-barometerAscentRejectedSampleCount
-completionState
-integrityState
-```
-
-每次验收默认就是同一批次、同一路线、同一算法；页面不再要求补录这些信息。
-设备组合会根据 `deviceBrand`、`deviceManufacturer`、`deviceModel`、`deviceName`
-自动识别。
-
-## 判定
-
-- 同型号：PASS `<= 8%`，REVIEW `<= 12%`
-- 同品牌不同型号：PASS `<= 12%`，REVIEW `<= 15%`
-- 不同品牌同算法：PASS `<= 12%`，REVIEW `<= 18%`
-- 未知设备：参考 PASS `<= 12%` / REVIEW `<= 18%`，但批次最高只给 REVIEW
-
-低爬升路线优先使用绝对差：
-
-- `< 50m`: `<= 15m`
-- `50m - 100m`: `<= 20m`
-- `100m - 300m`: `<= 25m`
-
-## 诊断地图输入
-
-诊断地图页支持两种导入方式：
-
-- 上传 session 目录：优先使用路径末尾为 `diagnostic.jsonl` 的文件，找不到时尝试目录内第一个文件。
-- 选择单个诊断文件：不限制扩展名，先按 JSONL 尝试解析。
-
-地图使用 MapLibre GL 加载 Google 卫星瓦片，页面会把 `decision.rawPointId`
-回连到 `raw_location.rawPointId`，并展示：
-
-- 原始 raw 轨迹虚线。
-- 可信 `anchor` / `accept` 轨迹实线。
-- `reject`、`weak`、未决 raw 点。
-- Session、设备、策略版本、解析错误。
-- decision reason 计数和逐点时间线。
-- 逐点 GNSS 证据：关联 snapshot、stale 状态、snapshot age、used / visible、
-  `usedAvgCn0`、`top4AvgCn0`、`lowCn0VisibleCount`、`weakUsedCount`。
-- 诊断结论：weak / reject 是否缺少 GNSS 证据、stale 比例、GAP /
-  no-location、采样策略事件和 motion summary 覆盖情况。
-- 上下文解释：距上一个可信点的间隔、直线距离、推算速度、新 segment 和
-  weak / GAP / transport / stationary 相关提示。
+- 多 diagnostic 叠加显示，每个文件分配稳定颜色。
+- raw 轨迹使用细虚线，可信轨迹使用粗实线。
+- 点类型区分 `anchor / accept / weak / reject / intake_rejected / raw`。
+- 文件列表展示：文件名、设备、轨迹点数、里程、运动耗时、配速、累计爬升。
+- 选中文件后展示 raw、decision、GNSS、pressure、motion 摘要。
+- 点击地图点后展示 raw 字段、decision/intake 结果、GNSS 证据和上一可信点关系。
 
 ## 测试
 

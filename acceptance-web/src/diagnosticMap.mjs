@@ -102,6 +102,10 @@ export function isDiagnosticJsonlPath(path) {
   return /(^|\/)diagnostic\.jsonl$/i.test(String(path || ''));
 }
 
+export function isDiagnosticCandidatePath(path) {
+  return /\.jsonl$/i.test(String(path || ''));
+}
+
 export function parseDiagnosticJsonl(text, filePath = 'diagnostic.jsonl') {
   const events = [];
   const parseErrors = [];
@@ -125,6 +129,49 @@ export function parseDiagnosticJsonl(text, filePath = 'diagnostic.jsonl') {
   });
 
   return buildDiagnosticModel(events, parseErrors, filePath);
+}
+
+export function buildTargetOutput(model) {
+  const trustedTrack = model.trustedPoints;
+  const rawTrack = model.points;
+  const totalDistanceMeters = sumPoints(trustedTrack, 'distanceDeltaMeters');
+  const movingTimeSeconds = sumPoints(trustedTrack, 'movingTimeDeltaSeconds');
+  const paceSecondsPerKm = totalDistanceMeters > 0 && movingTimeSeconds > 0
+    ? movingTimeSeconds / (totalDistanceMeters / 1000)
+    : null;
+  const ascent = ascentEvidence(model.events);
+  const unexplainedRawCount = model.points.filter((point) => !point.decision).length;
+  const findings = [];
+  if (model.parseErrors.length > 0) {
+    findings.push(`解析错误 ${model.parseErrors.length} 行`);
+  }
+  if (unexplainedRawCount > 0) {
+    findings.push(`未解释 raw_location ${unexplainedRawCount} 个`);
+  }
+  if (ascent.selectedTotalAscentMeters === null) {
+    findings.push('累计爬升证据不足');
+  }
+  if (paceSecondsPerKm === null) {
+    findings.push('配速不可计算');
+  }
+
+  return {
+    trackPointCount: trustedTrack.length,
+    trustedTrack,
+    rawTrack,
+    totalDistanceMeters,
+    movingTimeSeconds,
+    paceSecondsPerKm,
+    selectedTotalAscentMeters: ascent.selectedTotalAscentMeters,
+    summaries: {
+      raw: rawSummary(model.points),
+      decision: decisionSummary(model),
+      gnss: gnssSummary(model),
+      pressure: pressureSummary(model, ascent),
+      motion: motionSummary(model)
+    },
+    findings
+  };
 }
 
 export function explainDecisionReason(result, reason) {
@@ -192,7 +239,7 @@ function buildDiagnosticModel(events, parseErrors, filePath) {
       continue;
     }
     point.decision = normalizeIntakeRejection(rejection);
-    point.kind = 'reject';
+    point.kind = 'intake_rejected';
     const snapshotId = Number(point.sourceGnssSnapshotId);
     if (gnssById.has(snapshotId)) {
       point.gnss = gnssById.get(snapshotId);
@@ -201,7 +248,7 @@ function buildDiagnosticModel(events, parseErrors, filePath) {
   enrichPoints(points, motionSummaries);
 
   const trustedPoints = points.filter((point) => TRUSTED_RESULTS.has(point.kind));
-  const rejectedPoints = points.filter((point) => point.kind === 'reject');
+  const rejectedPoints = points.filter((point) => point.kind === 'reject' || point.kind === 'intake_rejected');
   const weakPoints = points.filter((point) => point.kind === 'weak');
   const undecidedPoints = points.filter((point) => point.kind === 'raw');
   const bounds = pointBounds(points);
@@ -292,6 +339,9 @@ function normalizeDecision(event) {
     reason,
     reasonExplanation: explainDecisionReason(result, reason),
     state: String(event.state || ''),
+    trustGrade: String(event.trustGrade || ''),
+    cloudType: String(event.cloudType || ''),
+    cloudId: nullableNumber(event.cloudId),
     segmentId: nullableNumber(event.segmentId),
     trackPointId: nullableNumber(event.trackPointId),
     distanceDeltaMeters: nullableNumber(event.distanceDeltaMeters),
@@ -310,6 +360,9 @@ function normalizeIntakeRejection(event) {
     reason,
     reasonExplanation: explainDecisionReason('intake_rejected', reason),
     state: String(event.samplingState || ''),
+    trustGrade: '',
+    cloudType: '',
+    cloudId: null,
     segmentId: null,
     trackPointId: null,
     distanceDeltaMeters: 0,
@@ -833,6 +886,126 @@ function addMetric(totals, object, field, totalField) {
 }
 
 function average(total, count) {
+  return count === 0 ? 0 : total / count;
+}
+
+function sumPoints(points, field) {
+  return points.reduce((sum, point) => {
+    const value = Number(point.decision?.[field]);
+    return Number.isFinite(value) ? sum + value : sum;
+  }, 0);
+}
+
+function rawSummary(points) {
+  const accuracies = points
+    .map((point) => point.accuracy)
+    .filter((value) => Number.isFinite(value));
+  const elapsedValues = points
+    .map((point) => point.elapsedRealtimeNanos)
+    .filter((value) => Number.isFinite(value));
+  return {
+    count: points.length,
+    timeStartNanos: elapsedValues.length ? Math.min(...elapsedValues) : null,
+    timeEndNanos: elapsedValues.length ? Math.max(...elapsedValues) : null,
+    minAccuracyMeters: accuracies.length ? Math.min(...accuracies) : null,
+    maxAccuracyMeters: accuracies.length ? Math.max(...accuracies) : null,
+    unexplainedCount: points.filter((point) => !point.decision).length
+  };
+}
+
+function decisionSummary(model) {
+  const counts = {
+    decisionCount: model.summary.decisionCount,
+    anchorCount: model.points.filter((point) => point.decision?.result === 'anchor').length,
+    acceptCount: model.points.filter((point) => point.decision?.result === 'accept').length,
+    weakCount: model.summary.weakCount,
+    rejectCount: model.points.filter((point) => point.decision?.result === 'reject').length,
+    intakeRejectedCount: model.summary.intakeRejectedCount
+  };
+  return {
+    ...counts,
+    topReasons: model.reasonCounts.slice(0, 5)
+  };
+}
+
+function gnssSummary(model) {
+  const snapshots = model.events.filter((event) => event.event === 'gnss_snapshot');
+  return {
+    snapshotCount: snapshots.length,
+    linkedPointCount: model.summary.linkedGnssPointCount,
+    staleRawCount: model.summary.staleRawCount,
+    staleRawRatio: model.summary.rawCount === 0 ? 0 : model.summary.staleRawCount / model.summary.rawCount,
+    averageUsedInFixTotal: averageMetric(snapshots, 'usedInFixTotal'),
+    averageUsedAvgCn0: averageMetric(snapshots, 'usedAvgCn0'),
+    averageTop4AvgCn0: averageMetric(snapshots, 'top4AvgCn0')
+  };
+}
+
+function pressureSummary(model, ascent) {
+  const rejected = model.events.filter((event) => event.event === 'pressure_sample_rejected');
+  return {
+    pressureSampleCount: model.summary.pressureSampleCount,
+    pressureRejectedCount: rejected.length,
+    selectedTotalAscentMeters: ascent.selectedTotalAscentMeters,
+    selectedAscentSource: ascent.selectedAscentSource,
+    barometerTotalAscentMeters: ascent.barometerTotalAscentMeters,
+    gnssTotalAscentMeters: ascent.gnssTotalAscentMeters
+  };
+}
+
+function motionSummary(model) {
+  const summaries = model.events.filter((event) => event.event === 'motion_summary');
+  const stillCount = summaries.filter((event) => event.isDeviceStill === true).length;
+  const stationaryEvidenceCount = model.points.filter((point) =>
+    String(point.decision?.reason || '').startsWith('stationary_')
+      || String(point.decision?.reason || '').includes('recovery')
+  ).length;
+  return {
+    motionSummaryCount: summaries.length,
+    stillCount,
+    stillRatio: summaries.length === 0 ? 0 : stillCount / summaries.length,
+    stationaryEvidenceCount
+  };
+}
+
+function ascentEvidence(events) {
+  let selectedTotalAscentMeters = null;
+  let selectedAscentSource = '';
+  let barometerTotalAscentMeters = null;
+  let gnssTotalAscentMeters = null;
+  for (const event of events) {
+    const selected = numericField(event, 'selectedTotalAscentMeters');
+    if (selected !== null && selected >= 0) {
+      selectedTotalAscentMeters = selected;
+      selectedAscentSource = String(event.selectedAscentSource || selectedAscentSource || '');
+    }
+    const barometer = numericField(event, 'barometerTotalAscentMeters');
+    if (barometer !== null && barometer >= 0) {
+      barometerTotalAscentMeters = barometer;
+    }
+    const gnss = numericField(event, 'gnssTotalAscentMeters');
+    if (gnss !== null && gnss >= 0) {
+      gnssTotalAscentMeters = gnss;
+    }
+  }
+  return {
+    selectedTotalAscentMeters,
+    selectedAscentSource,
+    barometerTotalAscentMeters,
+    gnssTotalAscentMeters
+  };
+}
+
+function averageMetric(events, field) {
+  let total = 0;
+  let count = 0;
+  for (const event of events) {
+    const value = numericField(event, field);
+    if (value !== null) {
+      total += value;
+      count++;
+    }
+  }
   return count === 0 ? 0 : total / count;
 }
 
