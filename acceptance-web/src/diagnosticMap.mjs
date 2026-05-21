@@ -9,7 +9,7 @@ const DECISION_REASON_EXPLANATIONS = {
   first_fix_good: {
     title: '首点质量好',
     meaning: '第一颗可信定位点精度达到首点好点阈值，可作为轨迹起始 anchor。',
-    evidence: '重点看 accuracy、provider 是否为 gps、是否有新鲜 GNSS snapshot。'
+    evidence: '重点看 accuracy、归一化定位来源、是否有新鲜质量快照。'
   },
   first_fix_relaxed: {
     title: '首点放宽接受',
@@ -117,9 +117,14 @@ const DECISION_REASON_EXPLANATIONS = {
     evidence: '重点看 weightedRadius、minCloudWeight、speedPlausibilityScore 和 contributingRawPointIds。'
   },
   provider_not_gps: {
-    title: '非 GPS Provider',
-    meaning: '可信轨迹只允许 LocationManager.GPS_PROVIDER，其他 provider 必须拒绝。',
-    evidence: '重点看 raw_location.provider，不能用 network/fused 点进入可信轨迹。'
+    title: '历史非 GPS Provider',
+    meaning: '这是 Android 历史 intake 拒绝原因；Web 成品清洗已改为依赖归一化定位证据，不再硬绑定 GPS_PROVIDER。',
+    evidence: '重点看 raw_location 是否已归一化为可解释定位证据，以及 accuracy、时间和采样归因是否完整。'
+  },
+  missing_position_source: {
+    title: '缺少定位来源',
+    meaning: 'raw_location 缺少 provider/source/sourceKind/trustClass，无法确认它是已归一化的定位证据。',
+    evidence: '重点看多源接入时是否先写入可解释来源，例如 watch_gps、external_gnss、ios_core_location 或等价 sourceKind。'
   },
   missing_fix_elapsed_realtime: {
     title: '缺少 elapsedRealtime',

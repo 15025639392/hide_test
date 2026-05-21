@@ -38,7 +38,7 @@ input {
 
 .topbar {
   display: grid;
-  grid-template-columns: minmax(260px, 0.55fr) minmax(560px, 1fr) minmax(190px, 0.28fr);
+  grid-template-columns: minmax(260px, 0.55fr) minmax(420px, 1fr) minmax(190px, 0.28fr);
   gap: 14px;
   align-items: center;
   border-bottom: 1px solid var(--line);
@@ -198,10 +198,10 @@ button:disabled {
 
 .map-legend {
   position: absolute;
-  left: 20px;
+  left: 156px;
   bottom: 16px;
   display: flex;
-  max-width: calc(100% - 40px);
+  max-width: calc(100% - 176px);
   flex-wrap: wrap;
   gap: 10px;
   border: 1px solid var(--line);
@@ -211,6 +211,28 @@ button:disabled {
   color: var(--ink);
   font-size: 12px;
   font-weight: 750;
+}
+
+.map-filter-panel {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  display: grid;
+  width: 124px;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(7, 17, 19, 0.84);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28);
+}
+
+.map-filter-panel .toggle {
+  width: 100%;
+  height: 32px;
+  justify-content: flex-start;
+  padding: 0 9px;
+  background: rgba(16, 35, 39, 0.92);
 }
 
 .line,

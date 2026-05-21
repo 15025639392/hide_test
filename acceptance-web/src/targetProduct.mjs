@@ -1,4 +1,3 @@
-const GPS_PROVIDER = 'gps';
 const START_TOLERANCE_NANOS = 1_000_000_000;
 const FIRST_FIX_GOOD_ACCURACY_METERS = 20;
 const MOTION_WINDOW_NANOS = 5_000_000_000;
@@ -189,7 +188,6 @@ function rebuildLowQualityMotionSegments(product, evidence, config, engineEligib
       rawPoint.elapsedRealtimeNanos > previous.elapsedRealtimeNanos
       && rawPoint.elapsedRealtimeNanos < intervalEndNanos
       && engineEligibleRawPointIds.has(rawPoint.rawPointId)
-      && rawPoint.provider === GPS_PROVIDER
       && Number.isFinite(rawPoint.accuracy)
       && rawPoint.accuracy <= config.weakCloudAccuracyMeters
       && !nextContributingRawPointIds.has(rawPoint.rawPointId));
@@ -814,7 +812,7 @@ function syntheticEpoch(id, elapsedRealtimeNanos) {
 function acceptRawPoint(rawPoint, epoch, evidence, config) {
   if (!epoch) return reject('sampling_contract_violation');
   if (!rawPoint) return reject('invalid_location');
-  if (rawPoint.provider !== GPS_PROVIDER) return reject('provider_not_gps');
+  if (!hasPositionSource(rawPoint)) return reject('missing_position_source');
   if (rawPoint.mock) return reject('mock_location');
   if (!Number.isFinite(rawPoint.elapsedRealtimeNanos) || rawPoint.elapsedRealtimeNanos <= 0) {
     return reject('missing_fix_elapsed_realtime');
@@ -841,6 +839,17 @@ function acceptRawPoint(rawPoint, epoch, evidence, config) {
   evidence.acceptedFixKeys.add(key);
   evidence.lastAcceptedFixElapsedRealtimeNanos = rawPoint.elapsedRealtimeNanos;
   return { accepted: true, reason: '' };
+}
+
+function hasPositionSource(rawPoint) {
+  return nonEmptyString(rawPoint.provider)
+    || nonEmptyString(rawPoint.source)
+    || nonEmptyString(rawPoint.sourceKind)
+    || nonEmptyString(rawPoint.trustClass);
+}
+
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
 function reject(reason) {

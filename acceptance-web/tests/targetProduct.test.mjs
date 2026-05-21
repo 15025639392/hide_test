@@ -62,11 +62,27 @@ test('buildTargetTrackProduct uses Android createdElapsedRealtimeNanos as record
   assert.equal(product.excluded.intakeRejected[0].reason, 'before_record_start');
 });
 
-test('buildTargetTrackProduct recomputes intake instead of relying on Android intake events', () => {
+test('buildTargetTrackProduct accepts normalized non-Android position providers', () => {
   const model = parseEvidenceJsonl([
     '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
     '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
-    '{"event":"raw_location","rawPointId":1,"provider":"network","lat":30,"lng":120,"accuracy":5,"elapsedRealtimeNanos":1000000000}'
+    '{"event":"raw_location","rawPointId":1,"provider":"watch_gps","lat":30,"lng":120,"accuracy":5,"elapsedRealtimeNanos":1000000000}'
+  ].join('\n'));
+
+  const product = buildTargetTrackProduct(model, {
+    config: { collapseStationarySession: false }
+  });
+
+  assert.equal(product.track.length, 1);
+  assert.equal(product.track[0].reason, 'first_fix_good');
+  assert.equal(product.excluded.intakeRejected.length, 0);
+});
+
+test('buildTargetTrackProduct rejects raw points without a normalized position source', () => {
+  const model = parseEvidenceJsonl([
+    '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"raw_location","rawPointId":1,"lat":30,"lng":120,"accuracy":5,"elapsedRealtimeNanos":1000000000}'
   ].join('\n'));
 
   const product = buildTargetTrackProduct(model, {
@@ -75,7 +91,7 @@ test('buildTargetTrackProduct recomputes intake instead of relying on Android in
 
   assert.equal(product.track.length, 0);
   assert.equal(product.excluded.intakeRejected.length, 1);
-  assert.equal(product.excluded.intakeRejected[0].reason, 'provider_not_gps');
+  assert.equal(product.excluded.intakeRejected[0].reason, 'missing_position_source');
 });
 
 test('buildTargetTrackProduct keeps gap recovery in target track with zero delta', () => {
@@ -149,16 +165,17 @@ test('buildTargetTrackProduct keeps isolated transport-like evidence as risk ins
 
   const product = buildTargetTrackProduct(model);
 
-  assert.equal(product.track.length, 2);
+  assert.equal(product.track.length, 3);
   assert.equal(product.track[1].reason, 'transport_suspected_kept');
   assert.equal(product.track[1].cloudType, 'TRANSPORT_RISK_CLOUD');
   assert.equal(product.track[1].coordinateSource, 'raw');
   assert.equal(product.track[1].virtualCoordinate, false);
+  assert.equal(product.track[2].sourceRawPointId, 4);
+  assert.equal(product.track[2].reason, 'moving_good_fix');
   assert.equal(product.excluded.weak.length, 1);
   assert.equal(product.excluded.weak[0].reason, 'weak_signal_stage2');
   assert.equal(product.excluded.rejected.length, 0);
-  assert.equal(product.excluded.intakeRejected.length, 1);
-  assert.equal(product.excluded.intakeRejected[0].reason, 'provider_not_gps');
+  assert.equal(product.excluded.intakeRejected.length, 0);
   assert.equal(product.stats.transportCount, 1);
 });
 

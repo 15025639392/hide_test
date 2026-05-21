@@ -249,7 +249,7 @@ startedElapsedRealtimeNanos
 
 ```text
 sampling_contract_violation
-provider_not_gps
+missing_position_source
 mock_location
 missing_fix_elapsed_realtime
 before_record_start
@@ -277,6 +277,11 @@ samplingEpochId | provider | elapsedRealtimeNanos | lat | lng | accuracy
 
 Intake 拒绝点进入 `excluded.intakeRejected`。这个拒绝结果由 Web intake 复算产生，
 不依赖 Android 写入的 `location_intake_rejected`。
+
+`provider` / `source` / `sourceKind` / `trustClass` 只作为归一化定位证据的来源解释，不作为
+Android `LocationManager.GPS_PROVIDER` 硬门槛。四者至少要有一个非空，证明该
+`raw_location` 已经来自可解释定位源。手表、外接 GNSS、iOS / 鸿蒙等定位点应先归一化为
+`raw_location`，再由同一套 intake、点云和后处理规则判断。
 
 ### 5. GNSS 证据匹配
 
@@ -476,7 +481,7 @@ WEAK_CLOUD:
 候选 raw 区间:
   从前一目标点之后到后一目标点之前
   已通过 Web intake 并进入 engine
-  GPS provider
+  已归一化定位证据
   accuracy <= weakCloudAccuracyMeters
 
 触发条件:

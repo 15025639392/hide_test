@@ -55,7 +55,8 @@ test('buildTargetOutput uses recomputed target product instead of recorded decis
   assert.equal(output.summaries.raw.unexplainedCount, 0);
   assert.equal(output.summaries.decision.decisionCount, 2);
   assert.equal(output.summaries.decision.anchorCount, 1);
-  assert.equal(output.summaries.decision.intakeRejectedCount, 1);
+  assert.equal(output.summaries.decision.acceptCount, 1);
+  assert.equal(output.summaries.decision.intakeRejectedCount, 0);
   assert.ok(!output.findings.some((finding) => finding.includes('未解释 raw_location')));
 });
 
@@ -96,7 +97,8 @@ test('explainDecisionReason returns Chinese reason guidance with fallback', () =
     'motion_supported_low_speed',
     'motion_supported_low_quality',
     'continuity_rescue_low_accuracy',
-    'stationary_low_accuracy_tail'
+    'stationary_low_accuracy_tail',
+    'missing_position_source'
   ]) {
     const explanation = explainDecisionReason('accept', reason);
     assert.ok(!explanation.meaning.includes('还没有这个算法原因'));

@@ -25,7 +25,8 @@ const CLEANING_ALGORITHM_SECTIONS = [
   {
     title: 'Intake 硬门槛',
     rows: (config) => [
-      'provider 必须是 gps，mock、network、fused 不进清洗轨迹',
+      'raw_location 必须是已归一化的定位证据；provider/source 只作为来源解释，不再绑定 Android GPS_PROVIDER',
+      'provider / source / sourceKind / trustClass 至少要有一个非空，用于证明定位来源可解释',
       `accuracy 必须有效且 <= ${formatPlainNumber(config.maxIntakeAccuracyMeters)}m`,
       '拒绝 duplicate、out-of-order、早于记录开始、采样 epoch 不匹配的点',
       'intake_rejected 只保留为诊断证据，不进入点云、decision 或成品轨迹'
