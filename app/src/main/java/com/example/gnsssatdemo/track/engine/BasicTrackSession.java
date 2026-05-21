@@ -928,7 +928,7 @@ public class BasicTrackSession implements Closeable {
         File tmpFile = fileStore.trackGpxTmp(sessionDir);
         try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
                 new FileOutputStream(tmpFile), StandardCharsets.UTF_8))) {
-            writer.write(buildGpx());
+            writer.write(buildTrustedGpx());
         }
         File finalFile = fileStore.trackGpx(sessionDir);
         if (!tmpFile.renameTo(finalFile)) {
@@ -973,6 +973,10 @@ public class BasicTrackSession implements Closeable {
         if (!canExportTrustedGpx()) {
             throw new IllegalStateException(trustedGpxUnavailableReason());
         }
+        return buildTrustedGpx();
+    }
+
+    private String buildTrustedGpx() {
         return gpxExporter.buildTrustedGpx(sessionId, trackPoints,
                 stats.getTotalDistanceMeters(), stats.getMovingTimeSeconds());
     }
