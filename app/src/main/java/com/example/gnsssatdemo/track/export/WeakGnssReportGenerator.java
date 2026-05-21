@@ -126,14 +126,24 @@ public class WeakGnssReportGenerator {
                 rejectDecisionCount++;
                 rejectMetrics.add(raw, snapshot);
             }
-            if ("transport_suspected_kept".equals(decision.reason)) {
+            if (isTransportRiskReason(decision.reason)) {
                 transportMetrics.add(raw, snapshot);
             }
-            if ("gap_recovery".equals(decision.reason)
-                    || "continuity_rescue_gap_recovery".equals(decision.reason)) {
+            if (isGapRecoveryReason(decision.reason)) {
                 gapRecoveryCount++;
                 gapRecoveryElapsedTimes.add(decision.elapsedRealtimeNanos);
             }
+        }
+
+        boolean isTransportRiskReason(String reason) {
+            return "transport_suspected_kept".equals(reason)
+                    || "recovery_transport_suspected_kept".equals(reason);
+        }
+
+        boolean isGapRecoveryReason(String reason) {
+            return "gap_recovery".equals(reason)
+                    || "continuity_rescue_gap_recovery".equals(reason)
+                    || "recovery_transport_suspected_kept".equals(reason);
         }
 
         void onSessionEvent(JSONObject event) {

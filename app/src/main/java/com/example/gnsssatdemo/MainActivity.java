@@ -3421,11 +3421,13 @@ public class MainActivity extends Activity {
         }
 
         private boolean isTransportTravelPoint(TrackPoint point) {
-            return "transport_suspected_kept".equals(point.decisionReason);
+            return "transport_suspected_kept".equals(point.decisionReason)
+                    || "recovery_transport_suspected_kept".equals(point.decisionReason);
         }
 
         private boolean isTransportRecoveryPoint(TrackPoint point) {
-            return "gap_recovery".equals(point.decisionReason);
+            return "gap_recovery".equals(point.decisionReason)
+                    || "recovery_transport_suspected_kept".equals(point.decisionReason);
         }
 
         private void drawCurrentLocation(Canvas canvas) {
@@ -3870,6 +3872,7 @@ public class MainActivity extends Activity {
             case "recovery_cloud_pending":
                 return "精度不足，暂不进 GPX";
             case "transport_suspected_kept":
+            case "recovery_transport_suspected_kept":
                 return "疑似交通工具，不累计";
             case "gap_recovery":
                 return "恢复徒步，重新锚定";
@@ -3911,6 +3914,8 @@ public class MainActivity extends Activity {
                 return "静止点云中的定位漂移，不累计距离。";
             case "transport_suspected_kept":
                 return "检测到明显超过徒步范围的移动，疑似坐车或骑行，暂不进入可信徒步距离。";
+            case "recovery_transport_suspected_kept":
+                return "长 GAP 后检测到明显超过徒步范围的恢复段移动，作为新轨迹段保留并标注交通风险。";
             case "provider_not_gps":
                 return "不是 GPS_PROVIDER 输出，当前系统 GNSS 测试不接受。";
             case "missing_fix_elapsed_realtime":

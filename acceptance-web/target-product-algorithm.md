@@ -122,8 +122,12 @@ TargetTrackProduct
     "intakeRejected": []
   },
   "stats": {
+    "routeDistanceMeters": 0,
     "totalDistanceMeters": 0,
+    "suspectedDistanceMeters": 0,
     "movingTimeSeconds": 0,
+    "recordStartElapsedRealtimeNanos": 0,
+    "recordEndElapsedRealtimeNanos": 0,
     "segmentCount": 0,
     "gapCount": 0,
     "transportCount": 0,
@@ -136,6 +140,27 @@ TargetTrackProduct
   "findings": []
 }
 ```
+
+统计口径：
+
+```text
+routeDistanceMeters = 里程，清洗后的线路连线总长度，包含跨 segment 拉直线
+totalDistanceMeters = 运动里程，成品轨迹中 anchor / accept 的 distanceDeltaMeters 求和
+suspectedDistanceMeters = 疑似交通里程，成品轨迹中交通工具风险点的 distanceDeltaMeters 求和
+movingTimeSeconds = recordEndElapsedRealtimeNanos - recordStartElapsedRealtimeNanos
+```
+
+`recordStartElapsedRealtimeNanos` 优先来自 `session_metadata.recordStartElapsedRealtimeNanos`，
+否则可使用 Android 证据中的 `createdElapsedRealtimeNanos`，再缺失时退回第一个
+`raw_location.elapsedRealtimeNanos`。
+
+`recordEndElapsedRealtimeNanos` 优先来自 `session_metadata.recordEndElapsedRealtimeNanos`，
+也兼容 `completedElapsedRealtimeNanos`、`endedElapsedRealtimeNanos`、
+`stoppedElapsedRealtimeNanos`；若证据缺少显式终止时间，则退回最后一个
+`raw_location.elapsedRealtimeNanos`。
+
+单点上的 `movingTimeDeltaSeconds` 仍保留为连续性、GAP 和 segment 的解释字段，
+但聚合 `stats.movingTimeSeconds` 不再由这些单点 delta 累加得到。
 
 目标可信轨迹点建议结构：
 
@@ -543,7 +568,7 @@ raw
 
 `weak`、`reject`、`intake_rejected` 必须保留在 `excluded` 中，作为最终成品的解释证据。
 
-距离和运动时间：
+距离和点级时间增量：
 
 ```text
 first_fix_good / first_fix_relaxed:

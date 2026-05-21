@@ -51,7 +51,8 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
   const sourceFilePath = Array.isArray(modelOrEvents) ? options.sourceFilePath || '' : modelOrEvents?.filePath || '';
   const evidence = buildEvidence(events);
   const engine = createTrackTrustEngine(config);
-  const product = emptyProduct(evidence.strategyVersion, sourceFilePath);
+  const product = emptyProduct(evidence.strategyVersion, sourceFilePath,
+    evidence.recordStartElapsedRealtimeNanos, evidence.recordEndElapsedRealtimeNanos);
   product.config = config;
   product.usesDefaultConfig = isDefaultConfig(config);
   let previousTrustedTrackPoint = null;
@@ -117,8 +118,6 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
         virtualCoordinate: decision.coordinateSource !== 'raw'
       };
       product.track.push(targetPoint);
-      product.stats.totalDistanceMeters += decision.distanceDeltaMeters;
-      product.stats.movingTimeSeconds += decision.movingTimeDeltaSeconds;
       previousTrustedTrackPoint = targetPoint;
       activeStationaryAnchor = decision.reason === 'stationary_anchor'
         ? targetPoint
@@ -497,8 +496,13 @@ function trackPointAsRejected(point, reason) {
 }
 
 function recomputeProductStats(product) {
+  product.stats.routeDistanceMeters = routeDistanceMeters(product.track);
   product.stats.totalDistanceMeters = sumTrackField(product.track, 'distanceDeltaMeters');
-  product.stats.movingTimeSeconds = sumTrackField(product.track, 'movingTimeDeltaSeconds');
+  product.stats.suspectedDistanceMeters = product.track
+    .filter((point) => isTransportRiskReason(point.reason))
+    .reduce((sum, point) =>
+      sum + (Number.isFinite(point.distanceDeltaMeters) ? point.distanceDeltaMeters : 0), 0);
+  product.stats.movingTimeSeconds = recordDurationSeconds(product);
   product.stats.trustedPointCount = product.track.length;
   product.stats.weakPointCount = product.excluded.weak.length;
   product.stats.rejectedPointCount = product.excluded.rejected.length;
@@ -514,6 +518,16 @@ function recomputeProductStats(product) {
 
 function sumTrackField(track, field) {
   return track.reduce((sum, point) => sum + (Number.isFinite(point[field]) ? point[field] : 0), 0);
+}
+
+function routeDistanceMeters(track) {
+  let total = 0;
+  for (let index = 1; index < track.length; index++) {
+    const previous = track[index - 1];
+    const current = track[index];
+    total += distanceMeters(previous.lat, previous.lng, current.lat, current.lng);
+  }
+  return total;
 }
 
 export function normalizeTargetProductConfig(config = {}) {
@@ -580,8 +594,10 @@ function collapseStationarySessionIfNeeded(product, evidence) {
     contributingRawPointIds: product.track.map((point) => point.sourceRawPointId),
     virtualCoordinate: true
   }];
+  product.stats.routeDistanceMeters = 0;
   product.stats.totalDistanceMeters = 0;
-  product.stats.movingTimeSeconds = 0;
+  product.stats.suspectedDistanceMeters = 0;
+  product.stats.movingTimeSeconds = recordDurationSeconds(product);
   product.stats.segmentCount = 1;
   product.stats.gapCount = 0;
   product.stats.transportCount = 0;
@@ -669,6 +685,7 @@ function buildEvidence(events) {
   const motionSummaries = [];
   const barometerWindows = [];
   let recordStartElapsedRealtimeNanos = null;
+  let recordEndElapsedRealtimeNanos = null;
   let strategyVersion = 'stage2-track-trust-v3-sampling-cloud';
 
   for (const event of events) {
@@ -677,6 +694,11 @@ function buildEvidence(events) {
       recordStartElapsedRealtimeNanos = numberField(event, 'recordStartElapsedRealtimeNanos')
         ?? numberField(event, 'createdElapsedRealtimeNanos')
         ?? recordStartElapsedRealtimeNanos;
+      recordEndElapsedRealtimeNanos = numberField(event, 'recordEndElapsedRealtimeNanos')
+        ?? numberField(event, 'completedElapsedRealtimeNanos')
+        ?? numberField(event, 'endedElapsedRealtimeNanos')
+        ?? numberField(event, 'stoppedElapsedRealtimeNanos')
+        ?? recordEndElapsedRealtimeNanos;
     } else if (event.event === 'raw_location') {
       rawPoints.push(normalizeRawPoint(event));
     } else if (event.event === 'gnss_snapshot') {
@@ -696,6 +718,9 @@ function buildEvidence(events) {
   if (recordStartElapsedRealtimeNanos === null && rawPoints.length > 0) {
     recordStartElapsedRealtimeNanos = rawPoints[0].elapsedRealtimeNanos;
   }
+  if (recordEndElapsedRealtimeNanos === null && rawPoints.length > 0) {
+    recordEndElapsedRealtimeNanos = rawPoints.at(-1).elapsedRealtimeNanos;
+  }
   return {
     rawPoints,
     gnssById,
@@ -703,6 +728,7 @@ function buildEvidence(events) {
     motionSummaries,
     barometerWindows,
     recordStartElapsedRealtimeNanos,
+    recordEndElapsedRealtimeNanos,
     strategyVersion
   };
 }
@@ -1390,7 +1416,8 @@ function buildFindings(product, evidence) {
   return findings;
 }
 
-function emptyProduct(strategyVersion, sourceFilePath) {
+function emptyProduct(strategyVersion, sourceFilePath, recordStartElapsedRealtimeNanos,
+  recordEndElapsedRealtimeNanos) {
   return {
     strategyVersion,
     sourceFilePath,
@@ -1401,8 +1428,12 @@ function emptyProduct(strategyVersion, sourceFilePath) {
       intakeRejected: []
     },
     stats: {
+      routeDistanceMeters: 0,
       totalDistanceMeters: 0,
+      suspectedDistanceMeters: 0,
       movingTimeSeconds: 0,
+      recordStartElapsedRealtimeNanos,
+      recordEndElapsedRealtimeNanos,
       segmentCount: 0,
       gapCount: 0,
       transportCount: 0,
@@ -1414,6 +1445,14 @@ function emptyProduct(strategyVersion, sourceFilePath) {
     },
     findings: []
   };
+}
+
+function recordDurationSeconds(product) {
+  const start = product.stats.recordStartElapsedRealtimeNanos;
+  const end = product.stats.recordEndElapsedRealtimeNanos;
+  return Number.isFinite(start) && Number.isFinite(end)
+    ? Math.max(0, (end - start) / 1_000_000_000)
+    : 0;
 }
 
 function stationaryThreshold(rawPoint, config) {

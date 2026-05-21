@@ -81,11 +81,47 @@ public class TrackTrustEngineTest {
                 epoch, snapshot, Collections.emptyList(), previous);
 
         assertEquals("STATIONARY_CLOUD", first.cloudType);
-        assertEquals("accept", first.result);
-        assertEquals("continuity_rescue_stationary_jitter", first.reason);
+        assertEquals("reject", first.result);
+        assertEquals("stationary_continuity_jitter", first.reason);
         assertEquals("STATIONARY_CLOUD", second.cloudType);
-        assertEquals("accept", second.result);
-        assertEquals("continuity_rescue_stationary_jitter", second.reason);
+        assertEquals("reject", second.result);
+        assertEquals("stationary_continuity_jitter", second.reason);
+    }
+
+    @Test
+    public void stationaryCloudWithActiveMotionCanOutputLowSpeedMovement() {
+        TrackTrustEngine engine = new TrackTrustEngine();
+        TrackPoint previous = previousTrustedPoint();
+
+        TrackTrustDecision decision = engine.decide(
+                raw(2L, 29.00003, 106.0, 5_000_000_000L, 5f),
+                epoch, snapshot, Collections.singletonList(activeSummary()), previous);
+
+        assertEquals("STATIONARY_CLOUD", decision.cloudType);
+        assertEquals("accept", decision.result);
+        assertEquals("motion_supported_low_speed", decision.reason);
+        assertTrue(decision.distanceDeltaMeters >= TrackTrustEngine.MOTION_SUPPORTED_MIN_DISTANCE_METERS);
+        assertFalse(decision.virtualTrackPointCoordinate);
+    }
+
+    @Test
+    public void recoveryCloudKeepsTransportRiskWithoutCountingGapLine() {
+        TrackTrustEngine engine = new TrackTrustEngine();
+        TrackPoint previous = previousTrustedPoint();
+
+        TrackTrustDecision pending = engine.decide(
+                raw(2L, 29.010, 106.0, 200_000_000_000L, 10f),
+                epoch, snapshot, Collections.emptyList(), previous);
+        TrackTrustDecision transport = engine.decide(
+                raw(3L, 29.0107, 106.0, 202_000_000_000L, 10f),
+                epoch, snapshot, Collections.emptyList(), previous);
+
+        assertEquals("accept", pending.result);
+        assertEquals("gap_recovery", pending.reason);
+        assertEquals("accept", transport.result);
+        assertEquals("recovery_transport_suspected_kept", transport.reason);
+        assertTrue(transport.startsNewSegment);
+        assertEquals(0.0, transport.distanceDeltaMeters, 0.0);
     }
 
     @Test
@@ -169,5 +205,13 @@ public class TrackTrustEngineTest {
                 0.02, 0.03, 0.0, 0.0,
                 0.01, 0.02, 0.0, 0.0, 0.0,
                 0, 0, false);
+    }
+
+    private DeviceMotionWindow activeSummary() {
+        return new DeviceMotionWindow(1L, 2_500_000_000L, 4_500_000_000L,
+                20, 1, 20, 0,
+                0.42, 0.50, 0.0, 0.0,
+                0.14, 0.20, 0.0, 0.0, 0.0,
+                2, 0, false);
     }
 }

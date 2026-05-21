@@ -101,10 +101,7 @@ public class EvidenceTrackProductBuilder {
                             samplingEpochs, recordStartElapsedRealtimeNanos);
                     SamplingIntake.Result intake = samplingIntake.accept(rawPoint, rawEpoch,
                             recordStartElapsedRealtimeNanos, nowElapsedRealtimeNanos);
-                    boolean continuityRescued = !intake.accepted
-                            && trustEngine.canRescueContinuityPoint(rawPoint,
-                            previousTrustedTrackPoint, intake.reason);
-                    if (!intake.accepted && !continuityRescued) {
+                    if (!intake.accepted) {
                         stats.intakeRejectedCount++;
                         stats.increment("intake_rejected:" + intake.reason);
                         decisions.add(new DecisionRecord(rawPoint.rawPointId,
@@ -130,8 +127,7 @@ public class EvidenceTrackProductBuilder {
                         trackPoints.add(trackPoint);
                         previousTrustedTrackPoint = trackPoint;
                         stats.trustedDecisionCount++;
-                        if ("gap_recovery".equals(decision.reason)
-                                || "continuity_rescue_gap_recovery".equals(decision.reason)) {
+                        if (isGapRecoveryReason(decision.reason)) {
                             stats.gapRecoveryCount++;
                             if (decision.distanceDeltaMeters == 0.0) {
                                 stats.gapRecoveryZeroDeltaCount++;
@@ -203,6 +199,12 @@ public class EvidenceTrackProductBuilder {
             return null;
         }
         return snapshots.get(snapshotId);
+    }
+
+    private boolean isGapRecoveryReason(String reason) {
+        return "gap_recovery".equals(reason)
+                || "continuity_rescue_gap_recovery".equals(reason)
+                || "recovery_transport_suspected_kept".equals(reason);
     }
 
     private GnssQualitySnapshot gnssSnapshotFromEvent(JSONObject event) {

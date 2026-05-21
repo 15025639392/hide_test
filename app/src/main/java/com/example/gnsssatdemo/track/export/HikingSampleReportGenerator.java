@@ -130,7 +130,8 @@ public class HikingSampleReportGenerator {
                     + " 次，最大 " + oneDecimal(accumulator.maxNoLocationTimeoutSeconds) + " 秒");
         }
         int transportSuspectedCount = accumulator.reasonCount("accept:transport_suspected_kept");
-        int transportRecoveryCount = accumulator.reasonCount("accept:gap_recovery");
+        int transportRecoveryCount =
+                accumulator.reasonCount("accept:recovery_transport_suspected_kept");
         if (transportSuspectedCount > 0 || transportRecoveryCount > 0) {
             review.add("检测到疑似交通工具移动: kept=" + transportSuspectedCount
                     + " recovery=" + transportRecoveryCount

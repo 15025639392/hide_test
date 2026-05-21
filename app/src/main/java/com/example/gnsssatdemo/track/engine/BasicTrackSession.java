@@ -354,10 +354,7 @@ public class BasicTrackSession implements Closeable {
             SamplingIntake.Result intakeResult = samplingIntake.accept(rawPoint,
                     samplingEpoch, recordStartElapsedRealtimeNanos,
                     callbackReceivedElapsedRealtimeNanos);
-            boolean continuityRescued = !intakeResult.accepted
-                    && trustEngine.canRescueContinuityPoint(rawPoint, exportedPreviousTrackPoint,
-                    intakeResult.reason);
-            if (!intakeResult.accepted && !continuityRescued) {
+            if (!intakeResult.accepted) {
                 rememberIntakeRejected(intakeResult.reason);
                 if (intakeResult.contractViolation) {
                     samplingContractViolationCount++;
@@ -405,7 +402,7 @@ public class BasicTrackSession implements Closeable {
                 invalidateAscentResult();
                 decisionTrackPoint = trackPoint;
             }
-            if ("transport_suspected_kept".equals(decision.reason)) {
+            if (isTransportRiskReason(decision.reason)) {
                 stats.incrementTransportCount();
                 addRecentSummary("检测到疑似交通工具移动，按连续轨迹保留");
             }
@@ -815,6 +812,11 @@ public class BasicTrackSession implements Closeable {
         } else if ("out_of_order_fix".equals(reason)) {
             outOfOrderFixCount++;
         }
+    }
+
+    private boolean isTransportRiskReason(String reason) {
+        return "transport_suspected_kept".equals(reason)
+                || "recovery_transport_suspected_kept".equals(reason);
     }
 
     private int countTrustGrade(List<TrackPoint> points, String trustGrade) {

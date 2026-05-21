@@ -46,6 +46,29 @@ public class WeakGnssReportGeneratorTest {
         assertTrue(report.toText().contains("弱 GPS 诊断报告"));
     }
 
+    @Test
+    public void generate_countsRecoveryTransportAsTransportAndGapRecovery() throws Exception {
+        File dir = Files.createTempDirectory("weak-gnss-recovery-transport").toFile();
+        String evidence = ""
+                + event(1, "session_metadata", 1_000_000_000L,
+                "\"createdElapsedRealtimeNanos\":1000000000")
+                + gnss(2, 1, 1_500_000_000L, 8, 31.0, 37.0)
+                + raw(3, 1, 2_000_000_000L, 8.0, false, 1, null)
+                + raw(4, 2, 200_000_000_000L, 8.0, false, 1, null, 29.00001)
+                + raw(5, 3, 202_000_000_000L, 8.0, false, 1, null);
+        Files.write(new File(dir, "evidence.jsonl").toPath(),
+                evidence.getBytes(StandardCharsets.UTF_8));
+        writeSessionJson(dir, 5, 3, 2, 1, 1);
+
+        SessionManifest manifest = new SessionManifestReader(new SessionFileStore(dir.getParentFile()))
+                .read(dir);
+        WeakGnssReport report = new WeakGnssReportGenerator().generate(manifest);
+
+        assertEquals(1, report.transportDecisionCount);
+        assertEquals(1, report.transportDecisionWithGnssCount);
+        assertEquals(1, report.gapRecoveryCount);
+    }
+
     private String event(int seq, String eventName, long elapsedRealtimeNanos, String fields) {
         return "{\"event\":\"" + eventName + "\",\"sessionId\":\"S1\",\"eventSeq\":" + seq
                 + ",\"schemaVersion\":1,\"eventElapsedRealtimeNanos\":" + elapsedRealtimeNanos
@@ -55,9 +78,15 @@ public class WeakGnssReportGeneratorTest {
 
     private String raw(int seq, int rawPointId, long elapsedRealtimeNanos, double accuracy,
                        boolean stale, Integer snapshotId, Double speed) {
+        return raw(seq, rawPointId, elapsedRealtimeNanos, accuracy, stale, snapshotId, speed,
+                29.0 + rawPointId * 0.01);
+    }
+
+    private String raw(int seq, int rawPointId, long elapsedRealtimeNanos, double accuracy,
+                       boolean stale, Integer snapshotId, Double speed, double latitude) {
         return event(seq, "raw_location", elapsedRealtimeNanos,
                 "\"rawPointId\":" + rawPointId
-                        + ",\"provider\":\"gps\",\"lat\":" + (29.0 + rawPointId * 0.01)
+                        + ",\"provider\":\"gps\",\"lat\":" + latitude
                         + ",\"lng\":106.0"
                         + ",\"accuracy\":" + accuracy
                         + ",\"timeMillis\":1"

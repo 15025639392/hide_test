@@ -51,10 +51,21 @@ const CLEANING_ALGORITHM_SECTIONS = [
     ]
   },
   {
+    title: '统计口径',
+    rows: [
+      '里程 = 清洗后的线路连线总长度，包含跨 segment 拉直线',
+      '运动里程 = 成品轨迹中 anchor / accept 点的 distanceDeltaMeters 求和',
+      '疑似交通里程 = 成品轨迹中交通工具风险点的 distanceDeltaMeters 求和',
+      '运动耗时 = 记录终止 elapsedRealtimeNanos - 记录起始 elapsedRealtimeNanos',
+      '如果证据缺少记录终止时间，Web 退回使用最后一个 raw_location 的 elapsedRealtimeNanos',
+      '单点 movingTimeDelta 只保留为轨迹连续性解释，不再作为聚合运动耗时来源'
+    ]
+  },
+  {
     title: '低质量运动段',
     rows: (config) => [
       '孤立 moving_good_fix 如果被低质量 GNSS 静止抖动包围，不直接按普通好点解释',
-      `候选区间只允许已通过 intake 且 accuracy <= ${formatPlainNumber(config.weakCloudAccuracyMeters)}m 的 GPS raw 点参与`,
+      `候选区间只允许已通过 intake 且 accuracy <= ${formatPlainNumber(config.weakCloudAccuracyMeters)}m 的定位 raw 点参与`,
       '持续时间 >= 60s、active-motion 覆盖 >= 0.7、合理采样步距 >= 25m、移动步数 >= 8、bbox 展开 >= 25m 时，抽稀为 motion_supported_low_quality',
       '该规则不跨 raw 采样 GAP，不接受交通工具风险，不凭单点 motion 恢复'
     ]
@@ -332,9 +343,14 @@ function renderCleaningAlgorithm() {
 
 function algorithmBlock() {
   const config = state.cleaningConfig;
+  const dataset = selectedDataset();
   return `
     <section class="summary-block algorithm-block">
       <h3>清洗规则</h3>
+      <div class="algorithm-section">
+        <b>清洗结果</b>
+        ${targetProductSummaryRows(dataset).map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
+      </div>
       <div class="algorithm-section">
         <b>当前参数</b>
         <span>弱点云 ${formatPlainNumber(config.weakCloudAccuracyMeters)}m；GAP ${formatPlainNumber(config.gapSeconds)}s；静止基础距离 ${formatPlainNumber(config.stationaryDistanceMeters)}m</span>
@@ -343,6 +359,18 @@ function algorithmBlock() {
       <button id="openAlgorithmDialogButton" class="secondary-button" type="button">查看完整规则说明</button>
     </section>
   `;
+}
+
+function targetProductSummaryRows(dataset) {
+  if (!dataset) return ['导入 evidence.jsonl 后显示里程、运动里程、疑似交通里程和运动耗时'];
+  const stats = dataset.targetProduct.stats;
+  return [
+    `文件 ${dataset.fileName}`,
+    `里程 ${formatMeters(stats.routeDistanceMeters)}`,
+    `运动里程 ${formatMeters(stats.totalDistanceMeters)}`,
+    `疑似交通里程 ${formatMeters(stats.suspectedDistanceMeters)}`,
+    `运动耗时 ${formatDuration(stats.movingTimeSeconds)}`
+  ];
 }
 
 function renderAlgorithmDialog() {
@@ -426,7 +454,9 @@ function cleanedPointDetailsMarkup(dataset, point) {
       `参数 ${dataset.targetProduct.usesDefaultConfig ? '默认' : '自定义'}`,
       `静止压缩 ${dataset.targetProduct.stationarySessionCollapsed ? '已触发' : '未触发'}`,
       `目标总点数 ${dataset.targetProduct.stats.trustedPointCount}`,
-      `目标总里程 ${formatMeters(dataset.targetProduct.stats.totalDistanceMeters)}`
+      `里程 ${formatMeters(dataset.targetProduct.stats.routeDistanceMeters)}`,
+      `运动里程 ${formatMeters(dataset.targetProduct.stats.totalDistanceMeters)}`,
+      `疑似交通里程 ${formatMeters(dataset.targetProduct.stats.suspectedDistanceMeters)}`
     ])}
   `;
 }
@@ -839,7 +869,9 @@ function emptyFeatureCollection() {
 }
 
 function formatMeters(value) {
-  return Number.isFinite(value) ? `${value.toFixed(1)}m` : '-';
+  if (!Number.isFinite(value)) return '-';
+  if (Math.abs(value) >= 1000) return `${(value / 1000).toFixed(2)} km`;
+  return `${value.toFixed(1)} m`;
 }
 
 function formatAscent(value) {

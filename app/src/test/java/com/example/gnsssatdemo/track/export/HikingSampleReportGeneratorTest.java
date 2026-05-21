@@ -45,6 +45,36 @@ public class HikingSampleReportGeneratorTest {
         assertTrue(report.decisionReasonCounts.containsKey("weak:moving_cloud_unstable"));
     }
 
+    @Test
+    public void generate_countsRecoveryTransportAsGapRecovery() throws Exception {
+        File dir = Files.createTempDirectory("hiking-recovery-transport").toFile();
+        String evidence = ""
+                + event(1, "session_metadata", 1_000_000_000L,
+                "\"createdElapsedRealtimeNanos\":1000000000")
+                + event(2, "sampling_policy", 1_000_000_000L,
+                "\"state\":\"MOVING\",\"locationRequestMinDistanceMeters\":0")
+                + raw(3, 1, 2_000_000_000L, 8.0, 29.0)
+                + raw(4, 2, 200_000_000_000L, 8.0, 29.00001)
+                + raw(5, 3, 202_000_000_000L, 8.0, 29.0107);
+        Files.write(new File(dir, "evidence.jsonl").toPath(),
+                evidence.getBytes(StandardCharsets.UTF_8));
+        Files.write(new File(dir, "track.gpx").toPath(),
+                "<gpx/>".getBytes(StandardCharsets.UTF_8));
+        writeSessionJson(dir, 5, 3, 2, 1, 1, 0.0, 0.0);
+
+        SessionManifest manifest = new SessionManifestReader(new SessionFileStore(dir.getParentFile()))
+                .read(dir);
+        HikingSampleReport report = new HikingSampleReportGenerator().generate(manifest);
+
+        assertEquals(1, report.gapRecoveryCount);
+        assertEquals(1, report.gapRecoveryZeroDeltaCount);
+        assertTrue(report.blockingFindings.isEmpty());
+        assertTrue(report.decisionReasonCounts
+                .containsKey("accept:recovery_transport_suspected_kept"));
+        assertTrue(report.reviewFindings.toString()
+                .contains("检测到疑似交通工具移动: kept=0 recovery=1"));
+    }
+
     private String event(int seq, String eventName, long elapsedRealtimeNanos, String fields) {
         return "{\"event\":\"" + eventName + "\",\"sessionId\":\"S1\",\"eventSeq\":" + seq
                 + ",\"schemaVersion\":1,\"eventElapsedRealtimeNanos\":" + elapsedRealtimeNanos

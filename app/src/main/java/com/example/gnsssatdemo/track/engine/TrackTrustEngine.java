@@ -20,6 +20,12 @@ public class TrackTrustEngine {
     public static final double TRANSPORT_MIN_DISTANCE_METERS = 20.0;
     public static final float CONTINUITY_RESCUE_MAX_ACCURACY_METERS = 650f;
     public static final double CONTINUITY_RESCUE_MAX_SPEED_METERS_PER_SECOND = 6.0;
+    public static final double MOTION_SUPPORTED_MIN_SPEED_METERS_PER_SECOND = 0.8;
+    public static final double MOTION_SUPPORTED_MAX_SPEED_METERS_PER_SECOND = 3.5;
+    public static final double MOTION_SUPPORTED_MIN_DISTANCE_METERS = 2.5;
+    public static final float LOW_ACCURACY_RESCUE_MAX_ACCURACY_METERS = 35f;
+    public static final int LOW_ACCURACY_RESCUE_MIN_USED_IN_FIX = 5;
+    public static final double LOW_ACCURACY_RESCUE_MIN_DISTANCE_METERS = 2.5;
     private static final long MOTION_WINDOW_NANOS = 5_000_000_000L;
     private long nextCloudId = 1L;
     private TrackCloudWindow currentCloud;
@@ -69,7 +75,15 @@ public class TrackTrustEngine {
                     ? "first_fix_good" : "first_fix_relaxed";
             grade = "ANCHOR";
         } else if ("RECOVERY_CLOUD".equals(cloudType)) {
-            if (stable) {
+            if (isRecoveryTransportRescuePoint(rawPoint, recoveryPreviousRawPoint)) {
+                result = "accept";
+                reason = "recovery_transport_suspected_kept";
+                grade = "RECOVERY";
+                startsNewSegment = previousTrustedTrackPoint != null
+                        && recoveryPreviousRawPoint != null
+                        && previousTrustedTrackPoint.elapsedRealtimeNanos
+                        < recoveryPreviousRawPoint.elapsedRealtimeNanos;
+            } else if (stable) {
                 result = "accept";
                 reason = "gap_recovery";
                 grade = "RECOVERY";
@@ -85,7 +99,7 @@ public class TrackTrustEngine {
                 grade = "WEAK";
             }
         } else if ("WEAK_CLOUD".equals(cloudType)) {
-            if (isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint)) {
+            if (isLowAccuracyRescuePoint(rawPoint, previousTrustedTrackPoint, snapshot)) {
                 result = "accept";
                 reason = "continuity_rescue_low_accuracy";
                 grade = "TRUSTED";
@@ -100,11 +114,17 @@ public class TrackTrustEngine {
                 result = "anchor";
                 reason = "stationary_anchor";
                 grade = "ANCHOR";
+            } else if (hasRecentActiveMotion(rawPoint.elapsedRealtimeNanos, motionWindows)
+                    && isMotionSupportedLowSpeedPoint(rawPoint, previousTrustedTrackPoint)) {
+                result = "accept";
+                reason = "motion_supported_low_speed";
+                grade = "TRUSTED";
+                resetMovingCloudAfterAccept = true;
             } else if (!hasRecentStillMotion(rawPoint.elapsedRealtimeNanos, motionWindows)
                     && isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint)) {
-                result = "accept";
-                reason = "continuity_rescue_stationary_jitter";
-                grade = "TRUSTED";
+                result = "reject";
+                reason = "stationary_continuity_jitter";
+                grade = "REJECT";
                 resetMovingCloudAfterAccept = true;
             } else {
                 result = "reject";
@@ -136,6 +156,7 @@ public class TrackTrustEngine {
         boolean virtualTrackPointCoordinate = !usesRawCoordinate(reason);
         if (("accept".equals(result) || "anchor".equals(result))
                 && previousTrustedTrackPoint != null
+                && !startsNewSegment
                 && shouldAccumulateMovement(reason)) {
             distanceDelta = TrackCloudWindow.distanceMeters(previousTrustedTrackPoint.latitude,
                     previousTrustedTrackPoint.longitude, targetLatitude, targetLongitude);
@@ -210,12 +231,6 @@ public class TrackTrustEngine {
                 && distanceMeters >= stationaryThreshold(rawPoint);
     }
 
-    public boolean canRescueContinuityPoint(RawPoint rawPoint, TrackPoint previousTrustedTrackPoint,
-                                            String intakeReason) {
-        return "accuracy_too_large".equals(intakeReason)
-                && isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint);
-    }
-
     private boolean isContinuityRescuePoint(RawPoint rawPoint,
                                             TrackPoint previousTrustedTrackPoint) {
         if (previousTrustedTrackPoint == null || rawPoint == null) {
@@ -238,6 +253,24 @@ public class TrackTrustEngine {
                 && rawPoint.speedMetersPerSecond <= CONTINUITY_RESCUE_MAX_SPEED_METERS_PER_SECOND);
     }
 
+    private boolean isLowAccuracyRescuePoint(RawPoint rawPoint,
+                                             TrackPoint previousTrustedTrackPoint,
+                                             GnssQualitySnapshot snapshot) {
+        if (!isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint)) {
+            return false;
+        }
+        if (!Double.isFinite(rawPoint.accuracyMeters)
+                || rawPoint.accuracyMeters > LOW_ACCURACY_RESCUE_MAX_ACCURACY_METERS) {
+            return false;
+        }
+        if (snapshot == null || snapshot.usedInFixTotal < LOW_ACCURACY_RESCUE_MIN_USED_IN_FIX) {
+            return false;
+        }
+        double distance = TrackCloudWindow.distanceMeters(previousTrustedTrackPoint.latitude,
+                previousTrustedTrackPoint.longitude, rawPoint.latitude, rawPoint.longitude);
+        return distance >= LOW_ACCURACY_RESCUE_MIN_DISTANCE_METERS;
+    }
+
     private boolean isRecoveryContinuityRescuePoint(RawPoint rawPoint, RawPoint previousRawPoint) {
         if (previousRawPoint == null || rawPoint == null) {
             return false;
@@ -258,9 +291,29 @@ public class TrackTrustEngine {
                 && rawPoint.speedMetersPerSecond <= CONTINUITY_RESCUE_MAX_SPEED_METERS_PER_SECOND);
     }
 
+    private boolean isRecoveryTransportRescuePoint(RawPoint rawPoint, RawPoint previousRawPoint) {
+        if (previousRawPoint == null || rawPoint == null) {
+            return false;
+        }
+        if (!Double.isFinite(rawPoint.accuracyMeters)
+                || rawPoint.accuracyMeters > SamplingIntake.MAX_ACCURACY_METERS) {
+            return false;
+        }
+        long elapsedDelta = rawPoint.elapsedRealtimeNanos - previousRawPoint.elapsedRealtimeNanos;
+        if (elapsedDelta <= 0L || elapsedDelta > GAP_NANOS) {
+            return false;
+        }
+        double distance = TrackCloudWindow.distanceMeters(previousRawPoint.latitude,
+                previousRawPoint.longitude, rawPoint.latitude, rawPoint.longitude);
+        double speed = distance / (elapsedDelta / 1_000_000_000.0);
+        return isTransportRisk(rawPoint, speed, distance);
+    }
+
     private boolean usesRawCoordinate(String reason) {
         return "moving_good_fix".equals(reason)
                 || "transport_suspected_kept".equals(reason)
+                || "recovery_transport_suspected_kept".equals(reason)
+                || "motion_supported_low_speed".equals(reason)
                 || "gap_recovery".equals(reason)
                 || (reason != null && reason.startsWith("continuity_rescue_"));
     }
@@ -268,8 +321,9 @@ public class TrackTrustEngine {
     private boolean shouldAccumulateMovement(String reason) {
         return "moving_good_fix".equals(reason)
                 || "transport_suspected_kept".equals(reason)
+                || "recovery_transport_suspected_kept".equals(reason)
                 || "continuity_rescue_low_accuracy".equals(reason)
-                || "continuity_rescue_stationary_jitter".equals(reason);
+                || "motion_supported_low_speed".equals(reason);
     }
 
     private boolean recoveryFastPathAllowed(RawPoint rawPoint,
@@ -310,6 +364,54 @@ public class TrackTrustEngine {
             }
         }
         return total > 0 && still / (double) total >= 0.75;
+    }
+
+    private boolean hasRecentActiveMotion(long elapsedRealtimeNanos,
+                                          List<DeviceMotionWindow> motionWindows) {
+        if (motionWindows == null) {
+            return false;
+        }
+        long cutoff = elapsedRealtimeNanos - MOTION_WINDOW_NANOS;
+        int total = 0;
+        int active = 0;
+        for (DeviceMotionWindow window : motionWindows) {
+            if (window.endElapsedRealtimeNanos < cutoff
+                    || window.startElapsedRealtimeNanos > elapsedRealtimeNanos) {
+                continue;
+            }
+            total++;
+            double accelRms = window.linearAccelerationSampleCount > 0
+                    ? window.linearAccelerationRmsMps2 : window.accelerometerDynamicRmsMps2;
+            if (accelRms >= 0.35
+                    || window.gyroscopeRmsRadps >= 0.12
+                    || window.stepCounterDelta > 0
+                    || window.stepDetectorCount > 0) {
+                active++;
+            }
+        }
+        return total > 0 && active / (double) total >= 0.5;
+    }
+
+    private boolean isMotionSupportedLowSpeedPoint(RawPoint rawPoint,
+                                                   TrackPoint previousTrustedTrackPoint) {
+        if (previousTrustedTrackPoint == null || rawPoint == null) {
+            return false;
+        }
+        if (!Double.isFinite(rawPoint.accuracyMeters)
+                || rawPoint.accuracyMeters > WEAK_CLOUD_ACCURACY_METERS) {
+            return false;
+        }
+        long elapsedDelta = rawPoint.elapsedRealtimeNanos
+                - previousTrustedTrackPoint.elapsedRealtimeNanos;
+        if (elapsedDelta <= 0L || elapsedDelta > GAP_NANOS) {
+            return false;
+        }
+        double distance = TrackCloudWindow.distanceMeters(previousTrustedTrackPoint.latitude,
+                previousTrustedTrackPoint.longitude, rawPoint.latitude, rawPoint.longitude);
+        double speed = distance / (elapsedDelta / 1_000_000_000.0);
+        return distance >= MOTION_SUPPORTED_MIN_DISTANCE_METERS
+                && speed >= MOTION_SUPPORTED_MIN_SPEED_METERS_PER_SECOND
+                && speed <= MOTION_SUPPORTED_MAX_SPEED_METERS_PER_SECOND;
     }
 
     private boolean isLowMotionWindow(DeviceMotionWindow window) {

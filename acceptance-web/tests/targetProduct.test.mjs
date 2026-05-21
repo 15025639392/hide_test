@@ -25,7 +25,26 @@ test('buildTargetTrackProduct rebuilds target track from pure evidence', () => {
   assert.equal(product.track[1].reason, 'moving_good_fix');
   assert.equal(product.stats.trustedPointCount, 2);
   assert.ok(product.stats.totalDistanceMeters > 10);
+  assert.equal(product.stats.routeDistanceMeters, product.stats.totalDistanceMeters);
   assert.equal(product.stats.movingTimeSeconds, 3);
+});
+
+test('buildTargetTrackProduct uses record end minus record start as moving time', () => {
+  const model = parseEvidenceJsonl([
+    '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000,"recordEndElapsedRealtimeNanos":9000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":8,"top4AvgCn0":32}',
+    '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":5,"elapsedRealtimeNanos":2000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.0001,"lng":120,"accuracy":5,"elapsedRealtimeNanos":4000000000,"sourceGnssSnapshotId":1}'
+  ].join('\n'));
+
+  const product = buildTargetTrackProduct(model, {
+    config: { collapseStationarySession: false }
+  });
+
+  assert.equal(product.stats.movingTimeSeconds, 8);
+  assert.equal(product.stats.recordStartElapsedRealtimeNanos, 1000000000);
+  assert.equal(product.stats.recordEndElapsedRealtimeNanos, 9000000000);
 });
 
 test('buildTargetTrackProduct builds from pure evidence without Android decisions', () => {
@@ -110,6 +129,8 @@ test('buildTargetTrackProduct keeps gap recovery in target track with zero delta
   assert.equal(product.track[1].segmentId, 2);
   assert.equal(product.track[1].distanceDeltaMeters, 0);
   assert.equal(product.track[1].movingTimeDeltaSeconds, 0);
+  assert.ok(product.stats.routeDistanceMeters > 1000);
+  assert.equal(product.stats.totalDistanceMeters, 0);
   assert.equal(product.stats.gapCount, 1);
 });
 
@@ -198,6 +219,9 @@ test('buildTargetTrackProduct keeps continuous transport-like evidence as risk i
   assert.equal(product.track[3].reason, 'transport_suspected_kept');
   assert.ok(product.track.slice(1).every((point) => point.coordinateSource === 'raw'));
   assert.equal(product.excluded.rejected.length, 0);
+  assert.equal(product.stats.suspectedDistanceMeters,
+    product.track[1].distanceDeltaMeters + product.track[2].distanceDeltaMeters
+    + product.track[3].distanceDeltaMeters);
   assert.equal(product.stats.transportCount, 3);
 });
 
@@ -248,7 +272,7 @@ test('buildTargetTrackProduct collapses fully stationary sessions to one target 
   assert.equal(product.track.length, 1);
   assert.equal(product.track[0].reason, 'stationary_session_anchor');
   assert.equal(product.stats.totalDistanceMeters, 0);
-  assert.equal(product.stats.movingTimeSeconds, 0);
+  assert.equal(product.stats.movingTimeSeconds, 10);
 });
 
 test('buildTargetTrackProduct only lets barometer evidence block stationary collapse when enabled', () => {
@@ -324,7 +348,7 @@ test('buildTargetTrackProduct excludes stationary continuity rescue from target 
   assert.equal(product.excluded.rejected.length, 1);
   assert.equal(product.excluded.rejected[0].reason, 'stationary_continuity_jitter');
   assert.equal(product.stats.totalDistanceMeters, 0);
-  assert.equal(product.stats.movingTimeSeconds, 0);
+  assert.equal(product.stats.movingTimeSeconds, 1);
 });
 
 test('buildTargetTrackProduct keeps one anchor for a stationary cluster', () => {
