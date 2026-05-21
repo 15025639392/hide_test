@@ -91,7 +91,8 @@ const elements = {
     gapSeconds: document.querySelector('#gapSeconds'),
     stationaryDistanceMeters: document.querySelector('#stationaryDistanceMeters'),
     transportSpeedMetersPerSecond: document.querySelector('#transportSpeedMetersPerSecond'),
-    transportMinDistanceMeters: document.querySelector('#transportMinDistanceMeters')
+    transportMinDistanceMeters: document.querySelector('#transportMinDistanceMeters'),
+    barometerCleaningEnabled: document.querySelector('#barometerCleaningEnabled')
   },
   importStatus: document.querySelector('#importStatus'),
   importSpinner: document.querySelector('#importSpinner'),
@@ -224,12 +225,16 @@ function resetCleaningConfig() {
 
 function readConfigInputs() {
   return Object.fromEntries(Object.entries(elements.configInputs)
-    .map(([key, input]) => [key, Number(input.value)]));
+    .map(([key, input]) => [key, input.type === 'checkbox' ? input.checked : Number(input.value)]));
 }
 
 function renderConfigInputs() {
   for (const [key, input] of Object.entries(elements.configInputs)) {
-    input.value = state.cleaningConfig[key];
+    if (input.type === 'checkbox') {
+      input.checked = state.cleaningConfig[key] === true;
+    } else {
+      input.value = state.cleaningConfig[key];
+    }
   }
   elements.configStateText.textContent = isDefaultCleaningConfig() ? '默认' : '自定义';
   renderCleaningAlgorithm();
@@ -302,6 +307,7 @@ function algorithmBlock() {
         <b>当前参数</b>
         <span>accuracy 上限 ${formatPlainNumber(config.maxIntakeAccuracyMeters)}m；弱点云 ${formatPlainNumber(config.weakCloudAccuracyMeters)}m；GAP ${formatPlainNumber(config.gapSeconds)}s</span>
         <span>静止基础距离 ${formatPlainNumber(config.stationaryDistanceMeters)}m；交通工具速度 ${formatPlainNumber(config.transportSpeedMetersPerSecond)}m/s；交通工具位移 ${formatPlainNumber(config.transportMinDistanceMeters)}m</span>
+        <span>气压参与清洗 ${config.barometerCleaningEnabled ? '开启' : '关闭'}；垂直运动阈值 ${formatPlainNumber(config.barometerVerticalMotionMinRangeMeters)}m / ${formatPlainNumber(config.barometerVerticalMotionMinWindowCount)} 个窗口</span>
       </div>
       ${CLEANING_ALGORITHM_SECTIONS.map((section) => `
         <div class="algorithm-section">

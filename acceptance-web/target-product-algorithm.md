@@ -94,6 +94,7 @@ sampling_policy
 gnss_snapshot
 raw_location
 device_motion_window
+barometer_window
 ```
 
 `decision` 和 `location_intake_rejected` 不是 Web 清洗算法的输入真相；
@@ -199,6 +200,7 @@ recordedDecisions
 recordedIntakeRejections
 sessionEvents
 pressureSamples
+barometerWindows
 ```
 
 `raw_location` 是主时间轴。每个 raw 点至少需要：
@@ -457,7 +459,32 @@ WEAK_CLOUD:
 且加速度 RMS、陀螺仪 RMS、步数增量都处于低运动区间
 ```
 
-### 9. 目标成品轨迹
+### 9. 气压证据参与清洗
+
+气压证据默认不参与清洗，Web 页面提供 `气压参与清洗` 开关。开启后，气压仍然不作为
+剔除 raw 点的硬规则，只作为静止整段压缩的反证。
+
+当前保守规则：
+
+```text
+barometerCleaningEnabled = true
+barometer_window 有效窗口数 >= 5
+max(rawAltitude) - min(rawAltitude) >= 3m
+```
+
+满足以上条件时，如果 GNSS 平面轨迹和设备运动证据看起来像“整段静止”，Web 也不会把
+整段结果压缩成 1 个 `stationary_session_anchor`。原因是：气压出现连续垂直变化时，
+它更像是在提示真实上下行或楼层/山路高度变化，不能让低运动窗口单独决定整段静止。
+
+边界：
+
+- 气压不直接把点从目标轨迹中删除。
+- 气压不改变 `raw_location`、`sampling_policy`、`gnss_snapshot`、`device_motion_window`
+  等纯证据。
+- 气压只影响“是否执行静止整段压缩”，不改变交通工具识别、GAP、intake 或点云稳定性。
+- 关闭开关时，Web 清洗结果保持不受 `barometer_window` 影响。
+
+### 10. 目标成品轨迹
 
 进入目标成品轨迹的 result：
 

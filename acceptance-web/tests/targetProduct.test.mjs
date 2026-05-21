@@ -204,6 +204,43 @@ test('buildTargetTrackProduct collapses fully stationary sessions to one target 
   assert.equal(product.stats.movingTimeSeconds, 0);
 });
 
+test('buildTargetTrackProduct only lets barometer evidence block stationary collapse when enabled', () => {
+  const stationaryEvents = [
+    '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":8,"top4AvgCn0":35}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":1000000000,"endElapsedRealtimeNanos":2000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":3000000000,"endElapsedRealtimeNanos":4000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":5000000000,"endElapsedRealtimeNanos":6000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":7000000000,"endElapsedRealtimeNanos":8000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":9000000000,"endElapsedRealtimeNanos":10000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":11000000000,"endElapsedRealtimeNanos":12000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"barometer_window","startElapsedRealtimeNanos":1000000000,"endElapsedRealtimeNanos":2000000000,"avgRawAltitudeMeters":100,"minRawAltitudeMeters":99.8,"maxRawAltitudeMeters":100.2}',
+    '{"event":"barometer_window","startElapsedRealtimeNanos":3000000000,"endElapsedRealtimeNanos":4000000000,"avgRawAltitudeMeters":101,"minRawAltitudeMeters":100.8,"maxRawAltitudeMeters":101.2}',
+    '{"event":"barometer_window","startElapsedRealtimeNanos":5000000000,"endElapsedRealtimeNanos":6000000000,"avgRawAltitudeMeters":102,"minRawAltitudeMeters":101.8,"maxRawAltitudeMeters":102.2}',
+    '{"event":"barometer_window","startElapsedRealtimeNanos":7000000000,"endElapsedRealtimeNanos":8000000000,"avgRawAltitudeMeters":103,"minRawAltitudeMeters":102.8,"maxRawAltitudeMeters":103.2}',
+    '{"event":"barometer_window","startElapsedRealtimeNanos":9000000000,"endElapsedRealtimeNanos":10000000000,"avgRawAltitudeMeters":104,"minRawAltitudeMeters":103.8,"maxRawAltitudeMeters":104.2}',
+    '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":5,"elapsedRealtimeNanos":1000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.00001,"lng":120,"accuracy":5,"elapsedRealtimeNanos":3000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":3,"provider":"gps","lat":30.000011,"lng":120,"accuracy":5,"elapsedRealtimeNanos":5000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":4,"provider":"gps","lat":30.000012,"lng":120,"accuracy":5,"elapsedRealtimeNanos":7000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":5,"provider":"gps","lat":30.000013,"lng":120,"accuracy":5,"elapsedRealtimeNanos":9000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":6,"provider":"gps","lat":30.000014,"lng":120,"accuracy":5,"elapsedRealtimeNanos":11000000000,"sourceGnssSnapshotId":1}'
+  ];
+  const model = parseEvidenceJsonl(stationaryEvents.join('\n'));
+
+  const defaultProduct = buildTargetTrackProduct(model);
+  const barometerProduct = buildTargetTrackProduct(model, {
+    config: { barometerCleaningEnabled: true }
+  });
+
+  assert.equal(defaultProduct.stationarySessionCollapsed, true);
+  assert.equal(barometerProduct.stationarySessionCollapsed, undefined);
+  assert.equal(barometerProduct.stationarySessionCollapseBlockedByBarometer, true);
+  assert.ok(barometerProduct.track.length > 1);
+  assert.ok(barometerProduct.findings.some((finding) => finding.includes('气压证据')));
+});
+
 test('buildTargetTrackProduct uses accelerometer dynamic RMS when linear acceleration is unavailable', () => {
   const model = parseEvidenceJsonl([
     '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',

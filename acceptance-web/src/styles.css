@@ -198,10 +198,10 @@ button:disabled {
 
 .map-legend {
   position: absolute;
-  right: 14px;
+  left: 20px;
   bottom: 16px;
   display: flex;
-  max-width: calc(100% - 28px);
+  max-width: calc(100% - 40px);
   flex-wrap: wrap;
   gap: 10px;
   border: 1px solid var(--line);
@@ -311,6 +311,20 @@ button:disabled {
   padding: 0 9px;
   background: #0b171a;
   color: var(--ink);
+}
+
+.config-grid .config-toggle {
+  grid-column: 1 / -1;
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+}
+
+.config-grid .config-toggle input {
+  width: 16px;
+  height: 16px;
 }
 
 .config-grid button {

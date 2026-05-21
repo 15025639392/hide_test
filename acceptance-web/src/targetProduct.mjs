@@ -18,7 +18,10 @@ export const DEFAULT_TARGET_PRODUCT_CONFIG = Object.freeze({
   cloudTemporalDecaySeconds: 20,
   collapseStationarySession: true,
   stationarySessionStillRatio: 0.95,
-  stationarySessionAnchorRatio: 0.8
+  stationarySessionAnchorRatio: 0.8,
+  barometerCleaningEnabled: false,
+  barometerVerticalMotionMinRangeMeters: 3,
+  barometerVerticalMotionMinWindowCount: 5
 });
 
 const DEFAULT_CLOUD_RULES = {
@@ -137,7 +140,10 @@ function normalizeConfig(config = {}) {
     cloudTemporalDecaySeconds: positiveNumber(merged.cloudTemporalDecaySeconds, DEFAULT_TARGET_PRODUCT_CONFIG.cloudTemporalDecaySeconds),
     collapseStationarySession: merged.collapseStationarySession !== false,
     stationarySessionStillRatio: positiveNumber(merged.stationarySessionStillRatio, DEFAULT_TARGET_PRODUCT_CONFIG.stationarySessionStillRatio),
-    stationarySessionAnchorRatio: positiveNumber(merged.stationarySessionAnchorRatio, DEFAULT_TARGET_PRODUCT_CONFIG.stationarySessionAnchorRatio)
+    stationarySessionAnchorRatio: positiveNumber(merged.stationarySessionAnchorRatio, DEFAULT_TARGET_PRODUCT_CONFIG.stationarySessionAnchorRatio),
+    barometerCleaningEnabled: merged.barometerCleaningEnabled === true,
+    barometerVerticalMotionMinRangeMeters: positiveNumber(merged.barometerVerticalMotionMinRangeMeters, DEFAULT_TARGET_PRODUCT_CONFIG.barometerVerticalMotionMinRangeMeters),
+    barometerVerticalMotionMinWindowCount: positiveNumber(merged.barometerVerticalMotionMinWindowCount, DEFAULT_TARGET_PRODUCT_CONFIG.barometerVerticalMotionMinWindowCount)
   };
 }
 
@@ -150,6 +156,10 @@ function collapseStationarySessionIfNeeded(product, evidence) {
   const stationaryAnchorRatio = stationaryAnchorCount / product.track.length;
   if (stillRatio < product.config.stationarySessionStillRatio
       || stationaryAnchorRatio < product.config.stationarySessionAnchorRatio) {
+    return;
+  }
+  if (hasBarometerVerticalMotion(evidence, product.config)) {
+    product.stationarySessionCollapseBlockedByBarometer = true;
     return;
   }
   const center = weightedTrackCenter(product.track);
@@ -186,6 +196,30 @@ function stillMotionRatio(motionSummaries) {
   const stillCount = motionSummaries.filter((summary) =>
     summary.deviceStill === true || summary.isDeviceStill === true).length;
   return stillCount / motionSummaries.length;
+}
+
+function hasBarometerVerticalMotion(evidence, config) {
+  if (!config.barometerCleaningEnabled) {
+    return false;
+  }
+  const altitudeSamples = [];
+  let validWindowCount = 0;
+  for (const window of evidence.barometerWindows) {
+    const values = [
+      window.minRawAltitudeMeters,
+      window.maxRawAltitudeMeters,
+      window.avgRawAltitudeMeters
+    ].filter(Number.isFinite);
+    if (values.length === 0) continue;
+    validWindowCount++;
+    altitudeSamples.push(...values);
+  }
+  if (validWindowCount < config.barometerVerticalMotionMinWindowCount
+      || altitudeSamples.length === 0) {
+    return false;
+  }
+  return Math.max(...altitudeSamples) - Math.min(...altitudeSamples)
+    >= config.barometerVerticalMotionMinRangeMeters;
 }
 
 function weightedTrackCenter(track) {
@@ -233,6 +267,7 @@ function buildEvidence(events) {
   const gnssById = new Map();
   const samplingEpochs = [];
   const motionSummaries = [];
+  const barometerWindows = [];
   let recordStartElapsedRealtimeNanos = null;
   let strategyVersion = 'stage2-track-trust-v3-sampling-cloud';
 
@@ -251,6 +286,8 @@ function buildEvidence(events) {
       samplingEpochs.push(normalizeSamplingEpoch(event, samplingEpochs.length + 1));
     } else if (event.event === 'device_motion_window') {
       motionSummaries.push(deviceMotionWindowAsMotionEvidence(event));
+    } else if (event.event === 'barometer_window') {
+      barometerWindows.push(normalizeBarometerWindow(event));
     }
   }
 
@@ -264,6 +301,7 @@ function buildEvidence(events) {
     gnssById,
     samplingEpochs,
     motionSummaries,
+    barometerWindows,
     recordStartElapsedRealtimeNanos,
     strategyVersion
   };
@@ -310,6 +348,17 @@ function deviceMotionWindowAsMotionEvidence(event) {
     isDeviceStill: accelRms <= 0.18 && gyroRms <= 0.08
       && stepDelta === 0 && stepDetectorCount === 0,
     evidenceSource: 'device_motion_window'
+  };
+}
+
+function normalizeBarometerWindow(event) {
+  return {
+    event: 'barometer_window',
+    startElapsedRealtimeNanos: numberField(event, 'startElapsedRealtimeNanos'),
+    endElapsedRealtimeNanos: numberField(event, 'endElapsedRealtimeNanos'),
+    avgRawAltitudeMeters: numberField(event, 'avgRawAltitudeMeters'),
+    minRawAltitudeMeters: numberField(event, 'minRawAltitudeMeters'),
+    maxRawAltitudeMeters: numberField(event, 'maxRawAltitudeMeters')
   };
 }
 
@@ -849,6 +898,9 @@ function buildFindings(product, evidence) {
   if (evidence.rawPoints.length === 0) findings.push('缺少 raw_location，无法生成目标成品');
   if (evidence.samplingEpochs.length === 0) {
     findings.push('缺少 sampling_policy，已使用合成 epoch 做低置信复算');
+  }
+  if (product.stationarySessionCollapseBlockedByBarometer) {
+    findings.push('气压证据显示垂直运动，未执行静止整段压缩');
   }
   return findings;
 }
