@@ -295,6 +295,10 @@ button:disabled {
   padding: 12px;
 }
 
+.config-grid > label:first-child {
+  grid-column: 1 / -1;
+}
+
 .config-grid label {
   display: grid;
   gap: 5px;
@@ -325,6 +329,33 @@ button:disabled {
 .config-grid .config-toggle input {
   width: 16px;
   height: 16px;
+}
+
+.advanced-config {
+  grid-column: 1 / -1;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(8, 17, 20, 0.72);
+}
+
+.advanced-config summary {
+  min-height: 34px;
+  padding: 9px 10px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.advanced-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  padding: 0 10px 10px;
+}
+
+.advanced-config-grid .config-toggle {
+  grid-column: auto;
 }
 
 .config-grid button {

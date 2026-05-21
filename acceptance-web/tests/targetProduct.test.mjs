@@ -355,6 +355,105 @@ test('buildTargetTrackProduct keeps low-speed movement when motion evidence is a
   assert.equal(product.excluded.rejected.length, 0);
 });
 
+test('buildTargetTrackProduct marks isolated moving fix as low-quality movement when sustained sampling supports motion', () => {
+  const model = parseEvidenceJsonl([
+    '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":6,"top4AvgCn0":24}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":5000000000,"endElapsedRealtimeNanos":6000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":10000000000,"endElapsedRealtimeNanos":11000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":15000000000,"endElapsedRealtimeNanos":16000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":20000000000,"endElapsedRealtimeNanos":21000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":25000000000,"endElapsedRealtimeNanos":26000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":30000000000,"endElapsedRealtimeNanos":31000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":35000000000,"endElapsedRealtimeNanos":36000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":40000000000,"endElapsedRealtimeNanos":41000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":45000000000,"endElapsedRealtimeNanos":46000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":50000000000,"endElapsedRealtimeNanos":51000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":55000000000,"endElapsedRealtimeNanos":56000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":60000000000,"endElapsedRealtimeNanos":61000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":65000000000,"endElapsedRealtimeNanos":66000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":70000000000,"endElapsedRealtimeNanos":71000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":75000000000,"endElapsedRealtimeNanos":76000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":80000000000,"endElapsedRealtimeNanos":81000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":85000000000,"endElapsedRealtimeNanos":86000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":90000000000,"endElapsedRealtimeNanos":91000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":95000000000,"endElapsedRealtimeNanos":96000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":100000000000,"endElapsedRealtimeNanos":101000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":105000000000,"endElapsedRealtimeNanos":106000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":110000000000,"endElapsedRealtimeNanos":111000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":8,"elapsedRealtimeNanos":1000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.000027,"lng":120,"accuracy":25,"speed":0.7,"elapsedRealtimeNanos":10000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":3,"provider":"gps","lat":30.000054,"lng":120,"accuracy":25,"speed":0.7,"elapsedRealtimeNanos":18000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":15,"provider":"gps","lat":30.000054,"lng":120,"accuracy":25,"speed":0.7,"elapsedRealtimeNanos":18000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":4,"provider":"gps","lat":30.000081,"lng":120,"accuracy":25,"speed":0.7,"elapsedRealtimeNanos":26000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":5,"provider":"gps","lat":30.000108,"lng":120,"accuracy":25,"speed":0.7,"elapsedRealtimeNanos":34000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":6,"provider":"gps","lat":30.000135,"lng":120,"accuracy":25,"speed":0.7,"elapsedRealtimeNanos":42000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":7,"provider":"gps","lat":30.000162,"lng":120,"accuracy":25,"speed":0.7,"elapsedRealtimeNanos":50000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":8,"provider":"gps","lat":30.000189,"lng":120,"accuracy":25,"speed":0.7,"elapsedRealtimeNanos":58000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":9,"provider":"gps","lat":30.000216,"lng":120,"accuracy":25,"speed":0.7,"elapsedRealtimeNanos":66000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":10,"provider":"gps","lat":30.000243,"lng":120,"accuracy":25,"speed":0.7,"elapsedRealtimeNanos":74000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":11,"provider":"gps","lat":30.00028,"lng":120,"accuracy":8,"speed":0.7,"elapsedRealtimeNanos":82000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":12,"provider":"gps","lat":30.000281,"lng":120,"accuracy":18,"speed":0,"elapsedRealtimeNanos":100000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":13,"provider":"gps","lat":30.000282,"lng":120,"accuracy":18,"speed":0,"elapsedRealtimeNanos":105000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":14,"provider":"gps","lat":30.000283,"lng":120,"accuracy":18,"speed":0,"elapsedRealtimeNanos":110000000000,"sourceGnssSnapshotId":1}'
+  ].join('\n'));
+
+  const product = buildTargetTrackProduct(model, {
+    config: { collapseStationarySession: false }
+  });
+
+  assert.deepEqual(product.track.map((point) => point.sourceRawPointId), [1, 2, 11, 14]);
+  assert.equal(product.track[1].reason, 'motion_supported_low_quality');
+  assert.equal(product.track[1].cloudType, 'LOW_QUALITY_MOTION');
+  assert.equal(product.track[1].coordinateSource, 'raw');
+  assert.equal(product.track[2].reason, 'motion_supported_low_quality');
+  assert.deepEqual(product.track[1].contributingRawPointIds, [2]);
+  assert.deepEqual(product.track[2].contributingRawPointIds, [3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  assert.equal(product.excluded.intakeRejected.length, 1);
+  assert.equal(product.excluded.intakeRejected[0].rawPointId, 15);
+  assert.equal(product.excluded.intakeRejected[0].reason, 'duplicate_fix');
+  assert.equal(product.track[2].segmentId, 1);
+  assert.equal(product.track[3].segmentId, 1);
+  assert.equal(product.track[1].segmentId, 1);
+  assert.ok(product.stats.totalDistanceMeters > 25);
+  assert.equal(product.stats.segmentCount, 1);
+  assert.equal(product.stats.gapCount, 0);
+});
+
+test('buildTargetTrackProduct does not rebuild low-quality movement across raw sampling gaps', () => {
+  const model = parseEvidenceJsonl([
+    '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":6,"top4AvgCn0":24}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":5000000000,"endElapsedRealtimeNanos":6000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":10000000000,"endElapsedRealtimeNanos":11000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":15000000000,"endElapsedRealtimeNanos":16000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":20000000000,"endElapsedRealtimeNanos":21000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":25000000000,"endElapsedRealtimeNanos":26000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":30000000000,"endElapsedRealtimeNanos":31000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":160000000000,"endElapsedRealtimeNanos":161000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":165000000000,"endElapsedRealtimeNanos":166000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":170000000000,"endElapsedRealtimeNanos":171000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":175000000000,"endElapsedRealtimeNanos":176000000000,"linearAccelerationRmsMps2":0.9,"gyroscopeRmsRadps":0.2,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":8,"elapsedRealtimeNanos":1000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.000027,"lng":120,"accuracy":25,"speed":0.7,"elapsedRealtimeNanos":10000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":3,"provider":"gps","lat":30.000054,"lng":120,"accuracy":25,"speed":0.7,"elapsedRealtimeNanos":18000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":4,"provider":"gps","lat":30.000081,"lng":120,"accuracy":25,"speed":0.7,"elapsedRealtimeNanos":26000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":5,"provider":"gps","lat":30.00020,"lng":120,"accuracy":8,"speed":0.7,"elapsedRealtimeNanos":160000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":6,"provider":"gps","lat":30.000227,"lng":120,"accuracy":25,"speed":0.7,"elapsedRealtimeNanos":168000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":7,"provider":"gps","lat":30.000254,"lng":120,"accuracy":25,"speed":0.7,"elapsedRealtimeNanos":176000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":8,"provider":"gps","lat":30.000255,"lng":120,"accuracy":18,"speed":0,"elapsedRealtimeNanos":190000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":9,"provider":"gps","lat":30.000256,"lng":120,"accuracy":18,"speed":0,"elapsedRealtimeNanos":195000000000,"sourceGnssSnapshotId":1}'
+  ].join('\n'));
+
+  const product = buildTargetTrackProduct(model, {
+    config: { collapseStationarySession: false }
+  });
+
+  assert.equal(product.track.some((point) => point.reason === 'motion_supported_low_quality'), false);
+});
+
 test('buildTargetTrackProduct prunes low-speed tail before a stationary anchor', () => {
   const model = parseEvidenceJsonl([
     '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',

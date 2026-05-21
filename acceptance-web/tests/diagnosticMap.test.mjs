@@ -94,6 +94,7 @@ test('explainDecisionReason returns Chinese reason guidance with fallback', () =
     'stationary_continuity_jitter',
     'stationary_anchor_redundant',
     'motion_supported_low_speed',
+    'motion_supported_low_quality',
     'continuity_rescue_low_accuracy',
     'stationary_low_accuracy_tail'
   ]) {

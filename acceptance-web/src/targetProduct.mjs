@@ -6,6 +6,14 @@ const EARTH_RADIUS_METERS = 6_371_000;
 const MOTION_SUPPORTED_MIN_SPEED_METERS_PER_SECOND = 0.8;
 const MOTION_SUPPORTED_MAX_SPEED_METERS_PER_SECOND = 3.5;
 const MOTION_SUPPORTED_MIN_DISTANCE_METERS = 2.5;
+const LOW_QUALITY_SEGMENT_MIN_DURATION_SECONDS = 60;
+const LOW_QUALITY_SEGMENT_MIN_ACTIVE_RATIO = 0.7;
+const LOW_QUALITY_SEGMENT_MIN_PLAUSIBLE_DISTANCE_METERS = 25;
+const LOW_QUALITY_SEGMENT_MIN_MOVING_STEPS = 8;
+const LOW_QUALITY_SEGMENT_MIN_BBOX_METERS = 25;
+const LOW_QUALITY_SEGMENT_MIN_STEP_METERS = 1.8;
+const LOW_QUALITY_SEGMENT_MAX_STEP_METERS = 10;
+const LOW_QUALITY_SEGMENT_SIMPLIFY_TOLERANCE_METERS = 12;
 const LOW_ACCURACY_RESCUE_MAX_ACCURACY_METERS = 35;
 const LOW_ACCURACY_RESCUE_MIN_USED_IN_FIX = 5;
 const LOW_ACCURACY_RESCUE_MIN_DISTANCE_METERS = 2.5;
@@ -53,6 +61,7 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
   let trackPointId = 0;
   let decisionId = 0;
   let rawPointCount = 0;
+  const engineEligibleRawPointIds = new Set();
 
   for (const rawPoint of evidence.rawPoints) {
     rawPointCount++;
@@ -65,6 +74,7 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
       continue;
     }
 
+    engineEligibleRawPointIds.add(rawPoint.rawPointId);
     const snapshot = findGnssSnapshot(rawPoint, evidence.gnssById);
     const decision = engine.decide(rawPoint, epoch, snapshot, evidence.motionSummaries,
       previousTrustedTrackPoint);
@@ -125,6 +135,7 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
 
   product.stats.rawPointCount = rawPointCount;
   recomputeProductStats(product);
+  rebuildLowQualityMotionSegments(product, evidence, config, engineEligibleRawPointIds);
   pruneIsolatedStationaryMovement(product, config);
   pruneStationaryLowSpeedTail(product, config);
   collapseStationarySessionIfNeeded(product, evidence);
@@ -148,6 +159,274 @@ function isStationaryGapRecovery(rawPoint, decision, activeStationaryAnchor, con
   const distance = distanceMeters(activeStationaryAnchor.lat, activeStationaryAnchor.lng,
     decision.cloudCenterLatitude, decision.cloudCenterLongitude);
   return distance <= stationaryThreshold(rawPoint, config);
+}
+
+function rebuildLowQualityMotionSegments(product, evidence, config, engineEligibleRawPointIds) {
+  if (!Array.isArray(evidence.rawPoints) || evidence.rawPoints.length === 0) return;
+  let changed = false;
+  const rebuiltTrack = product.track.length > 0 ? [product.track[0]] : [];
+  const reclassifiedRawPointIds = new Set();
+  for (let index = 1; index < product.track.length; index++) {
+    const point = product.track[index];
+    const previous = rebuiltTrack.at(-1) || product.track[index - 1];
+    if (point.reason !== 'moving_good_fix') {
+      rebuiltTrack.push(point);
+      continue;
+    }
+    const next = product.track[index + 1] || null;
+    if (!previous || isTransportRiskReason(previous.reason) || isTransportRiskReason(point.reason)
+        || isTransportRiskReason(next?.reason)) {
+      rebuiltTrack.push(point);
+      continue;
+    }
+    if (!next || !isLowQualityMotionBoundary(next)) {
+      rebuiltTrack.push(point);
+      continue;
+    }
+    const intervalEndNanos = next.elapsedRealtimeNanos;
+    const nextContributingRawPointIds = new Set(next.contributingRawPointIds || []);
+    const intervalRawPoints = evidence.rawPoints.filter((rawPoint) =>
+      rawPoint.elapsedRealtimeNanos > previous.elapsedRealtimeNanos
+      && rawPoint.elapsedRealtimeNanos < intervalEndNanos
+      && engineEligibleRawPointIds.has(rawPoint.rawPointId)
+      && rawPoint.provider === GPS_PROVIDER
+      && Number.isFinite(rawPoint.accuracy)
+      && rawPoint.accuracy <= config.weakCloudAccuracyMeters
+      && !nextContributingRawPointIds.has(rawPoint.rawPointId));
+    if (!intervalRawPoints.some((rawPoint) => rawPoint.rawPointId === point.sourceRawPointId)) {
+      rebuiltTrack.push(point);
+      continue;
+    }
+    const summary = summarizeLowQualityMotionInterval(intervalRawPoints, evidence.motionSummaries);
+    if (!isLowQualityMotionSegment(summary)) {
+      rebuiltTrack.push(point);
+      continue;
+    }
+    const structureRawPoints = selectLowQualityMotionStructure(intervalRawPoints);
+    if (structureRawPoints.length < 2) {
+      rebuiltTrack.push(point);
+      continue;
+    }
+    const rebuiltPoints = buildLowQualityMotionTrackPoints(point, previous,
+      intervalRawPoints, structureRawPoints, summary);
+    for (const rebuiltPoint of rebuiltPoints) {
+      rebuiltTrack.push(rebuiltPoint);
+    }
+    for (const rawPoint of intervalRawPoints) {
+      reclassifiedRawPointIds.add(rawPoint.rawPointId);
+    }
+    changed = true;
+  }
+  if (!changed) return;
+  product.track = rebuiltTrack;
+  removeExcludedRawPoints(product, reclassifiedRawPointIds);
+  reconcileTrackSegments(product, config);
+  renumberTrackPoints(product);
+  recomputeProductStats(product);
+}
+
+function summarizeLowQualityMotionInterval(rawPoints, motionSummaries) {
+  if (rawPoints.length === 0) {
+    return {
+      sampleCount: 0,
+      durationSeconds: 0,
+      activeRatio: 0,
+      plausibleDistanceMeters: 0,
+      movingStepCount: 0,
+      maxAdjacentGapSeconds: 0,
+      bboxDiagonalMeters: 0,
+      rawPointIds: []
+    };
+  }
+  let activeCount = 0;
+  let plausibleDistanceMeters = 0;
+  let movingStepCount = 0;
+  let maxAdjacentGapSeconds = 0;
+  let minLat = rawPoints[0].lat;
+  let maxLat = rawPoints[0].lat;
+  let minLng = rawPoints[0].lng;
+  let maxLng = rawPoints[0].lng;
+  for (let index = 0; index < rawPoints.length; index++) {
+    const rawPoint = rawPoints[index];
+    if (hasRecentActiveMotion(rawPoint.elapsedRealtimeNanos, motionSummaries)) activeCount++;
+    minLat = Math.min(minLat, rawPoint.lat);
+    maxLat = Math.max(maxLat, rawPoint.lat);
+    minLng = Math.min(minLng, rawPoint.lng);
+    maxLng = Math.max(maxLng, rawPoint.lng);
+    if (index === 0) continue;
+    const previous = rawPoints[index - 1];
+    const elapsedDelta = rawPoint.elapsedRealtimeNanos - previous.elapsedRealtimeNanos;
+    if (elapsedDelta <= 0) continue;
+    const elapsedSeconds = elapsedDelta / 1_000_000_000;
+    maxAdjacentGapSeconds = Math.max(maxAdjacentGapSeconds, elapsedSeconds);
+    if (elapsedDelta > 10_000_000_000) continue;
+    const distance = distanceMeters(previous.lat, previous.lng, rawPoint.lat, rawPoint.lng);
+    if (distance >= LOW_QUALITY_SEGMENT_MIN_STEP_METERS
+        && distance <= LOW_QUALITY_SEGMENT_MAX_STEP_METERS) {
+      plausibleDistanceMeters += distance;
+      movingStepCount++;
+    }
+  }
+  const first = rawPoints[0];
+  const last = rawPoints.at(-1);
+  return {
+    sampleCount: rawPoints.length,
+    durationSeconds: Math.max(0,
+      (last.elapsedRealtimeNanos - first.elapsedRealtimeNanos) / 1_000_000_000),
+    activeRatio: activeCount / rawPoints.length,
+    plausibleDistanceMeters,
+    movingStepCount,
+    maxAdjacentGapSeconds,
+    bboxDiagonalMeters: distanceMeters(minLat, minLng, maxLat, maxLng),
+    rawPointIds: rawPoints.map((rawPoint) => rawPoint.rawPointId)
+  };
+}
+
+function isLowQualityMotionBoundary(point) {
+  return point.reason === 'stationary_anchor'
+    || point.reason === 'gap_recovery'
+    || point.reason === 'continuity_rescue_gap_recovery';
+}
+
+function isLowQualityMotionSegment(summary) {
+  return summary.durationSeconds >= LOW_QUALITY_SEGMENT_MIN_DURATION_SECONDS
+    && summary.activeRatio >= LOW_QUALITY_SEGMENT_MIN_ACTIVE_RATIO
+    && summary.plausibleDistanceMeters >= LOW_QUALITY_SEGMENT_MIN_PLAUSIBLE_DISTANCE_METERS
+    && summary.movingStepCount >= LOW_QUALITY_SEGMENT_MIN_MOVING_STEPS
+    && summary.maxAdjacentGapSeconds <= 10
+    && summary.bboxDiagonalMeters >= LOW_QUALITY_SEGMENT_MIN_BBOX_METERS;
+}
+
+function selectLowQualityMotionStructure(rawPoints) {
+  const simplified = simplifyRawPoints(rawPoints, LOW_QUALITY_SEGMENT_SIMPLIFY_TOLERANCE_METERS);
+  const selected = [];
+  for (const rawPoint of simplified) {
+    const previous = selected.at(-1);
+    if (!previous || distanceMeters(previous.lat, previous.lng, rawPoint.lat, rawPoint.lng)
+        >= MOTION_SUPPORTED_MIN_DISTANCE_METERS || rawPoint === simplified.at(-1)) {
+      selected.push(rawPoint);
+    }
+  }
+  return selected;
+}
+
+function buildLowQualityMotionTrackPoints(template, previousTrackPoint, rawPoints,
+  structureRawPoints, summary) {
+  const rawIndexById = new Map(rawPoints.map((rawPoint, index) => [rawPoint.rawPointId, index]));
+  const points = [];
+  let previousPoint = previousTrackPoint;
+  let contributionStartIndex = 0;
+  for (const rawPoint of structureRawPoints) {
+    const rawIndex = rawIndexById.get(rawPoint.rawPointId);
+    const contributingRawPointIds = rawPoints
+      .slice(contributionStartIndex, Number.isFinite(rawIndex) ? rawIndex + 1 : contributionStartIndex)
+      .map((point) => point.rawPointId);
+    contributionStartIndex = Number.isFinite(rawIndex) ? rawIndex + 1 : contributionStartIndex;
+    points.push({
+      ...template,
+      sourceRawPointId: rawPoint.rawPointId,
+      lat: rawPoint.lat,
+      lng: rawPoint.lng,
+      elapsedRealtimeNanos: rawPoint.elapsedRealtimeNanos,
+      timeMillis: rawPoint.timeMillis,
+      result: 'accept',
+      reason: 'motion_supported_low_quality',
+      distanceDeltaMeters: distanceMeters(previousPoint.lat, previousPoint.lng,
+        rawPoint.lat, rawPoint.lng),
+      movingTimeDeltaSeconds: Math.max(0,
+        (rawPoint.elapsedRealtimeNanos - previousPoint.elapsedRealtimeNanos) / 1_000_000_000),
+      cloudType: 'LOW_QUALITY_MOTION',
+      cloudSampleCount: summary.sampleCount,
+      cloudWeightedRadiusMeters: summary.bboxDiagonalMeters,
+      representativeRawPointId: rawPoint.rawPointId,
+      contributingRawPointIds,
+      coordinateSource: 'raw',
+      virtualCoordinate: false
+    });
+    previousPoint = points.at(-1);
+  }
+  return points;
+}
+
+function simplifyRawPoints(rawPoints, toleranceMeters) {
+  if (rawPoints.length <= 2) return rawPoints;
+  const projected = projectRawPoints(rawPoints);
+  const simplified = simplifyProjectedPoints(projected, toleranceMeters);
+  return simplified.map((point) => point.rawPoint);
+}
+
+function projectRawPoints(rawPoints) {
+  const origin = rawPoints[0];
+  const originLatRad = radians(origin.lat);
+  return rawPoints.map((rawPoint) => ({
+    rawPoint,
+    x: EARTH_RADIUS_METERS * radians(rawPoint.lng - origin.lng) * Math.cos(originLatRad),
+    y: EARTH_RADIUS_METERS * radians(rawPoint.lat - origin.lat)
+  }));
+}
+
+function simplifyProjectedPoints(points, toleranceMeters) {
+  if (points.length <= 2) return points;
+  let maxDistance = 0;
+  let maxIndex = 0;
+  for (let index = 1; index < points.length - 1; index++) {
+    const distance = perpendicularDistanceMeters(points[index], points[0], points.at(-1));
+    if (distance > maxDistance) {
+      maxDistance = distance;
+      maxIndex = index;
+    }
+  }
+  if (maxDistance <= toleranceMeters) return [points[0], points.at(-1)];
+  const left = simplifyProjectedPoints(points.slice(0, maxIndex + 1), toleranceMeters);
+  const right = simplifyProjectedPoints(points.slice(maxIndex), toleranceMeters);
+  return left.slice(0, -1).concat(right);
+}
+
+function perpendicularDistanceMeters(point, lineStart, lineEnd) {
+  const dx = lineEnd.x - lineStart.x;
+  const dy = lineEnd.y - lineStart.y;
+  if (dx === 0 && dy === 0) {
+    return Math.hypot(point.x - lineStart.x, point.y - lineStart.y);
+  }
+  return Math.abs(dy * point.x - dx * point.y + lineEnd.x * lineStart.y
+    - lineEnd.y * lineStart.x) / Math.hypot(dx, dy);
+}
+
+function removeExcludedRawPoints(product, rawPointIds) {
+  product.excluded.weak = product.excluded.weak
+    .filter((point) => !rawPointIds.has(point.rawPointId));
+  product.excluded.rejected = product.excluded.rejected
+    .filter((point) => !rawPointIds.has(point.rawPointId));
+  product.excluded.intakeRejected = product.excluded.intakeRejected
+    .filter((point) => !rawPointIds.has(point.rawPointId));
+}
+
+function reconcileTrackSegments(product, config) {
+  let segmentId = 1;
+  let previous = null;
+  for (const point of product.track) {
+    if (previous) {
+      const elapsedDelta = point.elapsedRealtimeNanos - previous.elapsedRealtimeNanos;
+      const crossesGap = elapsedDelta > config.gapSeconds * 1_000_000_000;
+      const suppressesSimplifiedLowQualityGap = previous.reason === 'motion_supported_low_quality'
+        && point.reason === 'motion_supported_low_quality';
+      const startsTransportRecovery = point.reason === 'recovery_transport_suspected_kept';
+      if ((crossesGap && !suppressesSimplifiedLowQualityGap) || startsTransportRecovery) {
+        segmentId++;
+      }
+      if (!crossesGap && point.reason === 'continuity_rescue_gap_recovery') {
+        point.reason = 'gap_recovery';
+      }
+    }
+    point.segmentId = segmentId;
+    previous = point;
+  }
+}
+
+function renumberTrackPoints(product) {
+  product.track.forEach((point, index) => {
+    point.trackPointId = index + 1;
+  });
 }
 
 function pruneIsolatedStationaryMovement(product, config) {
@@ -829,6 +1108,7 @@ function usesRawCoordinate(reason) {
     || reason === 'transport_suspected_kept'
     || reason === 'recovery_transport_suspected_kept'
     || reason === 'motion_supported_low_speed'
+    || reason === 'motion_supported_low_quality'
     || reason === 'gap_recovery'
     || reason?.startsWith('continuity_rescue_');
 }
@@ -838,7 +1118,8 @@ function shouldAccumulateMovement(reason) {
     || reason === 'transport_suspected_kept'
     || reason === 'recovery_transport_suspected_kept'
     || reason === 'continuity_rescue_low_accuracy'
-    || reason === 'motion_supported_low_speed';
+    || reason === 'motion_supported_low_speed'
+    || reason === 'motion_supported_low_quality';
 }
 
 function recoveryFastPathAllowed(rawPoint, previousTrustedTrackPoint, config) {

@@ -460,7 +460,38 @@ WEAK_CLOUD:
 且加速度 RMS、陀螺仪 RMS、步数增量都处于低运动区间
 ```
 
-### 9. 气压证据参与清洗
+### 9. 低质量运动段后处理
+
+低质量 GNSS 场景下，真实移动可能被大量 `stationary_continuity_jitter`
+包围，只剩一个孤立 `moving_good_fix`。Web 不应把这种点解释成普通 GPS 好点，也不应在有持续运动证据时直接删掉。
+
+保守后处理：
+
+```text
+候选点:
+  reason = moving_good_fix
+  前一个目标点不是交通工具风险
+  后一个目标点是 stationary_anchor / gap_recovery / continuity_rescue_gap_recovery
+
+候选 raw 区间:
+  从前一目标点之后到后一目标点之前
+  GPS provider
+  accuracy <= weakCloudAccuracyMeters
+
+触发条件:
+  duration >= 60s
+  近期 active-motion 覆盖比例 >= 0.7
+  合理相邻采样步距累计 >= 25m
+  合理移动步数 >= 8
+  区间 bbox 对角线 >= 25m
+```
+
+满足条件时，Web 不再保留单个 `moving_good_fix`。它会对候选 raw 区间做几何抽稀，
+生成少量 `motion_supported_low_quality` 结构点，并把每个结构点覆盖的 raw 区间写入
+`contributingRawPointIds`。这表示：这些点不是普通好 GPS，而是低质量 GNSS 下由采样间距、
+空间展开和运动证据共同支持的成品轨迹结构。
+
+### 10. 气压证据参与清洗
 
 气压证据默认不参与清洗，Web 页面提供 `气压参与清洗` 开关。开启后，气压仍然不作为
 剔除 raw 点的硬规则，只作为静止整段压缩的反证。
@@ -485,7 +516,7 @@ max(rawAltitude) - min(rawAltitude) >= 3m
 - 气压只影响“是否执行静止整段压缩”，不改变交通工具识别、GAP、intake 或点云稳定性。
 - 关闭开关时，Web 清洗结果保持不受 `barometer_window` 影响。
 
-### 10. 目标成品轨迹
+### 11. 目标成品轨迹
 
 进入目标成品轨迹的 result：
 
@@ -559,6 +590,12 @@ motion_supported_low_speed:
   coordinateSource = raw
   进入目标成品轨迹
   说明：静止阈值附近如果有近期 active motion，且低速位移连续合理，保留为真实低速移动
+
+motion_supported_low_quality:
+  coordinateSource = raw
+  进入目标成品轨迹
+  说明：原始 decision 是孤立 moving_good_fix，但它前后 raw 区间存在持续 active motion、足够采样步距和足够空间展开时，Web 将该区间抽稀为低质量 GNSS 下的运动结构点
+  保护：不跨 GAP，不接受疑似交通速度，不凭单点 active motion 恢复；短促晃动或整段空间展开不足时仍走 stationary / isolated 规则
 
 stationary_low_speed_tail:
   不进入目标成品轨迹

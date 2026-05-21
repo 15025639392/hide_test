@@ -91,8 +91,6 @@ const elements = {
     weakCloudAccuracyMeters: document.querySelector('#weakCloudAccuracyMeters'),
     gapSeconds: document.querySelector('#gapSeconds'),
     stationaryDistanceMeters: document.querySelector('#stationaryDistanceMeters'),
-    transportSpeedMetersPerSecond: document.querySelector('#transportSpeedMetersPerSecond'),
-    transportMinDistanceMeters: document.querySelector('#transportMinDistanceMeters'),
     barometerCleaningEnabled: document.querySelector('#barometerCleaningEnabled')
   },
   importStatus: document.querySelector('#importStatus'),
@@ -306,9 +304,8 @@ function algorithmBlock() {
       <h3>清洗算法实现</h3>
       <div class="algorithm-section">
         <b>当前参数</b>
-        <span>accuracy 上限 ${formatPlainNumber(config.maxIntakeAccuracyMeters)}m；弱点云 ${formatPlainNumber(config.weakCloudAccuracyMeters)}m；GAP ${formatPlainNumber(config.gapSeconds)}s</span>
-        <span>静止基础距离 ${formatPlainNumber(config.stationaryDistanceMeters)}m；交通工具速度 ${formatPlainNumber(config.transportSpeedMetersPerSecond)}m/s；交通工具位移 ${formatPlainNumber(config.transportMinDistanceMeters)}m</span>
-        <span>气压参与清洗 ${config.barometerCleaningEnabled ? '开启' : '关闭'}；垂直运动阈值 ${formatPlainNumber(config.barometerVerticalMotionMinRangeMeters)}m / ${formatPlainNumber(config.barometerVerticalMotionMinWindowCount)} 个窗口</span>
+        <span>弱点云 ${formatPlainNumber(config.weakCloudAccuracyMeters)}m；GAP ${formatPlainNumber(config.gapSeconds)}s；静止基础距离 ${formatPlainNumber(config.stationaryDistanceMeters)}m</span>
+        <span>accuracy 上限 ${formatPlainNumber(config.maxIntakeAccuracyMeters)}m；气压阻止静止整段压缩 ${config.barometerCleaningEnabled ? '开启' : '关闭'}</span>
       </div>
       ${CLEANING_ALGORITHM_SECTIONS.map((section) => `
         <div class="algorithm-section">
