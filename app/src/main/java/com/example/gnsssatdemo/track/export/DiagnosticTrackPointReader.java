@@ -29,16 +29,17 @@ public class DiagnosticTrackPointReader {
         return readAscentInputs(evidenceJsonl, true);
     }
 
-    private List<TrackPoint> readTrackPoints(File evidenceJsonl, boolean includeTransportDisplay)
+    private List<TrackPoint> readTrackPoints(File evidenceJsonl, boolean display)
             throws IOException, JSONException {
-        return readAscentInputs(evidenceJsonl, includeTransportDisplay).trackPoints;
+        return readAscentInputs(evidenceJsonl, display).trackPoints;
     }
 
-    private AscentInputs readAscentInputs(File evidenceJsonl, boolean includeTransportDisplay)
+    private AscentInputs readAscentInputs(File evidenceJsonl, boolean display)
             throws IOException, JSONException {
         EvidenceTrackProductBuilder.Result result =
                 new EvidenceTrackProductBuilder().build(evidenceJsonl);
-        return new AscentInputs(result.trackPoints, result.barometerSamples);
+        return new AscentInputs(display ? result.displayTrackPoints : result.trackPoints,
+                result.barometerSamples);
     }
 
     public static class AscentInputs {

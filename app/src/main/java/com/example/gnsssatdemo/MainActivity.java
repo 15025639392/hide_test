@@ -2569,9 +2569,7 @@ public class MainActivity extends Activity {
             return new DiagnosticTrackPointReader.AscentInputs(new ArrayList<>(), new ArrayList<>());
         }
         if (trackSession != null && trackSession.getSessionId() != null) {
-            List<TrackPoint> points = trackSession.getTrackPoints();
-            points.addAll(trackSession.getWeakTrackPoints());
-            points.addAll(trackSession.getTransportTrackPoints());
+            List<TrackPoint> points = trackSession.getDisplayTrackPoints();
             sortMapTrackPoints(points);
             return new DiagnosticTrackPointReader.AscentInputs(
                     points, trackSession.getBarometerAscentSamples());
@@ -3248,6 +3246,9 @@ public class MainActivity extends Activity {
                 if (isWeakTrackPoint(point)) {
                     continue;
                 }
+                if (isStationaryDisplayPoint(point)) {
+                    continue;
+                }
                 if (previous != null && isTransportSegment(previous, point) == transport) {
                     PointF from = toScreen(previous.latitude, previous.longitude);
                     PointF to = toScreen(point.latitude, point.longitude);
@@ -3412,6 +3413,11 @@ public class MainActivity extends Activity {
 
         private boolean isWeakTrackPoint(TrackPoint point) {
             return "weak".equals(point.decisionResult);
+        }
+
+        private boolean isStationaryDisplayPoint(TrackPoint point) {
+            return "stationary_anchor".equals(point.decisionReason)
+                    || "stationary_session_anchor".equals(point.decisionReason);
         }
 
         private boolean isTransportSegment(TrackPoint from, TrackPoint to) {

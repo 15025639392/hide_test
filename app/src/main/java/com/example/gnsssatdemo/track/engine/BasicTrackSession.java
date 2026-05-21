@@ -7,6 +7,7 @@ import android.os.Build;
 import android.os.SystemClock;
 
 import com.example.gnsssatdemo.track.export.GpxExporter;
+import com.example.gnsssatdemo.track.export.EvidenceTrackProductBuilder;
 import com.example.gnsssatdemo.track.export.SessionFileStore;
 import com.example.gnsssatdemo.track.export.TrackExportValidator;
 import com.example.gnsssatdemo.track.model.GnssSnapshotDiagnosticFields;
@@ -104,11 +105,14 @@ public class BasicTrackSession implements Closeable {
     private final List<TrackPoint> trackPoints = new ArrayList<>();
     private final List<TrackPoint> weakTrackPoints = new ArrayList<>();
     private final List<TrackPoint> transportTrackPoints = new ArrayList<>();
+    private final List<TrackPoint> displayTrackPoints = new ArrayList<>();
+    private long displayTrackPointsEventSeq = -1L;
     private final List<TrackAscentCalculator.BarometerSample> barometerAscentSamples =
             new ArrayList<>();
     private TrackAscentCalculator.Result cachedAscentResult;
     private boolean ascentResultDirty = true;
     private final List<DeviceMotionWindow> recentDeviceMotionWindows = new ArrayList<>();
+    private final List<DeviceMotionWindow> displayDeviceMotionWindows = new ArrayList<>();
     private final Set<Long> acceptedDecisionIds = new HashSet<>();
     private final Set<Long> countedCloudIds = new HashSet<>();
     private final Map<String, Integer> cloudWindowCounts = new HashMap<>();
@@ -174,9 +178,12 @@ public class BasicTrackSession implements Closeable {
         trackPoints.clear();
         weakTrackPoints.clear();
         transportTrackPoints.clear();
+        displayTrackPoints.clear();
+        displayTrackPointsEventSeq = -1L;
         barometerAscentSamples.clear();
         invalidateAscentResult();
         recentDeviceMotionWindows.clear();
+        displayDeviceMotionWindows.clear();
         acceptedDecisionIds.clear();
         countedCloudIds.clear();
         cloudWindowCounts.clear();
@@ -543,6 +550,7 @@ public class BasicTrackSession implements Closeable {
     }
 
     private void rememberDeviceMotionWindow(DeviceMotionWindow window) {
+        displayDeviceMotionWindows.add(window);
         recentDeviceMotionWindows.add(window);
         while (recentDeviceMotionWindows.size() > RECENT_SUMMARY_LIMIT) {
             recentDeviceMotionWindows.remove(0);
@@ -1102,6 +1110,19 @@ public class BasicTrackSession implements Closeable {
 
     public List<TrackPoint> getTrackPoints() {
         return new ArrayList<>(trackPoints);
+    }
+
+    public List<TrackPoint> getDisplayTrackPoints() {
+        long eventSeq = journalWriter.getLastEventSeq();
+        if (displayTrackPointsEventSeq == eventSeq) {
+            return new ArrayList<>(displayTrackPoints);
+        }
+        List<TrackPoint> points = EvidenceTrackProductBuilder.cleanDisplayTrackPoints(
+                combinedTrackPoints(), displayDeviceMotionWindows);
+        displayTrackPoints.clear();
+        displayTrackPoints.addAll(points);
+        displayTrackPointsEventSeq = eventSeq;
+        return new ArrayList<>(displayTrackPoints);
     }
 
     public List<TrackPoint> getWeakTrackPoints() {

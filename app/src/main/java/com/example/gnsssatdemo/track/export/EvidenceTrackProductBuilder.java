@@ -25,9 +25,15 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Collections;
+import java.util.Comparator;
 
 public class EvidenceTrackProductBuilder {
     private static final long WEAK_TRACK_POINT_ID_OFFSET = 1_000_000_000L;
+    private static final double STATIONARY_DISTANCE_METERS = 5.0;
+    private static final double STATIONARY_ACCURACY_MULTIPLIER = 1.5;
+    private static final double STATIONARY_SESSION_STILL_RATIO = 0.95;
+    private static final double STATIONARY_SESSION_ANCHOR_RATIO = 0.8;
 
     public Result build(File evidenceJsonl) throws IOException, JSONException {
         long recordStartElapsedRealtimeNanos = -1L;
@@ -144,7 +150,258 @@ public class EvidenceTrackProductBuilder {
                 }
             }
         }
-        return new Result(trackPoints, decisions, barometerSamples, stats);
+        List<TrackPoint> displayTrackPoints = cleanDisplayTrackPoints(trackPoints, motionWindows);
+        return new Result(trackPoints, displayTrackPoints, decisions, barometerSamples, stats);
+    }
+
+    public static List<TrackPoint> cleanDisplayTrackPoints(List<TrackPoint> points,
+                                                           List<DeviceMotionWindow> motionWindows) {
+        List<TrackPoint> trustedPoints = new ArrayList<>();
+        List<TrackPoint> weakPoints = new ArrayList<>();
+        for (TrackPoint point : points) {
+            if ("weak".equals(point.decisionResult)) {
+                weakPoints.add(point);
+            } else {
+                trustedPoints.add(point);
+            }
+        }
+        List<TrackPoint> cleaned = pruneRedundantStationaryAnchors(trustedPoints);
+        cleaned = pruneStationaryGapRecoveryJitter(cleaned);
+        cleaned = pruneIsolatedStationaryMovement(cleaned);
+        cleaned = pruneStationaryLowSpeedTail(cleaned);
+        cleaned = collapseStationarySessionIfNeeded(cleaned, motionWindows);
+        if (weakPoints.isEmpty()) {
+            return cleaned;
+        }
+        List<TrackPoint> display = new ArrayList<>(cleaned.size() + weakPoints.size());
+        display.addAll(cleaned);
+        display.addAll(weakPoints);
+        sortTrackPoints(display);
+        return display;
+    }
+
+    private static void sortTrackPoints(List<TrackPoint> points) {
+        Collections.sort(points, new Comparator<TrackPoint>() {
+            @Override
+            public int compare(TrackPoint left, TrackPoint right) {
+                int byTime = Long.compare(left.elapsedRealtimeNanos, right.elapsedRealtimeNanos);
+                if (byTime != 0) {
+                    return byTime;
+                }
+                return Long.compare(left.sourceRawPointId, right.sourceRawPointId);
+            }
+        });
+    }
+
+    private static List<TrackPoint> pruneRedundantStationaryAnchors(List<TrackPoint> points) {
+        List<TrackPoint> cleaned = new ArrayList<>();
+        TrackPoint activeStationaryAnchor = null;
+        for (TrackPoint point : points) {
+            if ("stationary_anchor".equals(point.decisionReason)
+                    && activeStationaryAnchor != null
+                    && distanceMeters(activeStationaryAnchor, point) <= stationaryThreshold(point)) {
+                continue;
+            }
+            cleaned.add(point);
+            activeStationaryAnchor = "stationary_anchor".equals(point.decisionReason)
+                    ? point : null;
+        }
+        return cleaned;
+    }
+
+    private static List<TrackPoint> pruneStationaryGapRecoveryJitter(List<TrackPoint> points) {
+        List<TrackPoint> cleaned = new ArrayList<>();
+        TrackPoint activeStationaryAnchor = null;
+        for (TrackPoint point : points) {
+            if ("gap_recovery".equals(point.decisionReason)
+                    && activeStationaryAnchor != null
+                    && distanceMeters(activeStationaryAnchor, point) <= stationaryThreshold(point)) {
+                continue;
+            }
+            cleaned.add(point);
+            activeStationaryAnchor = "stationary_anchor".equals(point.decisionReason)
+                    ? point : null;
+        }
+        return cleaned;
+    }
+
+    private static List<TrackPoint> pruneIsolatedStationaryMovement(List<TrackPoint> points) {
+        List<TrackPoint> cleaned = new ArrayList<>();
+        for (int i = 0; i < points.size(); i++) {
+            TrackPoint point = points.get(i);
+            TrackPoint next = i + 1 < points.size() ? points.get(i + 1) : null;
+            if ("moving_good_fix".equals(point.decisionReason)
+                    && next != null
+                    && "stationary_anchor".equals(next.decisionReason)
+                    && distanceMeters(point, next) <= Math.max(STATIONARY_DISTANCE_METERS, 10.0)) {
+                continue;
+            }
+            cleaned.add(point);
+        }
+        return cleaned;
+    }
+
+    private static List<TrackPoint> pruneStationaryLowSpeedTail(List<TrackPoint> points) {
+        boolean[] remove = new boolean[points.size()];
+        double tailDistanceMeters = Math.max(STATIONARY_DISTANCE_METERS, 10.0);
+        for (int i = 0; i < points.size(); i++) {
+            TrackPoint anchor = points.get(i);
+            if (!"stationary_anchor".equals(anchor.decisionReason)) {
+                continue;
+            }
+            for (int cursor = i - 1; cursor >= 0; cursor--) {
+                TrackPoint point = points.get(cursor);
+                if (!isStationaryTailCandidate(point)) {
+                    break;
+                }
+                if (distanceMeters(point, anchor) > tailDistanceMeters) {
+                    break;
+                }
+                remove[cursor] = true;
+            }
+        }
+        List<TrackPoint> cleaned = new ArrayList<>();
+        for (int i = 0; i < points.size(); i++) {
+            if (!remove[i]) {
+                cleaned.add(points.get(i));
+            }
+        }
+        return cleaned;
+    }
+
+    private static boolean isStationaryTailCandidate(TrackPoint point) {
+        return "motion_supported_low_speed".equals(point.decisionReason)
+                || "continuity_rescue_low_accuracy".equals(point.decisionReason);
+    }
+
+    private static List<TrackPoint> collapseStationarySessionIfNeeded(List<TrackPoint> points,
+                                                                      List<DeviceMotionWindow> motionWindows) {
+        List<TrackPoint> trustedPoints = trustedDisplayPoints(points);
+        if (trustedPoints.size() <= 1) {
+            return points;
+        }
+        double stillRatio = stillMotionRatio(motionWindows);
+        double stationaryAnchorRatio = stationaryAnchorRatio(trustedPoints);
+        if (stillRatio < STATIONARY_SESSION_STILL_RATIO
+                || stationaryAnchorRatio < STATIONARY_SESSION_ANCHOR_RATIO) {
+            return points;
+        }
+        TrackPoint collapsed = stationarySessionAnchor(trustedPoints);
+        List<TrackPoint> cleaned = new ArrayList<>();
+        cleaned.add(collapsed);
+        for (TrackPoint point : points) {
+            if ("weak".equals(point.decisionResult)) {
+                cleaned.add(point);
+            }
+        }
+        return cleaned;
+    }
+
+    private static List<TrackPoint> trustedDisplayPoints(List<TrackPoint> points) {
+        List<TrackPoint> trusted = new ArrayList<>();
+        for (TrackPoint point : points) {
+            if (!"weak".equals(point.decisionResult)) {
+                trusted.add(point);
+            }
+        }
+        return trusted;
+    }
+
+    private static double stationaryAnchorRatio(List<TrackPoint> points) {
+        if (points.isEmpty()) {
+            return 0.0;
+        }
+        int anchorCount = 0;
+        for (TrackPoint point : points) {
+            if ("stationary_anchor".equals(point.decisionReason)
+                    || "first_fix_good".equals(point.decisionReason)
+                    || "first_fix_relaxed".equals(point.decisionReason)) {
+                anchorCount++;
+            }
+        }
+        return anchorCount / (double) points.size();
+    }
+
+    private static double stillMotionRatio(List<DeviceMotionWindow> motionWindows) {
+        if (motionWindows == null || motionWindows.isEmpty()) {
+            return 0.0;
+        }
+        int still = 0;
+        for (DeviceMotionWindow window : motionWindows) {
+            if (isLowMotionWindow(window)) {
+                still++;
+            }
+        }
+        return still / (double) motionWindows.size();
+    }
+
+    private static boolean isLowMotionWindow(DeviceMotionWindow window) {
+        double accelRms = window.linearAccelerationSampleCount > 0
+                ? window.linearAccelerationRmsMps2 : window.accelerometerDynamicRmsMps2;
+        return accelRms < 0.12
+                && window.gyroscopeRmsRadps < 0.04
+                && window.stepCounterDelta <= 0
+                && window.stepDetectorCount <= 0;
+    }
+
+    private static TrackPoint stationarySessionAnchor(List<TrackPoint> points) {
+        double latSum = 0.0;
+        double lngSum = 0.0;
+        double weightSum = 0.0;
+        TrackPoint representative = points.get(0);
+        for (TrackPoint point : points) {
+            double accuracy = Math.max(1.0, point.accuracyMeters);
+            double weight = 1.0 / (accuracy * accuracy);
+            latSum += point.latitude * weight;
+            lngSum += point.longitude * weight;
+            weightSum += weight;
+            if (point.accuracyMeters < representative.accuracyMeters) {
+                representative = point;
+            }
+        }
+        double latitude = latSum / weightSum;
+        double longitude = lngSum / weightSum;
+        double radiusMeters = 0.0;
+        for (TrackPoint point : points) {
+            radiusMeters = Math.max(radiusMeters,
+                    distanceMeters(latitude, longitude, point.latitude, point.longitude));
+        }
+        return new TrackPoint(representative.trackPointId, representative.sourceRawPointId,
+                representative.sourceDecisionId, 1L, latitude, longitude,
+                representative.hasAltitude, representative.altitude,
+                representative.hasVerticalAccuracy, representative.verticalAccuracyMeters,
+                representative.accuracyMeters, representative.hasSpeed,
+                representative.speedMetersPerSecond, representative.hasBearing,
+                representative.bearingDegrees, representative.timeMillis,
+                representative.elapsedRealtimeNanos, "anchor", "stationary_session_anchor",
+                0.0, 0.0, representative.sourceGnssSnapshotId, "ANCHOR",
+                representative.sourceCloudId, representative.representativeRawPointId,
+                representative.contributingRawPointIds, true,
+                latitude, longitude, radiusMeters, representative.hasPressureSample,
+                representative.pressureSampleElapsedRealtimeNanos, representative.pressureHpa,
+                representative.rawBarometerAltitudeMeters);
+    }
+
+    private static double stationaryThreshold(TrackPoint point) {
+        return Math.max(STATIONARY_DISTANCE_METERS,
+                point.accuracyMeters * STATIONARY_ACCURACY_MULTIPLIER);
+    }
+
+    private static double distanceMeters(TrackPoint from, TrackPoint to) {
+        return distanceMeters(from.latitude, from.longitude, to.latitude, to.longitude);
+    }
+
+    private static double distanceMeters(double fromLatitude, double fromLongitude,
+                                         double toLatitude, double toLongitude) {
+        double lat1 = Math.toRadians(fromLatitude);
+        double lat2 = Math.toRadians(toLatitude);
+        double dLat = lat2 - lat1;
+        double dLng = Math.toRadians(toLongitude - fromLongitude);
+        double sinLat = Math.sin(dLat / 2d);
+        double sinLng = Math.sin(dLng / 2d);
+        double a = sinLat * sinLat
+                + Math.cos(lat1) * Math.cos(lat2) * sinLng * sinLng;
+        return 6_371_000d * 2d * Math.atan2(Math.sqrt(a), Math.sqrt(1d - a));
     }
 
     private TrackPoint trackPointFromDecision(long trackPointId, long decisionId, long segmentId,
@@ -284,15 +541,18 @@ public class EvidenceTrackProductBuilder {
 
     public static class Result {
         public final List<TrackPoint> trackPoints;
+        public final List<TrackPoint> displayTrackPoints;
         public final List<DecisionRecord> decisions;
         public final List<TrackAscentCalculator.BarometerSample> barometerSamples;
         public final Stats stats;
 
         Result(List<TrackPoint> trackPoints,
+               List<TrackPoint> displayTrackPoints,
                List<DecisionRecord> decisions,
                List<TrackAscentCalculator.BarometerSample> barometerSamples,
                Stats stats) {
             this.trackPoints = trackPoints;
+            this.displayTrackPoints = displayTrackPoints;
             this.decisions = decisions;
             this.barometerSamples = barometerSamples;
             this.stats = stats;

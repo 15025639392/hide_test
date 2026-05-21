@@ -660,13 +660,7 @@ public class RecordingForegroundService extends Service {
             return "";
         }
         StringBuilder sb = new StringBuilder();
-        for (TrackPoint point : trackSession.getTrackPoints()) {
-            appendPolylinePoint(sb, point);
-        }
-        for (TrackPoint point : trackSession.getWeakTrackPoints()) {
-            appendPolylinePoint(sb, point);
-        }
-        for (TrackPoint point : trackSession.getTransportTrackPoints()) {
+        for (TrackPoint point : trackSession.getDisplayTrackPoints()) {
             appendPolylinePoint(sb, point);
         }
         return sortedPolyline(sb.toString());
