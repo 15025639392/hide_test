@@ -33,6 +33,7 @@ public class SessionFileStoreTest {
         assertEquals(new File(dir, "session.json"), store.sessionJson(dir));
         assertEquals(new File(dir, "session.json.tmp"), store.sessionJsonTmp(dir));
         assertEquals(new File(dir, "diagnostic.jsonl"), store.diagnosticJsonl(dir));
+        assertEquals(new File(dir, "evidence.jsonl"), store.evidenceJsonl(dir));
         assertEquals(new File(dir, "track.gpx"), store.trackGpx(dir));
         assertEquals(new File(dir, "track.gpx.tmp"), store.trackGpxTmp(dir));
         assertEquals(new File(dir, "export"), store.exportDir(dir));

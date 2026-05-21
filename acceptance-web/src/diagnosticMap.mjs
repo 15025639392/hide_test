@@ -99,7 +99,7 @@ const DECISION_REASON_EXPLANATIONS = {
 };
 
 export function isDiagnosticJsonlPath(path) {
-  return /(^|\/)diagnostic\.jsonl(?:\.json)?$/i.test(String(path || ''));
+  return /(^|\/)(diagnostic|evidence)\.jsonl(?:\.json)?$/i.test(String(path || ''));
 }
 
 export function isDiagnosticCandidatePath(path) {

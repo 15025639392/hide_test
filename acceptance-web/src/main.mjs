@@ -409,6 +409,7 @@ function cleanedPointDetailsMarkup(dataset, point) {
     ${detailBlock('清洗点', [
       `trackPointId ${point.trackPointId}`,
       `sourceRawPointId ${point.sourceRawPointId}`,
+      `recomputedDecisionId ${point.recomputedDecisionId}`,
       `result ${point.result}`,
       `reason ${point.reason}`,
       `lat/lng ${formatLatLng(point)}`,

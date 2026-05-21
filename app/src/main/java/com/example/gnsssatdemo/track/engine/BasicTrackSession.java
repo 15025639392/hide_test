@@ -591,6 +591,7 @@ public class BasicTrackSession implements Closeable {
         event.put("createdWallTimeMillis", createdWallTimeMillis);
         event.put("createdElapsedRealtimeNanos", recordStartElapsedRealtimeNanos);
         event.put("diagnosticLogFileName", "diagnostic.jsonl");
+        event.put("evidenceLogFileName", "evidence.jsonl");
         event.put("gpxFileName", "track.gpx");
         event.put("completionState", lifecycle.getCompletionState());
         event.put("strategyVersion", STRATEGY_VERSION);
@@ -1036,7 +1037,20 @@ public class BasicTrackSession implements Closeable {
         if (sessionDir == null) {
             return "";
         }
-        File file = fileStore.diagnosticJsonl(sessionDir);
+        return readSessionText(fileStore.diagnosticJsonl(sessionDir));
+    }
+
+    public String getEvidenceText() throws IOException {
+        if (sessionDir == null) {
+            return "";
+        }
+        return readSessionText(fileStore.evidenceJsonl(sessionDir));
+    }
+
+    private String readSessionText(File file) throws IOException {
+        if (!file.exists()) {
+            return "";
+        }
         byte[] bytes = new byte[(int) file.length()];
         try (FileInputStream inputStream = new FileInputStream(file)) {
             int offset = 0;
@@ -1277,6 +1291,10 @@ public class BasicTrackSession implements Closeable {
 
     public String suggestedDiagnosticFileName() {
         return "gnss_diagnostic_" + safeSessionName() + ".jsonl";
+    }
+
+    public String suggestedEvidenceFileName() {
+        return "gnss_evidence_" + safeSessionName() + ".jsonl";
     }
 
     private String safeSessionName() {

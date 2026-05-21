@@ -68,7 +68,7 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
       const targetPoint = {
         trackPointId: ++trackPointId,
         sourceRawPointId: rawPoint.rawPointId,
-        sourceDecisionId: decisionId,
+        recomputedDecisionId: decisionId,
         segmentId,
         lat: decision.cloudCenterLatitude,
         lng: decision.cloudCenterLongitude,

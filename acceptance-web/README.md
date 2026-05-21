@@ -23,8 +23,11 @@ http://localhost:4173
 
 ## 输入
 
-- 可以选择多个 `diagnostic.jsonl`。
-- 可以上传 session 目录，页面会自动收集目录内所有路径末尾为 `diagnostic.jsonl` 的文件。
+- 可以选择多个 `diagnostic.jsonl` 或 `evidence.jsonl`。
+- 可以上传 session 目录，页面会自动收集目录内所有路径末尾为
+  `diagnostic.jsonl` 或 `evidence.jsonl` 的文件。
+- `evidence.jsonl` 是推荐的新输入：它只包含 Android 采集证据，不包含 Android
+  实时判点结果；Web 清洗算法负责重新判点和生成目标成品轨迹。
 
 ## 页面能力
 

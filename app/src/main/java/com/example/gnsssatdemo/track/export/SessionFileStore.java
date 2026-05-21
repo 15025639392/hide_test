@@ -49,6 +49,10 @@ public class SessionFileStore {
         return new File(sessionDir, "diagnostic.jsonl");
     }
 
+    public File evidenceJsonl(File sessionDir) {
+        return new File(sessionDir, "evidence.jsonl");
+    }
+
     public File trackGpx(File sessionDir) {
         return new File(sessionDir, "track.gpx");
     }

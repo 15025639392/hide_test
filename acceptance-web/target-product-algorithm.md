@@ -31,7 +31,7 @@ stage2-track-trust-v3-sampling-cloud
 - 目标统计：距离、运动时间、segment、GAP、交通工具混入、点数。
 - 排除证据：`weak`、`reject`、`intake_rejected` 及原因。
 - 复算解释：每个 raw 点为什么进入或没有进入目标成品。
-- 对齐结果：Web 复算 decision 与 Android 已记录 decision 的差异。
+- 可选对齐结果：Web 复算 decision 与 Android 已记录 decision 的差异。
 
 本文只定义算法和数据边界，不要求立即落 UI 或代码。
 
@@ -58,12 +58,18 @@ Web:
   离线分析端和目标成品复算端
   读取 diagnostic.jsonl
   生成 TargetTrackProduct
-  与 Android recorded decision 做对齐 diff
+  可选地与 Android recorded decision 做对齐 diff
 ```
 
 因此，本文算法只服务 Web 离线分析和目标成品预览。即使 Web 复算结果与 Android
 实时 decision 存在差异，也应先作为样本分析和策略讨论依据，不直接改变 Android
 实时轨迹计算。
+
+Web 清洗算法不能依赖 Android 已记录的 `decision` 或 `location_intake_rejected`
+作为输入真相。它们只能是兼容旧诊断日志时的对照材料。长期口径应让
+`diagnostic.jsonl` 尽量保持纯证据属性：采样请求、原始定位、卫星质量、
+运动摘要和运行时事件由 Android 产出；最终判点、清洗轨迹和目标统计由 Web
+算法自己承担。
 
 ## 输入事件
 
@@ -91,12 +97,12 @@ sampling_policy
 gnss_snapshot
 raw_location
 motion_summary
-decision
-location_intake_rejected
 ```
 
-`decision` 和 `location_intake_rejected` 是 Android 已记录结果，Web 复算时不能把它们
-当作判点真相，只能用于对齐 diff 和解释展示。
+`decision` 和 `location_intake_rejected` 不是 Web 清洗算法的必要输入。
+如果旧日志里存在这些 Android 已记录结果，Web 只能把它们用于对齐 diff 和解释展示；
+如果未来纯证据版 `diagnostic.jsonl` 不再写入这些事件，Web 清洗算法仍应能生成
+`TargetTrackProduct`。
 
 ## 输出对象
 
@@ -145,7 +151,7 @@ TargetTrackProduct
 {
   "trackPointId": 1,
   "sourceRawPointId": 10,
-  "sourceDecisionId": 3,
+  "recomputedDecisionId": 3,
   "segmentId": 1,
   "lat": 30.0,
   "lng": 120.0,
@@ -277,7 +283,8 @@ duplicate key：
 samplingEpochId | provider | elapsedRealtimeNanos | lat | lng | accuracy
 ```
 
-Intake 拒绝点进入 `excluded.intakeRejected`，不生成 cloud sample、decision、TrackPoint、距离或运动时间。
+Intake 拒绝点进入 `excluded.intakeRejected`。这个拒绝结果由 Web intake 复算产生，
+不依赖 Android 写入的 `location_intake_rejected`。
 
 ### 5. GNSS 证据匹配
 
@@ -502,7 +509,9 @@ GAP 两端直线不能计入 totalDistanceMeters
 
 ## Android 对齐 diff
 
-Web 复算完成后，应与 `diagnostic.jsonl` 中记录的 Android decision 对齐。
+Web 复算完成后，如果 `diagnostic.jsonl` 中存在 Android recorded decision，
+可以做可选对齐 diff。这个 diff 只用于比较 Android 实时策略和 Web 离线清洗结果，
+不能反向成为 Web 清洗依据。
 
 对齐 key 优先级：
 
@@ -512,7 +521,7 @@ decisionId
 trackPointId
 ```
 
-必须比较：
+可比较：
 
 ```text
 result

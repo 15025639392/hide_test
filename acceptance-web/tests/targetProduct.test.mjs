@@ -29,6 +29,37 @@ test('buildTargetTrackProduct rebuilds target track from diagnostic raw evidence
   assert.equal(product.alignment.matchedDecisionCount, 2);
 });
 
+test('buildTargetTrackProduct does not require Android recorded decisions', () => {
+  const model = parseDiagnosticJsonl([
+    '{"event":"session_metadata","sessionId":"S1","strategyVersion":"stage2-track-trust-v3-sampling-cloud","recordStartElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":8,"top4AvgCn0":32}',
+    '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":5,"elapsedRealtimeNanos":1000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.0001,"lng":120,"accuracy":5,"elapsedRealtimeNanos":4000000000,"sourceGnssSnapshotId":1}'
+  ].join('\n'));
+
+  const product = buildTargetTrackProduct(model);
+
+  assert.equal(product.track.length, 2);
+  assert.equal(product.track[0].recomputedDecisionId, 1);
+  assert.equal(product.track[1].recomputedDecisionId, 2);
+  assert.equal(product.alignment.comparedDecisionCount, 0);
+});
+
+test('buildTargetTrackProduct recomputes intake instead of relying on Android intake events', () => {
+  const model = parseDiagnosticJsonl([
+    '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"raw_location","rawPointId":1,"provider":"network","lat":30,"lng":120,"accuracy":5,"elapsedRealtimeNanos":1000000000}'
+  ].join('\n'));
+
+  const product = buildTargetTrackProduct(model);
+
+  assert.equal(product.track.length, 0);
+  assert.equal(product.excluded.intakeRejected.length, 1);
+  assert.equal(product.excluded.intakeRejected[0].reason, 'provider_not_gps');
+});
+
 test('buildTargetTrackProduct keeps gap recovery in target track with zero delta', () => {
   const model = parseDiagnosticJsonl([
     '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',

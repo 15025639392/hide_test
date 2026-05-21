@@ -16,6 +16,7 @@ import java.nio.charset.StandardCharsets;
 public class SessionJournalWriter {
     private final SessionFileStore fileStore;
     private DiagnosticLogger logger;
+    private DiagnosticLogger evidenceLogger;
     private File sessionDir;
     private long lastEventSeq;
     private long lastUpdatedWallTimeMillis;
@@ -37,6 +38,7 @@ public class SessionJournalWriter {
         }
         closeQuietly();
         logger = new DiagnosticLogger(fileStore.diagnosticJsonl(sessionDir));
+        evidenceLogger = new DiagnosticLogger(fileStore.evidenceJsonl(sessionDir));
     }
 
     public boolean isDiagnosticLoggerOpen() {
@@ -49,6 +51,7 @@ public class SessionJournalWriter {
             throw new IOException("diagnostic logger is not open");
         }
         lastEventSeq = logger.append(event, sessionId, eventElapsedRealtimeNanos);
+        appendEvidenceIfNeeded(event, sessionId, eventElapsedRealtimeNanos);
         lastUpdatedWallTimeMillis = System.currentTimeMillis();
     }
 
@@ -77,14 +80,46 @@ public class SessionJournalWriter {
     }
 
     public void closeQuietly() {
-        if (logger == null) {
+        closeLoggerQuietly(logger);
+        logger = null;
+        closeLoggerQuietly(evidenceLogger);
+        evidenceLogger = null;
+    }
+
+    private void appendEvidenceIfNeeded(JSONObject event, String sessionId,
+                                        long eventElapsedRealtimeNanos)
+            throws IOException, JSONException {
+        if (evidenceLogger == null || !isEvidenceEvent(event.optString("event", ""))) {
+            return;
+        }
+        evidenceLogger.append(new JSONObject(event.toString()), sessionId,
+                eventElapsedRealtimeNanos);
+    }
+
+    private boolean isEvidenceEvent(String eventName) {
+        return "session_metadata".equals(eventName)
+                || "config_snapshot".equals(eventName)
+                || "runtime_snapshot".equals(eventName)
+                || "session_event".equals(eventName)
+                || "sampling_policy".equals(eventName)
+                || "gnss_snapshot".equals(eventName)
+                || "raw_location".equals(eventName)
+                || "motion_summary".equals(eventName)
+                || "pressure_sample".equals(eventName)
+                || "pressure_sample_rejected".equals(eventName)
+                || "barometer_calibration".equals(eventName)
+                || "pressure_summary".equals(eventName)
+                || "session_integrity_error".equals(eventName);
+    }
+
+    private void closeLoggerQuietly(DiagnosticLogger target) {
+        if (target == null) {
             return;
         }
         try {
-            logger.close();
+            target.close();
         } catch (IOException ignored) {
             // Best effort.
         }
-        logger = null;
     }
 }

@@ -1758,7 +1758,7 @@ public class MainActivity extends Activity {
         if (trackSession.canExportTrustedGpx()) {
             addSmallExportButton(trackExportRow, "GPX", v -> exportCurrentTrackAsGpx());
         }
-        addSmallExportButton(trackExportRow, "诊断", v -> exportCurrentDiagnosticLog());
+        addSmallExportButton(trackExportRow, "证据", v -> exportCurrentEvidenceLog());
         addExportRowIfNotEmpty(card, trackExportRow);
 
         if (canExportCurrentSampleReport()) {
@@ -1836,9 +1836,9 @@ public class MainActivity extends Activity {
             addSmallExportButton(trackExportRow, "GPX",
                     v -> exportHistoricalTrustedGpx(manifest));
         }
-        if (canExportHistoricalDiagnostic(manifest)) {
-            addSmallExportButton(trackExportRow, "诊断",
-                    v -> exportHistoricalDiagnosticLog(manifest));
+        if (canExportHistoricalEvidence(manifest)) {
+            addSmallExportButton(trackExportRow, "证据",
+                    v -> exportHistoricalEvidenceLog(manifest));
         }
         addExportRowIfNotEmpty(card, trackExportRow);
 
@@ -2169,6 +2169,10 @@ public class MainActivity extends Activity {
         return manifest != null && manifest.diagnosticLogExists;
     }
 
+    private boolean canExportHistoricalEvidence(SessionManifest manifest) {
+        return manifest != null && evidenceFile(manifest).exists();
+    }
+
     private boolean canExportCurrentSampleReport() {
         return trackSession != null
                 && trackSession.getSessionDirPath() != null
@@ -2230,6 +2234,20 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void exportCurrentEvidenceLog() {
+        try {
+            String evidenceText = trackSession.getEvidenceText();
+            if (evidenceText.isEmpty()) {
+                setStatus("证据日志为空");
+                return;
+            }
+            shareTextFile(evidenceText, trackSession.suggestedEvidenceFileName(),
+                    "application/json", "分享证据日志");
+        } catch (IOException e) {
+            setStatus("读取证据日志失败: " + e.getMessage());
+        }
+    }
+
     private void exportLatestHistoricalDiagnosticLog() {
         SessionManifest exportableManifest = latestExportableHistoricalDiagnosticManifest();
         if (exportableManifest == null) {
@@ -2268,6 +2286,25 @@ public class MainActivity extends Activity {
                     "application/json", "分享诊断日志");
         } catch (IOException e) {
             setStatus("读取历史诊断日志失败: " + e.getMessage());
+        }
+    }
+
+    private void exportHistoricalEvidenceLog(SessionManifest manifest) {
+        if (!canExportHistoricalEvidence(manifest)) {
+            setStatus("这条历史记录没有证据日志可导出");
+            return;
+        }
+        try {
+            String evidenceText = readText(evidenceFile(manifest));
+            if (evidenceText.isEmpty()) {
+                setStatus("证据日志为空");
+                return;
+            }
+            setStatus("准备分享历史证据: " + manifest.sessionId);
+            shareTextFile(evidenceText, evidenceShareFileName(manifest),
+                    "application/json", "分享证据日志");
+        } catch (IOException e) {
+            setStatus("读取历史证据日志失败: " + e.getMessage());
         }
     }
 
@@ -2394,6 +2431,17 @@ public class MainActivity extends Activity {
 
     private String diagnosticShareFileName(SessionManifest manifest) {
         return "gnss_diagnostic_" + manifest.sessionId + ".jsonl";
+    }
+
+    private String evidenceShareFileName(SessionManifest manifest) {
+        return "gnss_evidence_" + manifest.sessionId + ".jsonl";
+    }
+
+    private File evidenceFile(SessionManifest manifest) {
+        if (manifest == null || manifest.sessionDir == null) {
+            return new File("");
+        }
+        return new SessionFileStore(this).evidenceJsonl(manifest.sessionDir);
     }
 
     private String sampleReportShareFileName(SessionManifest manifest) {
