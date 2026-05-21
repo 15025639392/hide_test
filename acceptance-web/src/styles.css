@@ -243,6 +243,10 @@ button:disabled {
   background: #ef4444;
 }
 
+.dot.cleaned {
+  background: #ef4444;
+}
+
 .dot {
   width: 10px;
   height: 10px;

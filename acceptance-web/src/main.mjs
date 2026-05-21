@@ -52,7 +52,8 @@ const CLEANING_ALGORITHM_SECTIONS = [
       '80m 是 raw 进入复算的宽门槛，用于保留弱 GPS 诊断证据',
       '30m 是可信点云分界，避免弱信号直接污染目标轨迹',
       '120s GAP 避免把长时间无定位两端直线计入徒步距离',
-      '交通工具阈值只拦截明显超出徒步范围的移动，减少误伤慢速徒步'
+      '交通工具阈值只拦截明显超出徒步范围的移动，减少误伤慢速徒步',
+      '整段 motion 几乎全静止且 stationary_anchor 占主导时，Web 成品轨迹压缩为一个稳定中心点'
     ]
   }
 ];
@@ -318,6 +319,7 @@ function renderSelectedSummary() {
       `目标运动耗时 ${formatDuration(product.stats.movingTimeSeconds)}`,
       `segment ${product.stats.segmentCount} / GAP ${product.stats.gapCount}`,
       `weak ${product.stats.weakPointCount} / reject ${product.stats.rejectedPointCount} / intake ${product.stats.intakeRejectedPointCount}`,
+      `静止压缩 ${product.stationarySessionCollapsed ? '已触发，清洗轨迹为单点' : '未触发'}`,
       `Android 对齐 ${product.alignment.matchedDecisionCount}/${product.alignment.comparedDecisionCount}`,
       product.alignment.mismatches.length
         ? `差异 ${product.alignment.mismatches.length}`
@@ -390,12 +392,45 @@ function algorithmBlock() {
 
 function renderPointDetails() {
   const selection = state.selectedPoint;
-  elements.selectedPointText.textContent = selection ? `${selection.dataset.fileName} #${selection.point.rawPointId}` : '-';
+  elements.selectedPointText.textContent = selection
+    ? `${selection.dataset.fileName} #${selection.cleaned ? selection.point.trackPointId : selection.point.rawPointId}`
+    : '-';
   if (!selection) {
     elements.pointDetails.innerHTML = '<p class="empty-note">点击地图上的点查看 raw、decision/intake、GNSS 和上一可信点关系</p>';
     return;
   }
-  elements.pointDetails.innerHTML = pointDetailsMarkup(selection.dataset, selection.point);
+  elements.pointDetails.innerHTML = selection.cleaned
+    ? cleanedPointDetailsMarkup(selection.dataset, selection.point)
+    : pointDetailsMarkup(selection.dataset, selection.point);
+}
+
+function cleanedPointDetailsMarkup(dataset, point) {
+  return `
+    ${detailBlock('清洗点', [
+      `trackPointId ${point.trackPointId}`,
+      `sourceRawPointId ${point.sourceRawPointId}`,
+      `result ${point.result}`,
+      `reason ${point.reason}`,
+      `lat/lng ${formatLatLng(point)}`,
+      `segmentId ${point.segmentId}`,
+      `distanceDelta ${formatMeters(point.distanceDeltaMeters)}`,
+      `movingTimeDelta ${formatDuration(point.movingTimeDeltaSeconds)}`
+    ])}
+    ${detailBlock('点云证据', [
+      `cloudType ${point.cloudType || '-'}`,
+      `cloudId ${valueOrDash(point.cloudId)}`,
+      `cloudSampleCount ${valueOrDash(point.cloudSampleCount)}`,
+      `cloudWeightSum ${formatOneDecimal(point.cloudWeightSum)}`,
+      `cloudWeightedRadius ${formatMeters(point.cloudWeightedRadiusMeters)}`,
+      `representativeRawPointId ${valueOrDash(point.representativeRawPointId)}`
+    ])}
+    ${detailBlock('清洗轨迹状态', [
+      `参数 ${dataset.targetProduct.usesDefaultConfig ? '默认' : '自定义'}`,
+      `静止压缩 ${dataset.targetProduct.stationarySessionCollapsed ? '已触发' : '未触发'}`,
+      `目标总点数 ${dataset.targetProduct.stats.trustedPointCount}`,
+      `目标总里程 ${formatMeters(dataset.targetProduct.stats.totalDistanceMeters)}`
+    ])}
+  `;
 }
 
 function pointDetailsMarkup(dataset, point) {
@@ -488,6 +523,7 @@ function addMapLayers() {
   state.map.addSource('raw-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('trusted-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('cleaned-lines', { type: 'geojson', data: emptyFeatureCollection() });
+  state.map.addSource('cleaned-points', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('points', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addLayer({
     id: 'raw-lines',
@@ -544,6 +580,22 @@ function addMapLayers() {
       'circle-opacity': 0.96
     }
   });
+  state.map.addLayer({
+    id: 'cleaned-points',
+    type: 'circle',
+    source: 'cleaned-points',
+    paint: {
+      'circle-color': '#ef4444',
+      'circle-radius': [
+        'case',
+        ['==', ['get', 'selected'], true], 8,
+        5.5
+      ],
+      'circle-stroke-color': '#ffffff',
+      'circle-stroke-width': ['case', ['==', ['get', 'selected'], true], 3, 1.5],
+      'circle-opacity': 0.98
+    }
+  });
 }
 
 function bindMapEvents() {
@@ -552,10 +604,22 @@ function bindMapEvents() {
     if (!feature) return;
     selectPoint(String(feature.properties.datasetId), Number(feature.properties.rawPointId), true);
   });
+  state.map.on('click', 'cleaned-points', (event) => {
+    const feature = event.features?.[0];
+    if (!feature) return;
+    selectCleanedPoint(String(feature.properties.datasetId),
+      Number(feature.properties.trackPointId), true);
+  });
   state.map.on('mouseenter', 'points', () => {
     state.map.getCanvas().style.cursor = 'pointer';
   });
+  state.map.on('mouseenter', 'cleaned-points', () => {
+    state.map.getCanvas().style.cursor = 'pointer';
+  });
   state.map.on('mouseleave', 'points', () => {
+    state.map.getCanvas().style.cursor = '';
+  });
+  state.map.on('mouseleave', 'cleaned-points', () => {
     state.map.getCanvas().style.cursor = '';
   });
 }
@@ -566,6 +630,7 @@ function renderMap() {
   state.map.getSource('raw-lines').setData(elements.showRaw.checked ? rawFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('trusted-lines').setData(elements.showTrusted.checked ? trustedFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('cleaned-lines').setData(elements.showCleaned.checked ? cleanedFeatureCollection(visible) : emptyFeatureCollection());
+  state.map.getSource('cleaned-points').setData(elements.showCleaned.checked ? cleanedPointFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('points').setData(elements.showPoints.checked ? pointFeatureCollection(visible) : emptyFeatureCollection());
 }
 
@@ -615,6 +680,24 @@ function pointFeatureCollection(datasets) {
   };
 }
 
+function cleanedPointFeatureCollection(datasets) {
+  return {
+    type: 'FeatureCollection',
+    features: datasets.flatMap((dataset) => dataset.targetProduct.track.map((point) => ({
+      type: 'Feature',
+      properties: {
+        datasetId: dataset.id,
+        trackPointId: point.trackPointId,
+        kind: 'cleaned',
+        selected: state.selectedPoint?.dataset.id === dataset.id
+          && state.selectedPoint?.cleaned === true
+          && state.selectedPoint?.point.trackPointId === point.trackPointId
+      },
+      geometry: { type: 'Point', coordinates: lngLat(point) }
+    })))
+  };
+}
+
 function lineFeature(dataset, points, kind, segmentId = null) {
   return {
     type: 'Feature',
@@ -628,11 +711,26 @@ function selectPoint(datasetId, rawPointId, showPopup = false) {
   const point = dataset?.model.points.find((item) => item.rawPointId === rawPointId);
   if (!dataset || !point) return;
   state.selectedDatasetId = dataset.id;
-  state.selectedPoint = { dataset, point };
+  state.selectedPoint = { dataset, point, cleaned: false };
   if (showPopup && state.popup) {
     state.popup
       .setLngLat(lngLat(point))
       .setHTML(`<strong>${escapeHtml(dataset.fileName)}</strong><br/>Raw#${point.rawPointId} ${escapeHtml(point.decision?.result || 'raw')}<br/>${escapeHtml(point.decision?.reason || '-')}`)
+      .addTo(state.map);
+  }
+  render();
+}
+
+function selectCleanedPoint(datasetId, trackPointId, showPopup = false) {
+  const dataset = state.datasets.find((item) => item.id === datasetId);
+  const point = dataset?.targetProduct.track.find((item) => item.trackPointId === trackPointId);
+  if (!dataset || !point) return;
+  state.selectedDatasetId = dataset.id;
+  state.selectedPoint = { dataset, point, cleaned: true };
+  if (showPopup && state.popup) {
+    state.popup
+      .setLngLat(lngLat(point))
+      .setHTML(`<strong>${escapeHtml(dataset.fileName)}</strong><br/>清洗点#${point.trackPointId} ${escapeHtml(point.result)}<br/>${escapeHtml(point.reason)}`)
       .addTo(state.map);
   }
   render();

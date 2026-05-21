@@ -13,7 +13,10 @@ export const DEFAULT_TARGET_PRODUCT_CONFIG = Object.freeze({
   impossibleSpeedMetersPerSecond: 12,
   transportSpeedMetersPerSecond: 3.5,
   transportMinDistanceMeters: 20,
-  cloudTemporalDecaySeconds: 20
+  cloudTemporalDecaySeconds: 20,
+  collapseStationarySession: true,
+  stationarySessionStillRatio: 0.95,
+  stationarySessionAnchorRatio: 0.8
 });
 
 const DEFAULT_CLOUD_RULES = {
@@ -105,6 +108,7 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
   product.stats.segmentCount = product.track.length === 0
     ? 0
     : new Set(product.track.map((point) => point.segmentId)).size;
+  collapseStationarySessionIfNeeded(product, evidence);
   product.alignment = compareWithRecordedDecisions(product, evidence.recordedDecisionsByRawPointId);
   product.findings = buildFindings(product, evidence);
   return product;
@@ -125,7 +129,92 @@ function normalizeConfig(config = {}) {
     impossibleSpeedMetersPerSecond: positiveNumber(merged.impossibleSpeedMetersPerSecond, DEFAULT_TARGET_PRODUCT_CONFIG.impossibleSpeedMetersPerSecond),
     transportSpeedMetersPerSecond: positiveNumber(merged.transportSpeedMetersPerSecond, DEFAULT_TARGET_PRODUCT_CONFIG.transportSpeedMetersPerSecond),
     transportMinDistanceMeters: positiveNumber(merged.transportMinDistanceMeters, DEFAULT_TARGET_PRODUCT_CONFIG.transportMinDistanceMeters),
-    cloudTemporalDecaySeconds: positiveNumber(merged.cloudTemporalDecaySeconds, DEFAULT_TARGET_PRODUCT_CONFIG.cloudTemporalDecaySeconds)
+    cloudTemporalDecaySeconds: positiveNumber(merged.cloudTemporalDecaySeconds, DEFAULT_TARGET_PRODUCT_CONFIG.cloudTemporalDecaySeconds),
+    collapseStationarySession: merged.collapseStationarySession !== false,
+    stationarySessionStillRatio: positiveNumber(merged.stationarySessionStillRatio, DEFAULT_TARGET_PRODUCT_CONFIG.stationarySessionStillRatio),
+    stationarySessionAnchorRatio: positiveNumber(merged.stationarySessionAnchorRatio, DEFAULT_TARGET_PRODUCT_CONFIG.stationarySessionAnchorRatio)
+  };
+}
+
+function collapseStationarySessionIfNeeded(product, evidence) {
+  if (!product.config.collapseStationarySession || product.track.length <= 1) {
+    return;
+  }
+  const stillRatio = stillMotionRatio(evidence.motionSummaries);
+  const stationaryAnchorCount = product.track.filter((point) => point.reason === 'stationary_anchor').length;
+  const stationaryAnchorRatio = stationaryAnchorCount / product.track.length;
+  if (stillRatio < product.config.stationarySessionStillRatio
+      || stationaryAnchorRatio < product.config.stationarySessionAnchorRatio) {
+    return;
+  }
+  const center = weightedTrackCenter(product.track);
+  product.track = [{
+    ...product.track[0],
+    lat: center.lat,
+    lng: center.lng,
+    result: 'anchor',
+    reason: 'stationary_session_anchor',
+    segmentId: 1,
+    distanceDeltaMeters: 0,
+    movingTimeDeltaSeconds: 0,
+    cloudType: 'STATIONARY_SESSION',
+    cloudId: null,
+    cloudSampleCount: product.track.length,
+    cloudWeightSum: center.weight,
+    cloudWeightedRadiusMeters: center.radiusMeters,
+    representativeRawPointId: center.representativeRawPointId,
+    contributingRawPointIds: product.track.map((point) => point.sourceRawPointId),
+    virtualCoordinate: true
+  }];
+  product.stats.totalDistanceMeters = 0;
+  product.stats.movingTimeSeconds = 0;
+  product.stats.segmentCount = 1;
+  product.stats.gapCount = 0;
+  product.stats.trustedPointCount = 1;
+  product.stationarySessionCollapsed = true;
+}
+
+function stillMotionRatio(motionSummaries) {
+  if (!Array.isArray(motionSummaries) || motionSummaries.length === 0) {
+    return 0;
+  }
+  const stillCount = motionSummaries.filter((summary) =>
+    summary.deviceStill === true || summary.isDeviceStill === true).length;
+  return stillCount / motionSummaries.length;
+}
+
+function weightedTrackCenter(track) {
+  let totalWeight = 0;
+  let lat = 0;
+  let lng = 0;
+  for (const point of track) {
+    const weight = Number.isFinite(point.cloudWeightSum) && point.cloudWeightSum > 0
+      ? point.cloudWeightSum : 1;
+    totalWeight += weight;
+    lat += weight * point.lat;
+    lng += weight * point.lng;
+  }
+  lat /= Math.max(totalWeight, 1e-9);
+  lng /= Math.max(totalWeight, 1e-9);
+  let radiusTotal = 0;
+  let representativeRawPointId = track[0].sourceRawPointId;
+  let closestDistance = Number.POSITIVE_INFINITY;
+  for (const point of track) {
+    const distance = distanceMeters(lat, lng, point.lat, point.lng);
+    const weight = Number.isFinite(point.cloudWeightSum) && point.cloudWeightSum > 0
+      ? point.cloudWeightSum : 1;
+    radiusTotal += weight * distance * distance;
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      representativeRawPointId = point.sourceRawPointId;
+    }
+  }
+  return {
+    lat,
+    lng,
+    weight: totalWeight,
+    radiusMeters: Math.sqrt(radiusTotal / Math.max(totalWeight, 1e-9)),
+    representativeRawPointId
   };
 }
 
