@@ -1755,18 +1755,8 @@ public class MainActivity extends Activity {
                 trackSession.getTrackPointCount()));
 
         LinearLayout trackExportRow = newExportButtonRow(dp(8));
-        if (trackSession.canExportTrustedGpx()) {
-            addSmallExportButton(trackExportRow, "GPX", v -> exportCurrentTrackAsGpx());
-        }
         addSmallExportButton(trackExportRow, "证据", v -> exportCurrentEvidenceLog());
         addExportRowIfNotEmpty(card, trackExportRow);
-
-        if (canExportCurrentSampleReport()) {
-            LinearLayout reportExportRow = newExportButtonRow(dp(6));
-            addSmallExportButton(reportExportRow, "样本报告", v -> exportCurrentSampleReport());
-            addSmallExportButton(reportExportRow, "弱GPS报告", v -> exportCurrentWeakGnssReport());
-            addExportRowIfNotEmpty(card, reportExportRow);
-        }
         historyActionsContainer.addView(card, cardLp);
     }
 
@@ -1832,24 +1822,11 @@ public class MainActivity extends Activity {
 
         /* Export row */
         LinearLayout trackExportRow = newExportButtonRow(dp(6));
-        if (canExportHistoricalGpx(manifest)) {
-            addSmallExportButton(trackExportRow, "GPX",
-                    v -> exportHistoricalTrustedGpx(manifest));
-        }
         if (canExportHistoricalEvidence(manifest)) {
             addSmallExportButton(trackExportRow, "证据",
                     v -> exportHistoricalEvidenceLog(manifest));
         }
         addExportRowIfNotEmpty(card, trackExportRow);
-
-        if (canExportHistoricalSampleReport(manifest)) {
-            LinearLayout reportExportRow = newExportButtonRow(dp(6));
-            addSmallExportButton(reportExportRow, "样本报告",
-                    v -> exportHistoricalSampleReport(manifest));
-            addSmallExportButton(reportExportRow, "弱GPS报告",
-                    v -> exportHistoricalWeakGnssReport(manifest));
-            addExportRowIfNotEmpty(card, reportExportRow);
-        }
         historyActionsContainer.addView(card, cardLp);
     }
 
