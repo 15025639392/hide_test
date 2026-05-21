@@ -58,7 +58,7 @@ public class SessionScannerTest {
         json.put("integrityState", "OK");
         json.put("schemaVersion", 1);
         json.put("strategyVersion", "stage2-track-trust-v3-sampling-cloud");
-        json.put("diagnosticLogFileName", "diagnostic.jsonl");
+        json.put("diagnosticLogFileName", "evidence.jsonl");
         json.put("trustedGpxFileName", "track.gpx");
         json.put("lastEventSeq", lastEventSeq);
         Files.write(store.sessionJson(dir).toPath(), json.toString().getBytes(StandardCharsets.UTF_8));

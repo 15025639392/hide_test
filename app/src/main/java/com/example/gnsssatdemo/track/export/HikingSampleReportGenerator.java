@@ -56,13 +56,13 @@ public class HikingSampleReportGenerator {
             blocking.add("session.json 读取状态异常: " + manifest.readStatus);
         }
         if (!diagnosticFile.exists()) {
-            blocking.add("diagnostic.jsonl 缺失，无法自动解释 reject/weak/GAP");
+            blocking.add("evidence.jsonl 缺失，无法自动解释 reject/weak/GAP");
         }
         if (!DiagnosticLogSummary.STATUS_OK.equals(manifest.diagnosticLogReadStatus)) {
-            blocking.add("diagnostic.jsonl 读取状态异常: " + manifest.diagnosticLogReadStatus);
+            blocking.add("evidence.jsonl 读取状态异常: " + manifest.diagnosticLogReadStatus);
         }
         if (diagnosticReadError != null) {
-            blocking.add("diagnostic.jsonl 解析失败: " + diagnosticReadError);
+            blocking.add("evidence.jsonl 解析失败: " + diagnosticReadError);
         }
         if (!"FINISHED".equals(manifest.completionState)) {
             blocking.add("session 未正常完成: " + manifest.completionState);
@@ -129,12 +129,12 @@ public class HikingSampleReportGenerator {
             review.add("存在 no_location_timeout: " + accumulator.noLocationTimeoutCount
                     + " 次，最大 " + oneDecimal(accumulator.maxNoLocationTimeoutSeconds) + " 秒");
         }
-        int transportSuspectedCount = accumulator.reasonCount("reject:transport_suspected");
+        int transportSuspectedCount = accumulator.reasonCount("accept:transport_suspected_kept");
         int transportRecoveryCount = accumulator.reasonCount("accept:gap_recovery");
         if (transportSuspectedCount > 0 || transportRecoveryCount > 0) {
-            review.add("检测到疑似交通工具移动: suspected=" + transportSuspectedCount
+            review.add("检测到疑似交通工具移动: kept=" + transportSuspectedCount
                     + " recovery=" + transportRecoveryCount
-                    + "，车程未计入可信徒步距离");
+                    + "，按目标算法保留连续轨迹并标注风险");
         }
         if (accumulator.decisionCount > 0) {
             double weakRatio = accumulator.weakDecisionCount / (double) accumulator.decisionCount;
@@ -202,7 +202,7 @@ public class HikingSampleReportGenerator {
                 accumulator.rejectDecisionGnssMetrics.averageTop4AvgCn0(),
                 accumulator.rejectDecisionGnssMetrics.averageLowCn0VisibleCount(),
                 accumulator.rejectDecisionGnssMetrics.averageWeakUsedCount(),
-                accumulator.motionSummaryCount,
+                accumulator.deviceMotionWindowCount,
                 accumulator.samplingRequestCounts,
                 accumulator.samplingDurationSeconds,
                 accumulator.decisionReasonCounts,
@@ -230,6 +230,11 @@ public class HikingSampleReportGenerator {
             }
         }
         accumulator.closeSamplingDuration();
+        try {
+            accumulator.applyTrackProduct(new EvidenceTrackProductBuilder().build(diagnosticFile));
+        } catch (IOException | JSONException ignored) {
+            // The caller reports evidence parse failures through the main read path.
+        }
         return accumulator;
     }
 
@@ -294,7 +299,7 @@ public class HikingSampleReportGenerator {
         int staleGnssRawCount;
         int gnssQualityMetricSnapshotCount;
         int dualFrequencySnapshotCount;
-        int motionSummaryCount;
+        int deviceMotionWindowCount;
         double usedAvgCn0Total;
         double allAvgCn0Total;
         double top4AvgCn0Total;
@@ -325,10 +330,6 @@ public class HikingSampleReportGenerator {
             String eventName = event.optString("event", "");
             if ("raw_location".equals(eventName)) {
                 onRawLocation(event);
-            } else if ("decision".equals(eventName)) {
-                onDecision(event);
-            } else if ("location_intake_rejected".equals(eventName)) {
-                onLocationIntakeRejected(event);
             } else if ("session_integrity_error".equals(eventName)) {
                 onSessionIntegrityError(event);
             } else if ("sampling_policy".equals(eventName)) {
@@ -337,13 +338,13 @@ public class HikingSampleReportGenerator {
                 onSessionEvent(event);
             } else if ("gnss_snapshot".equals(eventName)) {
                 onGnssSnapshot(event);
-            } else if ("motion_summary".equals(eventName)) {
-                onMotionSummary(event);
+            } else if ("device_motion_window".equals(eventName)) {
+                onDeviceMotionWindow(event);
             }
         }
 
-        void onMotionSummary(JSONObject event) {
-            motionSummaryCount++;
+        void onDeviceMotionWindow(JSONObject event) {
+            deviceMotionWindowCount++;
         }
 
         void onGnssSnapshot(JSONObject event) {
@@ -396,44 +397,6 @@ public class HikingSampleReportGenerator {
             }
         }
 
-        void onDecision(JSONObject event) {
-            decisionCount++;
-            rememberExplainedRawPoint(event);
-            String result = event.optString("result", "");
-            String reason = event.optString("reason", "unknown");
-            increment(decisionReasonCounts, result + ":" + reason);
-            if ("anchor".equals(result) || "accept".equals(result)) {
-                rememberTrustedTrackPoint(event);
-            } else if ("weak".equals(result)) {
-                weakDecisionCount++;
-                addDecisionGnssMetrics(event, weakDecisionGnssMetrics);
-            } else if ("reject".equals(result)) {
-                rejectDecisionCount++;
-                addDecisionGnssMetrics(event, rejectDecisionGnssMetrics);
-            }
-            if ("gap_recovery".equals(reason)) {
-                gapRecoveryCount++;
-                double distanceDelta = event.optDouble("distanceDeltaMeters", 0.0);
-                double movingDelta = event.optDouble("movingTimeDeltaSeconds", 0.0);
-                if (distanceDelta == 0.0 && movingDelta == 0.0) {
-                    gapRecoveryZeroDeltaCount++;
-                }
-                if (gapSummaries.size() < 10) {
-                    gapSummaries.add("decisionId=" + event.optLong("decisionId")
-                            + " rawPointId=" + event.optLong("rawPointId")
-                            + " trackPointId=" + event.optLong("trackPointId")
-                            + " segmentId=" + event.optLong("segmentId")
-                            + " distanceDelta=" + distanceDelta
-                            + " movingTimeDelta=" + movingDelta);
-                }
-            }
-        }
-
-        void onLocationIntakeRejected(JSONObject event) {
-            intakeRejectedCount++;
-            rememberExplainedRawPoint(event);
-        }
-
         void onSessionIntegrityError(JSONObject event) {
             sessionIntegrityErrorCount++;
             rememberExplainedRawPoint(event);
@@ -446,23 +409,19 @@ public class HikingSampleReportGenerator {
             }
         }
 
-        void rememberTrustedTrackPoint(JSONObject event) {
-            long trackPointId = event.optLong("trackPointId", -1L);
-            if (trackPointId > 0L) {
-                if (trustedTrackPointIds.add(trackPointId)) {
-                    trustedDecisionCount++;
-                }
-                return;
-            }
-            trustedDecisionCount++;
-        }
-
         void addDecisionGnssMetrics(JSONObject event, GnssMetricTotals totals) {
             if (!event.has("sourceGnssSnapshotId")) {
                 return;
             }
+            addDecisionGnssMetrics(event.optLong("sourceGnssSnapshotId"), totals);
+        }
+
+        void addDecisionGnssMetrics(Long sourceGnssSnapshotId, GnssMetricTotals totals) {
+            if (sourceGnssSnapshotId == null) {
+                return;
+            }
             GnssMetricSnapshot snapshot = gnssMetricsBySnapshotId.get(
-                    event.optLong("sourceGnssSnapshotId"));
+                    sourceGnssSnapshotId);
             if (snapshot != null) {
                 totals.add(snapshot);
             }
@@ -503,6 +462,32 @@ public class HikingSampleReportGenerator {
             addDuration(samplingDurationSeconds, activeSamplingState,
                     secondsBetween(activeSamplingStartNanos, endNanos));
             activeSamplingStartNanos = endNanos;
+        }
+
+        void applyTrackProduct(EvidenceTrackProductBuilder.Result product) {
+            decisionCount = product.stats.decisionCount;
+            trustedDecisionCount = product.stats.trustedDecisionCount;
+            weakDecisionCount = product.stats.weakDecisionCount;
+            rejectDecisionCount = product.stats.rejectDecisionCount;
+            intakeRejectedCount = product.stats.intakeRejectedCount;
+            gapRecoveryCount = product.stats.gapRecoveryCount;
+            gapRecoveryZeroDeltaCount = product.stats.gapRecoveryZeroDeltaCount;
+            explainedRawPointIds.clear();
+            decisionReasonCounts.clear();
+            decisionReasonCounts.putAll(product.stats.decisionReasonCounts);
+            weakDecisionGnssMetrics.clear();
+            rejectDecisionGnssMetrics.clear();
+            for (EvidenceTrackProductBuilder.DecisionRecord decision : product.decisions) {
+                if (decision.rawPointId > 0L) {
+                    explainedRawPointIds.add(decision.rawPointId);
+                }
+                if ("weak".equals(decision.result)) {
+                    addDecisionGnssMetrics(decision.sourceGnssSnapshotId, weakDecisionGnssMetrics);
+                } else if ("reject".equals(decision.result)
+                        || "intake_rejected".equals(decision.result)) {
+                    addDecisionGnssMetrics(decision.sourceGnssSnapshotId, rejectDecisionGnssMetrics);
+                }
+            }
         }
 
         double diagnosticDurationSeconds() {
@@ -581,6 +566,15 @@ public class HikingSampleReportGenerator {
         double top4AvgCn0Total;
         double lowCn0VisibleCountTotal;
         double weakUsedCountTotal;
+
+        void clear() {
+            count = 0;
+            usedAvgCn0Total = 0.0;
+            allAvgCn0Total = 0.0;
+            top4AvgCn0Total = 0.0;
+            lowCn0VisibleCountTotal = 0.0;
+            weakUsedCountTotal = 0.0;
+        }
 
         void add(GnssMetricSnapshot snapshot) {
             count++;

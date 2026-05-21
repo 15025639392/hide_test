@@ -48,8 +48,7 @@ class TrackMapState {
     }
 
     static boolean isTransportMapPoint(TrackPoint point) {
-        return "transport".equals(point.decisionResult)
-                || "transport_suspected".equals(point.decisionReason);
+        return false;
     }
 
     private static TrackPoint lastTrustedMapTrackPoint(List<TrackPoint> points) {

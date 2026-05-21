@@ -16,7 +16,6 @@ import java.nio.charset.StandardCharsets;
 public class SessionJournalWriter {
     private final SessionFileStore fileStore;
     private DiagnosticLogger logger;
-    private DiagnosticLogger evidenceLogger;
     private File sessionDir;
     private long lastEventSeq;
     private long lastUpdatedWallTimeMillis;
@@ -37,8 +36,7 @@ public class SessionJournalWriter {
             throw new IOException("sessionDir is not initialized");
         }
         closeQuietly();
-        logger = new DiagnosticLogger(fileStore.diagnosticJsonl(sessionDir));
-        evidenceLogger = new DiagnosticLogger(fileStore.evidenceJsonl(sessionDir));
+        logger = new DiagnosticLogger(fileStore.evidenceJsonl(sessionDir));
     }
 
     public boolean isDiagnosticLoggerOpen() {
@@ -50,8 +48,10 @@ public class SessionJournalWriter {
         if (logger == null) {
             throw new IOException("diagnostic logger is not open");
         }
+        if (!isEvidenceEvent(event.optString("event", ""))) {
+            return;
+        }
         lastEventSeq = logger.append(event, sessionId, eventElapsedRealtimeNanos);
-        appendEvidenceIfNeeded(event, sessionId, eventElapsedRealtimeNanos);
         lastUpdatedWallTimeMillis = System.currentTimeMillis();
     }
 
@@ -82,18 +82,6 @@ public class SessionJournalWriter {
     public void closeQuietly() {
         closeLoggerQuietly(logger);
         logger = null;
-        closeLoggerQuietly(evidenceLogger);
-        evidenceLogger = null;
-    }
-
-    private void appendEvidenceIfNeeded(JSONObject event, String sessionId,
-                                        long eventElapsedRealtimeNanos)
-            throws IOException, JSONException {
-        if (evidenceLogger == null || !isEvidenceEvent(event.optString("event", ""))) {
-            return;
-        }
-        evidenceLogger.append(new JSONObject(event.toString()), sessionId,
-                eventElapsedRealtimeNanos);
     }
 
     private boolean isEvidenceEvent(String eventName) {
@@ -104,9 +92,8 @@ public class SessionJournalWriter {
                 || "sampling_policy".equals(eventName)
                 || "gnss_snapshot".equals(eventName)
                 || "raw_location".equals(eventName)
-                || "motion_summary".equals(eventName)
-                || "pressure_sample".equals(eventName)
-                || "pressure_sample_rejected".equals(eventName)
+                || "device_motion_window".equals(eventName)
+                || "barometer_window".equals(eventName)
                 || "barometer_calibration".equals(eventName)
                 || "pressure_summary".equals(eventName)
                 || "session_integrity_error".equals(eventName);

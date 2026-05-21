@@ -32,7 +32,6 @@ public class SessionFileStoreTest {
 
         assertEquals(new File(dir, "session.json"), store.sessionJson(dir));
         assertEquals(new File(dir, "session.json.tmp"), store.sessionJsonTmp(dir));
-        assertEquals(new File(dir, "diagnostic.jsonl"), store.diagnosticJsonl(dir));
         assertEquals(new File(dir, "evidence.jsonl"), store.evidenceJsonl(dir));
         assertEquals(new File(dir, "track.gpx"), store.trackGpx(dir));
         assertEquals(new File(dir, "track.gpx.tmp"), store.trackGpxTmp(dir));
@@ -50,7 +49,7 @@ public class SessionFileStoreTest {
         File dir = store.createSessionDir("session-3");
         File sessionTmp = store.sessionJsonTmp(dir);
         File gpxTmp = store.trackGpxTmp(dir);
-        File diagnostic = store.diagnosticJsonl(dir);
+        File diagnostic = store.evidenceJsonl(dir);
         File unrelatedTmp = new File(dir, "other.tmp");
 
         Files.write(sessionTmp.toPath(), "partial".getBytes());
@@ -124,7 +123,7 @@ public class SessionFileStoreTest {
         File dir = store.createSessionDir("session-delete");
         File exportDir = store.exportDir(dir);
         assertTrue(exportDir.mkdirs());
-        File diagnostic = store.diagnosticJsonl(dir);
+        File diagnostic = store.evidenceJsonl(dir);
         File exported = new File(exportDir, "report.txt");
 
         Files.write(diagnostic.toPath(), "{}\n".getBytes());
@@ -143,7 +142,7 @@ public class SessionFileStoreTest {
         File outside = new File(parent, "outside-session");
         assertTrue(root.mkdirs());
         assertTrue(outside.mkdirs());
-        File outsideFile = new File(outside, "diagnostic.jsonl");
+        File outsideFile = new File(outside, "evidence.jsonl");
         Files.write(outsideFile.toPath(), "{}\n".getBytes());
         SessionFileStore store = new SessionFileStore(root);
 
@@ -163,7 +162,7 @@ public class SessionFileStoreTest {
         File root = Files.createTempDirectory("track-sessions").toFile();
         File invalidDir = new File(root, "bad..session");
         assertTrue(invalidDir.mkdirs());
-        File diagnostic = new File(invalidDir, "diagnostic.jsonl");
+        File diagnostic = new File(invalidDir, "evidence.jsonl");
         Files.write(diagnostic.toPath(), "{}\n".getBytes());
         SessionFileStore store = new SessionFileStore(root);
 

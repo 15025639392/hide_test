@@ -33,7 +33,7 @@
 
 ## 对本项目最有用的信号字段
 
-优先补充到 `GnssQualitySnapshot` 或 `diagnostic.jsonl` summary：
+优先补充到 `GnssQualitySnapshot` 或 `evidence.jsonl` summary：
 
 - `visibleTotal`: 可见卫星数。
 - `usedInFixTotal`: 参与定位卫星数。
@@ -87,7 +87,7 @@ GnssStatus
 新增离线报告，不改变 App 判点：
 
 ```text
-session.json + diagnostic.jsonl
+session.json + evidence.jsonl
   -> weak_gnss_report.txt
 ```
 

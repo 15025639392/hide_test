@@ -11,7 +11,8 @@ import com.example.gnsssatdemo.track.export.SessionFileStore;
 import com.example.gnsssatdemo.track.export.TrackExportValidator;
 import com.example.gnsssatdemo.track.model.GnssSnapshotDiagnosticFields;
 import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
-import com.example.gnsssatdemo.track.model.MotionSummary;
+import com.example.gnsssatdemo.track.model.BarometerWindow;
+import com.example.gnsssatdemo.track.model.DeviceMotionWindow;
 import com.example.gnsssatdemo.track.model.RawPoint;
 import com.example.gnsssatdemo.track.model.TrackPoint;
 
@@ -107,7 +108,7 @@ public class BasicTrackSession implements Closeable {
             new ArrayList<>();
     private TrackAscentCalculator.Result cachedAscentResult;
     private boolean ascentResultDirty = true;
-    private final List<MotionSummary> recentMotionSummaries = new ArrayList<>();
+    private final List<DeviceMotionWindow> recentDeviceMotionWindows = new ArrayList<>();
     private final Set<Long> acceptedDecisionIds = new HashSet<>();
     private final Set<Long> countedCloudIds = new HashSet<>();
     private final Map<String, Integer> cloudWindowCounts = new HashMap<>();
@@ -175,7 +176,7 @@ public class BasicTrackSession implements Closeable {
         transportTrackPoints.clear();
         barometerAscentSamples.clear();
         invalidateAscentResult();
-        recentMotionSummaries.clear();
+        recentDeviceMotionWindows.clear();
         acceptedDecisionIds.clear();
         countedCloudIds.clear();
         cloudWindowCounts.clear();
@@ -231,25 +232,67 @@ public class BasicTrackSession implements Closeable {
         }
     }
 
-    public void onMotionSummary(MotionSummary summary) {
+    public void onDeviceMotionWindow(DeviceMotionWindow window) {
         if (!lifecycle.isActive() || !journalWriter.isDiagnosticLoggerOpen()
-                || summary == null) {
+                || window == null) {
             return;
         }
-        rememberMotionSummary(summary);
+        rememberDeviceMotionWindow(window);
         try {
             JSONObject event = new JSONObject();
-            event.put("event", "motion_summary");
-            event.put("motionSummaryId", summary.motionSummaryId);
-            event.put("firstElapsedRealtimeNanos", summary.firstElapsedRealtimeNanos);
-            event.put("lastElapsedRealtimeNanos", summary.lastElapsedRealtimeNanos);
-            event.put("sampleCount", summary.sampleCount);
-            event.put("dynamicAccelRmsMps2", summary.dynamicAccelRmsMps2);
-            event.put("stillScore", summary.stillScore);
-            event.put("isDeviceStill", summary.deviceStill);
-            event.put("sourceSensorType", summary.sourceSensorType);
-            event.put("restStateAfter", "TRACK_TRUST_V3");
-            appendDiagnostic(event, summary.lastElapsedRealtimeNanos);
+            event.put("event", "device_motion_window");
+            event.put("deviceMotionWindowId", window.deviceMotionWindowId);
+            event.put("startElapsedRealtimeNanos", window.startElapsedRealtimeNanos);
+            event.put("endElapsedRealtimeNanos", window.endElapsedRealtimeNanos);
+            event.put("linearAccelerationSampleCount",
+                    window.linearAccelerationSampleCount);
+            event.put("accelerometerSampleCount", window.accelerometerSampleCount);
+            event.put("gyroscopeSampleCount", window.gyroscopeSampleCount);
+            event.put("rotationVectorSampleCount", window.rotationVectorSampleCount);
+            event.put("linearAccelerationRmsMps2",
+                    window.linearAccelerationRmsMps2);
+            event.put("linearAccelerationMaxMps2",
+                    window.linearAccelerationMaxMps2);
+            event.put("accelerometerDynamicRmsMps2",
+                    window.accelerometerDynamicRmsMps2);
+            event.put("accelerometerDynamicMaxMps2",
+                    window.accelerometerDynamicMaxMps2);
+            event.put("gyroscopeRmsRadps", window.gyroscopeRmsRadps);
+            event.put("gyroscopeMaxRadps", window.gyroscopeMaxRadps);
+            event.put("yawDeltaDegrees", window.yawDeltaDegrees);
+            event.put("pitchDeltaDegrees", window.pitchDeltaDegrees);
+            event.put("rollDeltaDegrees", window.rollDeltaDegrees);
+            event.put("stepDetectorCount", window.stepDetectorCount);
+            event.put("stepCounterDelta", window.stepCounterDelta);
+            event.put("stepCounterAvailable", window.stepCounterAvailable);
+            appendDiagnostic(event, window.endElapsedRealtimeNanos);
+        } catch (IOException | JSONException e) {
+            markIntegrityError("diagnostic_log_append_failed", e);
+        }
+    }
+
+    public void onBarometerWindow(BarometerWindow window) {
+        if (!lifecycle.isActive() || lifecycle.isFinished()
+                || !journalWriter.isDiagnosticLoggerOpen() || window == null) {
+            return;
+        }
+        try {
+            JSONObject event = new JSONObject();
+            event.put("event", "barometer_window");
+            event.put("barometerWindowId", window.barometerWindowId);
+            event.put("startElapsedRealtimeNanos", window.startElapsedRealtimeNanos);
+            event.put("endElapsedRealtimeNanos", window.endElapsedRealtimeNanos);
+            event.put("sampleCount", window.sampleCount);
+            event.put("minPressureHpa", window.minPressureHpa);
+            event.put("maxPressureHpa", window.maxPressureHpa);
+            event.put("avgPressureHpa", window.avgPressureHpa);
+            event.put("deltaPressureHpa", window.deltaPressureHpa);
+            event.put("minRawAltitudeMeters", window.minRawAltitudeMeters);
+            event.put("maxRawAltitudeMeters", window.maxRawAltitudeMeters);
+            event.put("avgRawAltitudeMeters", window.avgRawAltitudeMeters);
+            event.put("deltaRawAltitudeMeters", window.deltaRawAltitudeMeters);
+            event.put("lastSensorAccuracy", window.lastSensorAccuracy);
+            appendDiagnostic(event, window.endElapsedRealtimeNanos);
         } catch (IOException | JSONException e) {
             markIntegrityError("diagnostic_log_append_failed", e);
         }
@@ -262,10 +305,8 @@ public class BasicTrackSession implements Closeable {
             return;
         }
         if (!isValidPressure(pressureHpa)) {
-            long barometerSampleId = addBarometerAscentSample(pressureHpa, sensorAccuracy,
+            addBarometerAscentSample(pressureHpa, sensorAccuracy,
                     elapsedRealtimeNanos, Double.NaN);
-            appendRejectedPressureSample(barometerSampleId, pressureHpa, sensorAccuracy,
-                    elapsedRealtimeNanos);
             return;
         }
         double rawAltitudeMeters = SensorManager.getAltitude(
@@ -288,17 +329,6 @@ public class BasicTrackSession implements Closeable {
             lastDisplayedBarometerAltitudeMeters =
                     rawAltitudeMeters + barometerCalibrationOffsetMeters;
         }
-        try {
-            JSONObject event = new JSONObject();
-            event.put("event", "pressure_sample");
-            event.put("pressureSampleId", pressureSampleSeq);
-            event.put("pressureHpa", pressureHpa);
-            event.put("sensorAccuracy", sensorAccuracy);
-            event.put("rawBarometerAltitudeMeters", rawAltitudeMeters);
-            appendDiagnostic(event, elapsedRealtimeNanos);
-        } catch (IOException | JSONException e) {
-            markIntegrityError("diagnostic_log_append_failed", e);
-        }
     }
 
     public void onLocation(Location location) {
@@ -319,10 +349,15 @@ public class BasicTrackSession implements Closeable {
         try {
             appendRawLocation(rawPoint, snapshotMatch, samplingEpoch,
                     callbackReceivedElapsedRealtimeNanos);
+            TrackPoint exportedPreviousTrackPoint = trackPoints.isEmpty()
+                    ? null : trackPoints.get(trackPoints.size() - 1);
             SamplingIntake.Result intakeResult = samplingIntake.accept(rawPoint,
                     samplingEpoch, recordStartElapsedRealtimeNanos,
                     callbackReceivedElapsedRealtimeNanos);
-            if (!intakeResult.accepted) {
+            boolean continuityRescued = !intakeResult.accepted
+                    && trustEngine.canRescueContinuityPoint(rawPoint, exportedPreviousTrackPoint,
+                    intakeResult.reason);
+            if (!intakeResult.accepted && !continuityRescued) {
                 rememberIntakeRejected(intakeResult.reason);
                 if (intakeResult.contractViolation) {
                     samplingContractViolationCount++;
@@ -330,16 +365,15 @@ public class BasicTrackSession implements Closeable {
                     markIntegrityError("sampling_contract_violation", null);
                 } else {
                     incrementIntakeRejectCount(intakeResult.reason);
-                    appendLocationIntakeRejected(rawPoint, intakeResult.reason, samplingEpoch);
+                    addRecentSummary("Intake reject Raw#" + rawPoint.rawPointId
+                            + " " + intakeResult.reason);
                 }
                 writeSessionJson();
                 return;
             }
-            TrackPoint exportedPreviousTrackPoint = trackPoints.isEmpty()
-                    ? null : trackPoints.get(trackPoints.size() - 1);
             TrackTrustDecision decision = trustEngine.decide(rawPoint, samplingEpoch,
                     gnssSnapshotBuffer.findById(rawPoint.sourceGnssSnapshotId),
-                    recentMotionSummaries, exportedPreviousTrackPoint);
+                    recentDeviceMotionWindows, exportedPreviousTrackPoint);
             TrackPoint decisionTrackPoint = null;
             if (decision.createsTrustedTrackPoint()) {
                 if (decision.startsNewSegment && exportedPreviousTrackPoint != null) {
@@ -371,10 +405,9 @@ public class BasicTrackSession implements Closeable {
                 invalidateAscentResult();
                 decisionTrackPoint = trackPoint;
             }
-            if ("transport_suspected".equals(decision.reason)) {
-                addTransportDisplayPoint(rawPoint, decision.reason);
+            if ("transport_suspected_kept".equals(decision.reason)) {
                 stats.incrementTransportCount();
-                addRecentSummary("检测到疑似交通工具移动，暂停累计徒步距离");
+                addRecentSummary("检测到疑似交通工具移动，按连续轨迹保留");
             }
             if ("stationary_anchor".equals(decision.reason)) {
                 stats.incrementStationaryKeepaliveCount();
@@ -385,6 +418,9 @@ public class BasicTrackSession implements Closeable {
             rememberCloudWindow(decision);
             appendDecision(rawPoint, decisionTrackPoint, decision,
                     trackPoints.isEmpty() ? "WAITING_FIRST_FIX" : "TRACKING");
+            if (decisionTrackPoint != null) {
+                refreshGpxAfterTrackPointUpdate();
+            }
             writeSessionJson();
         } catch (IOException | JSONException e) {
             markIntegrityError("diagnostic_log_append_failed", e);
@@ -509,10 +545,10 @@ public class BasicTrackSession implements Closeable {
                 <= BAROMETER_CALIBRATION_MAX_GNSS_HORIZONTAL_ACCURACY_METERS;
     }
 
-    private void rememberMotionSummary(MotionSummary summary) {
-        recentMotionSummaries.add(summary);
-        while (recentMotionSummaries.size() > RECENT_SUMMARY_LIMIT) {
-            recentMotionSummaries.remove(0);
+    private void rememberDeviceMotionWindow(DeviceMotionWindow window) {
+        recentDeviceMotionWindows.add(window);
+        while (recentDeviceMotionWindows.size() > RECENT_SUMMARY_LIMIT) {
+            recentDeviceMotionWindows.remove(0);
         }
     }
 
@@ -590,7 +626,7 @@ public class BasicTrackSession implements Closeable {
         event.put("event", "session_metadata");
         event.put("createdWallTimeMillis", createdWallTimeMillis);
         event.put("createdElapsedRealtimeNanos", recordStartElapsedRealtimeNanos);
-        event.put("diagnosticLogFileName", "diagnostic.jsonl");
+        event.put("diagnosticLogFileName", "evidence.jsonl");
         event.put("evidenceLogFileName", "evidence.jsonl");
         event.put("gpxFileName", "track.gpx");
         event.put("completionState", lifecycle.getCompletionState());
@@ -750,52 +786,6 @@ public class BasicTrackSession implements Closeable {
         long decisionId = ++decisionSeq;
         lastDecisionResult = decision.result;
         lastDecisionReason = decision.reason;
-        JSONObject event = new JSONObject();
-        event.put("event", "decision");
-        event.put("decisionId", decisionId);
-        event.put("rawPointId", rawPoint.rawPointId);
-        event.put("result", decision.result);
-        event.put("reason", decision.reason);
-        event.put("state", decisionState);
-        event.put("trustGrade", decision.trustGrade);
-        event.put("cloudType", decision.cloudType);
-        event.put("cloudId", decision.cloudId);
-        event.put("cloudSampleCount", decision.cloudSampleCount);
-        event.put("cloudWeightSum", decision.cloudWeightSum);
-        event.put("cloudWeightedRadiusMeters", decision.cloudWeightedRadiusMeters);
-        event.put("cloudCenterLatitude", decision.cloudCenterLatitude);
-        event.put("cloudCenterLongitude", decision.cloudCenterLongitude);
-        event.put("representativeRawPointId", decision.representativeRawPointId);
-        event.put("contributingRawPointIds", rawIdsToJson(decision.contributingRawPointIds));
-        event.put("isVirtualTrackPointCoordinate", decision.virtualTrackPointCoordinate);
-        event.put("accuracyScore", decision.score.accuracyScore);
-        event.put("samplingContinuityScore", decision.score.samplingContinuityScore);
-        event.put("timeContinuityScore", decision.score.timeContinuityScore);
-        event.put("spatialCohesionScore", decision.score.spatialCohesionScore);
-        event.put("motionConsistencyScore", decision.score.motionConsistencyScore);
-        event.put("gnssQualityScore", decision.score.gnssQualityScore);
-        event.put("speedPlausibilityScore", decision.score.speedPlausibilityScore);
-        event.put("samplingEpochId", decision.samplingEpochId);
-        if (trackPoint != null) {
-            event.put("trackPointId", trackPoint.trackPointId);
-            event.put("segmentId", trackPoint.segmentId);
-            event.put("distanceDeltaMeters", decision.distanceDeltaMeters);
-            event.put("movingTimeDeltaSeconds", decision.movingTimeDeltaSeconds);
-            if (decision.startsNewSegment) {
-                event.put("startsNewSegment", true);
-            }
-            if (trackPoint.hasPressureSample) {
-                event.put("pressureSampleElapsedRealtimeNanos",
-                        trackPoint.pressureSampleElapsedRealtimeNanos);
-                event.put("pressureHpa", trackPoint.pressureHpa);
-                event.put("rawBarometerAltitudeMeters",
-                        trackPoint.rawBarometerAltitudeMeters);
-            }
-        }
-        if (rawPoint.sourceGnssSnapshotId != null) {
-            event.put("sourceGnssSnapshotId", rawPoint.sourceGnssSnapshotId);
-        }
-        appendDiagnostic(event, rawPoint.elapsedRealtimeNanos);
         addRecentSummary("Decision#" + decisionId + " "
                 + decision.trustGrade + " " + decision.reason);
     }
@@ -803,36 +793,6 @@ public class BasicTrackSession implements Closeable {
     private void rememberIntakeRejected(String reason) {
         lastDecisionResult = "intake_rejected";
         lastDecisionReason = reason == null ? "" : reason;
-    }
-
-    private JSONArray rawIdsToJson(List<Long> rawPointIds) {
-        JSONArray array = new JSONArray();
-        for (Long rawPointId : rawPointIds) {
-            array.put(rawPointId);
-        }
-        return array;
-    }
-
-    private void appendLocationIntakeRejected(RawPoint rawPoint, String reason,
-                                              SamplingEpoch samplingEpoch)
-            throws IOException, JSONException {
-        JSONObject event = new JSONObject();
-        event.put("event", "location_intake_rejected");
-        event.put("rawPointId", rawPoint.rawPointId);
-        event.put("rejectReason", reason);
-        if (samplingEpoch != null) {
-            event.put("samplingEpochId", samplingEpoch.samplingEpochId);
-            event.put("samplingState", samplingEpoch.state);
-            event.put("samplingEpochStartedElapsedRealtimeNanos",
-                    samplingEpoch.startedElapsedRealtimeNanos);
-        }
-        event.put("provider", rawPoint.provider);
-        event.put("hasElapsedRealtimeNanos", rawPoint.hasElapsedRealtimeNanos);
-        event.put("elapsedRealtimeNanos", rawPoint.elapsedRealtimeNanos);
-        appendDiagnostic(event, rawPoint.hasElapsedRealtimeNanos
-                && rawPoint.elapsedRealtimeNanos > 0L
-                ? rawPoint.elapsedRealtimeNanos : SystemClock.elapsedRealtimeNanos());
-        addRecentSummary("Intake reject Raw#" + rawPoint.rawPointId + " " + reason);
     }
 
     private void appendSessionIntegrityError(String reason, RawPoint rawPoint)
@@ -883,7 +843,7 @@ public class BasicTrackSession implements Closeable {
         json.put("STATIONARY_CLOUD", countCloudWindow("STATIONARY_CLOUD"));
         json.put("RECOVERY_CLOUD", countCloudWindow("RECOVERY_CLOUD"));
         json.put("WEAK_CLOUD", countCloudWindow("WEAK_CLOUD"));
-        json.put("TRANSPORT_CLOUD", countCloudWindow("TRANSPORT_CLOUD"));
+        json.put("TRANSPORT_RISK_CLOUD", countCloudWindow("TRANSPORT_RISK_CLOUD"));
         return json;
     }
 
@@ -905,7 +865,7 @@ public class BasicTrackSession implements Closeable {
         json.put("schemaVersion", 1);
         json.put("strategyVersion", STRATEGY_VERSION);
         appendDeviceMetadata(json);
-        json.put("diagnosticLogFileName", "diagnostic.jsonl");
+        json.put("diagnosticLogFileName", "evidence.jsonl");
         json.put("trustedGpxFileName", "track.gpx");
         json.put("partialGpxFileName", "partial.gpx");
         json.put("lastEventSeq", journalWriter.getLastEventSeq());
@@ -1000,6 +960,15 @@ public class BasicTrackSession implements Closeable {
         }
     }
 
+    private void refreshGpxAfterTrackPointUpdate() {
+        try {
+            writeInternalGpx();
+            writePartialGpx();
+        } catch (IOException e) {
+            markIntegrityError("trusted_gpx_write_failed", e);
+        }
+    }
+
     public String buildGpx() {
         if (!canExportTrustedGpx()) {
             throw new IllegalStateException(trustedGpxUnavailableReason());
@@ -1037,7 +1006,7 @@ public class BasicTrackSession implements Closeable {
         if (sessionDir == null) {
             return "";
         }
-        return readSessionText(fileStore.diagnosticJsonl(sessionDir));
+        return readSessionText(fileStore.evidenceJsonl(sessionDir));
     }
 
     public String getEvidenceText() throws IOException {
@@ -1241,26 +1210,6 @@ public class BasicTrackSession implements Closeable {
         return barometerSampleId;
     }
 
-    private void appendRejectedPressureSample(long barometerSampleId, float pressureHpa,
-                                              int sensorAccuracy,
-                                              long elapsedRealtimeNanos) {
-        try {
-            JSONObject event = new JSONObject();
-            event.put("event", "pressure_sample_rejected");
-            event.put("barometerSampleId", barometerSampleId);
-            event.put("sensorAccuracy", sensorAccuracy);
-            event.put("rejectReason", "invalid_pressure");
-            if (Float.isNaN(pressureHpa) || Float.isInfinite(pressureHpa)) {
-                event.put("pressureHpaText", String.valueOf(pressureHpa));
-            } else {
-                event.put("pressureHpa", pressureHpa);
-            }
-            appendDiagnostic(event, elapsedRealtimeNanos);
-        } catch (IOException | JSONException e) {
-            markIntegrityError("diagnostic_log_append_failed", e);
-        }
-    }
-
     private boolean isValidPressure(float pressureHpa) {
         return pressureHpa > 0f && !Float.isNaN(pressureHpa) && !Float.isInfinite(pressureHpa);
     }
@@ -1290,7 +1239,7 @@ public class BasicTrackSession implements Closeable {
     }
 
     public String suggestedDiagnosticFileName() {
-        return "gnss_diagnostic_" + safeSessionName() + ".jsonl";
+        return "gnss_evidence_" + safeSessionName() + ".jsonl";
     }
 
     public String suggestedEvidenceFileName() {

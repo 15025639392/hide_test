@@ -26,7 +26,7 @@ Non-Negotiable Invariants、Change Checklist 和 Governance Phases。
 
 ```text
 前台服务采集 GPS_PROVIDER
-  -> RawPoint / GNSS Snapshot / diagnostic.jsonl
+  -> RawPoint / GNSS Snapshot / evidence.jsonl
   -> SamplingEpoch / SamplingIntake
   -> TrackTrustEngine / TrackCloudWindow
   -> virtual-coordinate TrackPoint / session.json
@@ -96,7 +96,7 @@ LocationManager.GPS_PROVIDER
 START_NOT_STICKY
 ```
 
-当前没有跨进程恢复并续写 active session 的机制，因此不依赖系统重投递 start intent。若前台服务或进程被系统杀掉，当前 session 会标记为 `INTERRUPTED`，完整性以 `session.json`、`diagnostic.jsonl`、`completionState`、`integrityState`、`recoveryState` 为准。
+当前没有跨进程恢复并续写 active session 的机制，因此不依赖系统重投递 start intent。若前台服务或进程被系统杀掉，当前 session 会标记为 `INTERRUPTED`，完整性以 `session.json`、`evidence.jsonl`、`completionState`、`integrityState`、`recoveryState` 为准。
 
 当前真实徒步采样参数：
 
@@ -130,7 +130,7 @@ START_NOT_STICKY
 - callback 接收时间只能作为交付延迟诊断，不能替代 fix 测量时刻，也不能参与点云权重。
 - 每个系统 `Location` 先写完整 `raw_location` 诊断证据，再进入 `SamplingIntake`。
 - duplicate、out-of-order、epoch mismatch 等 intake 拒绝点会追加
-  `location_intake_rejected`，但不生成 decision、TrackPoint 或 cloud sample。
+  只保留 raw_location 纯证据，不生成旧拒绝事件。
 
 ## 时间基准
 
@@ -181,7 +181,7 @@ TrackPoint：
 每个系统 `Location` 必须先转为 `RawPoint` 并写入完整 `raw_location`
 诊断证据，然后才进入 `SamplingIntake`。`SamplingIntake` 做采样契约、
 时间线和基础 Location 合法性校验；被 intake 拒绝的点会追加
-`location_intake_rejected` 或 `session_integrity_error`，但不生成
+`session_integrity_error`，但不生成
 decision、TrackPoint、weak point、cloud sample、distance delta、
 moving time delta 或 segment change。
 
@@ -221,7 +221,7 @@ accuracy_too_large
 | STATIONARY_CLOUD | 稳定且有近期 still-motion 支持时为 `anchor / stationary_anchor`；否则为 `reject / stationary_cloud_jitter` |
 | RECOVERY_CLOUD | 未稳定为 `weak / recovery_cloud_pending`，稳定后 `accept / gap_recovery`，新 segment，0 delta |
 | WEAK_CLOUD | `weak / weak_signal_stage2`，不进 GPX，不累计 |
-| TRANSPORT_CLOUD | `reject / transport_suspected`，不进入徒步距离 |
+| TRANSPORT_RISK_CLOUD | `accept / transport_suspected_kept`，保留连续轨迹并标注风险 |
 
 点云稳定条件至少同时满足：
 
@@ -307,7 +307,7 @@ GAP 两端直线不计入可信距离
 ```text
 明显超过徒步范围，或系统上报速度显示为合理车辆速度:
   decisionResult = reject
-  decisionReason = transport_suspected
+  decisionReason = transport_suspected_kept
   进入内部 transport mode
 
 transport mode 中:
@@ -370,7 +370,7 @@ transport mode 中:
 核心文件：
 
 - `session.json`
-- `diagnostic.jsonl`
+- `evidence.jsonl`
 - `track.gpx`
 - `partial.gpx`
 
@@ -379,9 +379,9 @@ transport mode 中:
 - `sample_report_{sessionId}.txt`
 - `weak_gnss_report_{sessionId}.txt`
 
-样本报告由 `diagnostic.jsonl` 和 `session.json` 自动生成，覆盖采样策略分布、记录时长、距离、GAP、no-location timeout、reject/weak/accept 原因分布和阻塞问题。当前报告明确不统计电量/省电证据，也不做多地图 GPX 兼容性自动回归。
+样本报告由 `evidence.jsonl` 和 `session.json` 自动生成，覆盖采样策略分布、记录时长、距离、GAP、no-location timeout、reject/weak/accept 原因分布和阻塞问题。当前报告明确不统计电量/省电证据，也不做多地图 GPX 兼容性自动回归。
 
-弱 GPS 诊断报告由 `diagnostic.jsonl` 和 `session.json` 自动生成，覆盖 weak/reject 决策关联的卫星 C/N0、参与定位卫星数、raw location stale GNSS 占比、GAP 前后 30 秒 GNSS 质量和 no-location timeout。该报告只解释弱信号证据，不改变可信轨迹、距离、GPX 或 replay 判点结果。
+弱 GPS 诊断报告由 `evidence.jsonl` 和 `session.json` 自动生成，覆盖 weak/reject 决策关联的卫星 C/N0、参与定位卫星数、raw location stale GNSS 占比、GAP 前后 30 秒 GNSS 质量和 no-location timeout。该报告只解释弱信号证据，不改变可信轨迹、距离、GPX 或 replay 判点结果。
 
 `session.json` 至少表达：
 
@@ -410,7 +410,7 @@ transport mode 中:
 
 ## 诊断日志
 
-`diagnostic.jsonl` 采用追加写。
+`evidence.jsonl` 采用追加写。
 
 当前关键事件：
 
@@ -451,7 +451,7 @@ transport mode 中:
 - `gradle runReplay` 通过。
 - GAP 回放样本（fixture）产生 `gap_recovery`。
 - GAP 恢复点 delta 为 0。
-- 交通工具回放样本（fixture）产生 `transport_suspected` / `transport_suspected` / `gap_recovery`。
+- 交通工具回放样本（fixture）产生 `transport_suspected_kept` / `transport_suspected_kept` / `gap_recovery`。
 - GPX 保持连续可信轨迹。
 
 构建与真机：
@@ -470,7 +470,7 @@ transport mode 中:
 - 弱信号和跳点不会污染可信距离。
 - 长时间无定位后恢复时最终线连续。
 - `gapCount`、`gap_recovery`、`segmentId` 可在诊断中复盘。
-- 历史记录可以导出样本报告，用于减少手工翻看 `diagnostic.jsonl`。
+- 历史记录可以导出样本报告，用于减少手工翻看 `evidence.jsonl`。
 
 ## 海拔与累计爬升目标策略
 
@@ -649,7 +649,7 @@ BAROMETER 爬升计算口径：
 
 后续活动归因版本:
   在 BAROMETER 设备上升之外新增或派生 hikingAscent
-  transport_suspected / transport_suspected 期间暂停徒步爬升累计
+  transport_suspected_kept 期间保留连续轨迹
   GNSS 决策进入/离开 transport mode 时重置徒步爬升 anchor
   gap_recovery / gap_recovery / gap_recovery 时重置徒步爬升 anchor
   设备静止锚点被重估时，只重置徒步爬升趋势，不把跨锚点高度差计入徒步爬升

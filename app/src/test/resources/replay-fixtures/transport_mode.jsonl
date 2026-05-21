@@ -1,6 +1,6 @@
 {"event":"session_metadata","createdElapsedRealtimeNanos":1000000000}
 {"event":"config_snapshot","strategyVersion":"stage2-track-trust-v3-sampling-cloud"}
 {"event":"raw_location","rawPointId":1,"provider":"gps","lat":29,"lng":106,"accuracy":10,"timeMillis":1,"elapsedRealtimeNanos":2000000000,"expectedResult":"anchor","expectedReason":"first_fix_good"}
-{"event":"raw_location","rawPointId":2,"provider":"gps","lat":29.0007,"lng":106,"accuracy":5,"timeMillis":1,"elapsedRealtimeNanos":22000000000,"expectedResult":"reject","expectedReason":"transport_suspected"}
-{"event":"raw_location","rawPointId":3,"provider":"gps","lat":29.0014,"lng":106,"accuracy":5,"timeMillis":1,"elapsedRealtimeNanos":32000000000,"expectedResult":"reject","expectedReason":"transport_suspected"}
-{"event":"raw_location","rawPointId":4,"provider":"gps","lat":29.0016,"lng":106,"accuracy":5,"timeMillis":1,"elapsedRealtimeNanos":48000000000,"expectedResult":"reject","expectedReason":"transport_suspected"}
+{"event":"raw_location","rawPointId":2,"provider":"gps","lat":29.0007,"lng":106,"accuracy":5,"timeMillis":1,"elapsedRealtimeNanos":22000000000,"expectedResult":"accept","expectedReason":"transport_suspected_kept"}
+{"event":"raw_location","rawPointId":3,"provider":"gps","lat":29.0014,"lng":106,"accuracy":5,"timeMillis":1,"elapsedRealtimeNanos":32000000000,"expectedResult":"accept","expectedReason":"transport_suspected_kept"}
+{"event":"raw_location","rawPointId":4,"provider":"gps","lat":29.0016,"lng":106,"accuracy":5,"timeMillis":1,"elapsedRealtimeNanos":48000000000,"expectedResult":"accept","expectedReason":"moving_good_fix"}

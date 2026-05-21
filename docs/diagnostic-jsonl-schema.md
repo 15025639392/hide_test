@@ -87,25 +87,48 @@ Phase 6 diagnostic fields:
 - Do not infer trusted distance, moving time, segment id, or GPX output from `gnss_snapshot`.
 - Keep field names in diagnostic writers aligned with this document.
 
-## `motion_summary`
+## Evidence Lines
 
-Motion summary events are optional evidence for cloud motion weighting. They can support STATIONARY_CLOUD, MOVING_CLOUD, and RECOVERY_CLOUD consistency, but they do not by themselves prove user movement.
+Android records pure evidence in three independent time-aligned lines. Android
+must describe what sensors reported; Web/offline tooling owns cleaning,
+classification, and final product decisions.
+
+| Line | Events | Purpose |
+| --- | --- | --- |
+| GNSS / Location | `raw_location`, `gnss_snapshot`, `sampling_policy` | System GPS fixes, satellite quality, and request context. |
+| Device motion | `device_motion_window` | Phone motion statistics that can be aligned with raw fixes. |
+| Barometer | `barometer_window` | Pressure and raw barometer altitude changes over sensor time. |
+
+Evidence events must not write final labels such as walking, vehicle, jitter,
+climbing, should-accept, or should-reject.
+
+## `device_motion_window`
+
+`device_motion_window` is the pure device-motion evidence stream. It aggregates
+roughly one second of sensor samples using `SensorEvent.timestamp`, which shares
+the elapsed realtime clock used by `raw_location.elapsedRealtimeNanos`.
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `motionSummaryId` | long | Monotonic summary id generated per recording session. |
-| `firstElapsedRealtimeNanos` | long | First sensor sample timestamp in the summary window. |
-| `lastElapsedRealtimeNanos` | long | Last sensor sample timestamp in the summary window. |
-| `sampleCount` | int | Number of accelerometer samples in the summary window. |
-| `dynamicAccelRmsMps2` | double | RMS dynamic acceleration in meters per second squared. |
-| `stillScore` | double | Diagnostic score from 0.0 to 1.0; higher means closer to still. |
-| `isDeviceStill` | boolean | True when the window has enough low-motion samples. |
-| `sourceSensorType` | string | `TYPE_LINEAR_ACCELERATION` or `TYPE_ACCELEROMETER`. |
-
-Compatibility rules:
-
-- Treat `motion_summary` as optional evidence.
-- Sample reports may count these events, but trusted distance still comes only from Track Trust decisions.
+| `deviceMotionWindowId` | long | Monotonic window id generated per recording session. |
+| `startElapsedRealtimeNanos` | long | First sensor timestamp in this window. |
+| `endElapsedRealtimeNanos` | long | Last sensor timestamp in this window. |
+| `linearAccelerationSampleCount` | int | `TYPE_LINEAR_ACCELERATION` samples. |
+| `linearAccelerationRmsMps2` | double | RMS linear acceleration norm. |
+| `linearAccelerationMaxMps2` | double | Max linear acceleration norm. |
+| `accelerometerSampleCount` | int | `TYPE_ACCELEROMETER` samples. |
+| `accelerometerDynamicRmsMps2` | double | RMS of `abs(norm - gravity)`. |
+| `accelerometerDynamicMaxMps2` | double | Max of `abs(norm - gravity)`. |
+| `gyroscopeSampleCount` | int | `TYPE_GYROSCOPE` samples. |
+| `gyroscopeRmsRadps` | double | RMS angular velocity norm. |
+| `gyroscopeMaxRadps` | double | Max angular velocity norm. |
+| `rotationVectorSampleCount` | int | `TYPE_ROTATION_VECTOR` samples. |
+| `yawDeltaDegrees` | double | Wrapped yaw change in the window. |
+| `pitchDeltaDegrees` | double | Pitch change in the window. |
+| `rollDeltaDegrees` | double | Roll change in the window. |
+| `stepDetectorCount` | int | `TYPE_STEP_DETECTOR` events in the window. |
+| `stepCounterDelta` | int | Non-negative `TYPE_STEP_COUNTER` delta in the window. |
+| `stepCounterAvailable` | boolean | True when step counter evidence contributed. |
 
 ## `raw_location`
 
@@ -140,7 +163,7 @@ Sampling continuity rule:
 | `callbackReceivedElapsedRealtimeNanos` | long | App time when the callback was delivered. Diagnostic only. |
 | `callbackDelayNanos` | long | Non-negative delivery delay estimate. Diagnostic only; not used as cloud weight or as a hard callback-age gate. |
 
-## `pressure_sample` and `pressure_summary`
+## `barometer_window` and `pressure_summary`
 
 Pressure events are diagnostic evidence for barometer altitude. The long-term
 ascent model treats pressure samples as their own elevation stream: the raw
@@ -149,26 +172,23 @@ not to a GNSS TrackPoint. TrackPoint association may still be written for
 diagnostics and display, but barometer ascent must not depend on
 `moving_good_fix` or GNSS altitude quality.
 
-`pressure_sample` fields:
+`barometer_window` fields:
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `pressureSampleId` | long | Monotonic pressure sample id in the session. |
-| `pressureHpa` | float | Pressure sensor value in hPa. |
-| `sensorAccuracy` | int | Android sensor accuracy value reported with the event. |
-| `rawBarometerAltitudeMeters` | double | `SensorManager.getAltitude(PRESSURE_STANDARD_ATMOSPHERE, pressureHpa)` before absolute calibration. |
-
-`pressure_sample_rejected` records pressure sensor events that were kept for
-BAROMETER ascent rejection accounting but were not valid pressure samples.
-Rejected samples are not included in `pressureSampleCount`.
-
-| Field | Type | Notes |
-| --- | --- | --- |
-| `barometerSampleId` | long | Monotonic sample id in the barometer ascent stream. |
-| `pressureHpa` | float | Invalid pressure value when it can be represented as JSON. |
-| `pressureHpaText` | string | Invalid pressure value when it is `NaN` or infinite. |
-| `sensorAccuracy` | int | Android sensor accuracy value reported with the event. |
-| `rejectReason` | string | Rejection reason, currently `invalid_pressure`. |
+| `barometerWindowId` | long | Monotonic window id generated per recording session. |
+| `startElapsedRealtimeNanos` | long | First pressure sensor timestamp in this window. |
+| `endElapsedRealtimeNanos` | long | Last pressure sensor timestamp in this window. |
+| `sampleCount` | int | Valid pressure samples in the window. |
+| `minPressureHpa` | double | Minimum pressure in hPa. |
+| `maxPressureHpa` | double | Maximum pressure in hPa. |
+| `avgPressureHpa` | double | Average pressure in hPa. |
+| `deltaPressureHpa` | double | Last pressure minus first pressure. |
+| `minRawAltitudeMeters` | double | Minimum standard-atmosphere raw altitude. |
+| `maxRawAltitudeMeters` | double | Maximum standard-atmosphere raw altitude. |
+| `avgRawAltitudeMeters` | double | Average standard-atmosphere raw altitude. |
+| `deltaRawAltitudeMeters` | double | Last raw altitude minus first raw altitude. |
+| `lastSensorAccuracy` | int | Last Android sensor accuracy value in the window. |
 
 `pressure_summary` fields:
 
@@ -237,7 +257,7 @@ history; ascent remains based on relative BAROMETER changes.
 | `gap_recovery` | `accept` | RECOVERY_CLOUD is stable; starts a new segment with zero distance and moving-time delta. |
 | `stationary_anchor` | `anchor` | STATIONARY_CLOUD weighted center is used as a zero-delta anchor only when recent motion summary supports stillness. |
 | `stationary_cloud_jitter` | `reject` | Stationary-region drift or low-displacement motion without still evidence is rejected and does not affect GPX, distance, or paused sampling. |
-| `transport_suspected` | `reject` | Vehicle-like movement is isolated from hiking distance until recovery cloud stability. |
+| `transport_suspected_kept` | `accept` | Vehicle-like movement risk is kept in the target track and marked for review. |
 
 Intake rejection flow:
 
@@ -246,10 +266,9 @@ system Location
   -> RawPoint
   -> raw_location
   -> SamplingIntake
-  -> location_intake_rejected or session_integrity_error
+  -> session_integrity_error
 ```
 
-Intake rejection reasons are emitted as `location_intake_rejected` or
-`session_integrity_error`, not as Track Trust decisions. The corresponding
+Intake rejection reasons are recomputed from raw evidence or emitted as `session_integrity_error`, not as Track Trust decisions. The corresponding
 `raw_location` must already exist so replay and reports can inspect the full
 Location evidence even when the point never enters a cloud window.

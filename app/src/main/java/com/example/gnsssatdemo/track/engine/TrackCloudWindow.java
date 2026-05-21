@@ -1,7 +1,7 @@
 package com.example.gnsssatdemo.track.engine;
 
 import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
-import com.example.gnsssatdemo.track.model.MotionSummary;
+import com.example.gnsssatdemo.track.model.DeviceMotionWindow;
 import com.example.gnsssatdemo.track.model.RawPoint;
 
 import java.util.ArrayList;
@@ -36,11 +36,11 @@ public class TrackCloudWindow {
     }
 
     public Snapshot add(RawPoint rawPoint, GnssQualitySnapshot snapshot,
-                        List<MotionSummary> motionSummaries) {
+                        List<DeviceMotionWindow> motionWindows) {
         if (origin == null) {
             origin = rawPoint;
         }
-        samples.add(new Sample(rawPoint, snapshot, motionSummaries));
+        samples.add(new Sample(rawPoint, snapshot, motionWindows));
         return snapshot();
     }
 
@@ -113,7 +113,7 @@ public class TrackCloudWindow {
             latestAccuracyScore = scoreFromAccuracy(sample.sample.rawPoint.accuracyMeters);
             latestGnssScore = scoreFromGnss(sample.sample.snapshot);
             latestMotionScore = scoreFromMotion(sample.sample.rawPoint,
-                    sample.sample.motionSummaries);
+                    sample.sample.motionWindows);
             latestSpatialScore = scoreFromSpatial(distance, sample.sample.rawPoint.accuracyMeters);
         }
         double weightedRadius = Math.sqrt(radiusTotal / totalWeight);
@@ -159,7 +159,7 @@ public class TrackCloudWindow {
         double accuracyWeight = clamp(1.0 / Math.max(sample.rawPoint.accuracyMeters, 3.0),
                 0.01, 0.33);
         double gnssWeight = gnssWeight(sample.snapshot);
-        double motionWeight = motionWeight(sample.rawPoint, sample.motionSummaries);
+        double motionWeight = motionWeight(sample.rawPoint, sample.motionWindows);
         double sampleAgeSeconds = Math.max(0.0,
                 (latestElapsed - sample.rawPoint.elapsedRealtimeNanos) / 1_000_000_000.0);
         double temporalWeight = Math.exp(-sampleAgeSeconds / TEMPORAL_DECAY_SECONDS);
@@ -243,13 +243,13 @@ public class TrackCloudWindow {
         return 25;
     }
 
-    private double motionWeight(RawPoint rawPoint, List<MotionSummary> motionSummaries) {
-        int score = scoreFromMotion(rawPoint, motionSummaries);
+    private double motionWeight(RawPoint rawPoint, List<DeviceMotionWindow> motionWindows) {
+        int score = scoreFromMotion(rawPoint, motionWindows);
         return Math.max(0.25, score / 100.0);
     }
 
-    private int scoreFromMotion(RawPoint rawPoint, List<MotionSummary> motionSummaries) {
-        boolean still = hasStillMotion(rawPoint.elapsedRealtimeNanos, motionSummaries);
+    private int scoreFromMotion(RawPoint rawPoint, List<DeviceMotionWindow> motionWindows) {
+        boolean still = hasStillMotion(rawPoint.elapsedRealtimeNanos, motionWindows);
         if ("STATIONARY_CLOUD".equals(cloudType)) {
             return still ? 100 : 50;
         }
@@ -263,24 +263,33 @@ public class TrackCloudWindow {
     }
 
     private boolean hasStillMotion(long elapsedRealtimeNanos,
-                                   List<MotionSummary> motionSummaries) {
-        if (motionSummaries == null) {
+                                   List<DeviceMotionWindow> motionWindows) {
+        if (motionWindows == null) {
             return false;
         }
         long cutoff = elapsedRealtimeNanos - MOTION_WINDOW_NANOS;
         int total = 0;
         int still = 0;
-        for (MotionSummary summary : motionSummaries) {
-            if (summary.lastElapsedRealtimeNanos < cutoff
-                    || summary.firstElapsedRealtimeNanos > elapsedRealtimeNanos) {
+        for (DeviceMotionWindow window : motionWindows) {
+            if (window.endElapsedRealtimeNanos < cutoff
+                    || window.startElapsedRealtimeNanos > elapsedRealtimeNanos) {
                 continue;
             }
             total++;
-            if (summary.deviceStill) {
+            if (isLowMotionWindow(window)) {
                 still++;
             }
         }
         return total > 0 && still / (double) total >= 0.75;
+    }
+
+    private boolean isLowMotionWindow(DeviceMotionWindow window) {
+        double accelRms = window.linearAccelerationSampleCount > 0
+                ? window.linearAccelerationRmsMps2 : window.accelerometerDynamicRmsMps2;
+        return accelRms <= 0.18
+                && window.gyroscopeRmsRadps <= 0.08
+                && window.stepDetectorCount == 0
+                && window.stepCounterDelta == 0;
     }
 
     private int scoreFromAccuracy(float accuracyMeters) {
@@ -333,15 +342,15 @@ public class TrackCloudWindow {
     private static class Sample {
         final RawPoint rawPoint;
         final GnssQualitySnapshot snapshot;
-        final List<MotionSummary> motionSummaries;
+        final List<DeviceMotionWindow> motionWindows;
 
         Sample(RawPoint rawPoint, GnssQualitySnapshot snapshot,
-               List<MotionSummary> motionSummaries) {
+               List<DeviceMotionWindow> motionWindows) {
             this.rawPoint = rawPoint;
             this.snapshot = snapshot;
-            this.motionSummaries = motionSummaries == null
-                    ? Collections.<MotionSummary>emptyList()
-                    : new ArrayList<>(motionSummaries);
+            this.motionWindows = motionWindows == null
+                    ? Collections.<DeviceMotionWindow>emptyList()
+                    : new ArrayList<>(motionWindows);
         }
     }
 

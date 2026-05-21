@@ -2407,7 +2407,7 @@ public class MainActivity extends Activity {
     }
 
     private String diagnosticShareFileName(SessionManifest manifest) {
-        return "gnss_diagnostic_" + manifest.sessionId + ".jsonl";
+        return "gnss_evidence_" + manifest.sessionId + ".jsonl";
     }
 
     private String evidenceShareFileName(SessionManifest manifest) {
@@ -3421,8 +3421,7 @@ public class MainActivity extends Activity {
         }
 
         private boolean isTransportTravelPoint(TrackPoint point) {
-            return "transport".equals(point.decisionResult)
-                    || "transport_suspected".equals(point.decisionReason);
+            return "transport_suspected_kept".equals(point.decisionReason);
         }
 
         private boolean isTransportRecoveryPoint(TrackPoint point) {
@@ -3870,7 +3869,7 @@ public class MainActivity extends Activity {
             case "moving_cloud_unstable":
             case "recovery_cloud_pending":
                 return "精度不足，暂不进 GPX";
-            case "transport_suspected":
+            case "transport_suspected_kept":
                 return "疑似交通工具，不累计";
             case "gap_recovery":
                 return "恢复徒步，重新锚定";
@@ -3910,7 +3909,7 @@ public class MainActivity extends Activity {
                 return "静止点云代表锚点，不累计距离。";
             case "stationary_cloud_jitter":
                 return "静止点云中的定位漂移，不累计距离。";
-            case "transport_suspected":
+            case "transport_suspected_kept":
                 return "检测到明显超过徒步范围的移动，疑似坐车或骑行，暂不进入可信徒步距离。";
             case "provider_not_gps":
                 return "不是 GPS_PROVIDER 输出，当前系统 GNSS 测试不接受。";
@@ -3935,7 +3934,7 @@ public class MainActivity extends Activity {
             case "moving_good_fix":
                 return "移动中的可信定位点，进入 GPX 并累计距离。";
             default:
-                return "未分类原因，请查看 diagnostic.jsonl。";
+                return "未分类原因，请查看 evidence.jsonl。";
         }
     }
 

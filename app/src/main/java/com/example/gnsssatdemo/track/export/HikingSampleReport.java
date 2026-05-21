@@ -66,7 +66,7 @@ public class HikingSampleReport {
     public final double averageRejectDecisionTop4AvgCn0;
     public final double averageRejectDecisionLowCn0VisibleCount;
     public final double averageRejectDecisionWeakUsedCount;
-    public final int motionSummaryCount;
+    public final int deviceMotionWindowCount;
     public final Map<String, Integer> samplingRequestCounts;
     public final Map<String, Double> samplingDurationSeconds;
     public final Map<String, Integer> decisionReasonCounts;
@@ -109,7 +109,7 @@ public class HikingSampleReport {
                               double averageRejectDecisionTop4AvgCn0,
                               double averageRejectDecisionLowCn0VisibleCount,
                               double averageRejectDecisionWeakUsedCount,
-                              int motionSummaryCount,
+                              int deviceMotionWindowCount,
                               Map<String, Integer> samplingRequestCounts,
                               Map<String, Double> samplingDurationSeconds,
                               Map<String, Integer> decisionReasonCounts,
@@ -168,7 +168,7 @@ public class HikingSampleReport {
         this.averageRejectDecisionTop4AvgCn0 = averageRejectDecisionTop4AvgCn0;
         this.averageRejectDecisionLowCn0VisibleCount = averageRejectDecisionLowCn0VisibleCount;
         this.averageRejectDecisionWeakUsedCount = averageRejectDecisionWeakUsedCount;
-        this.motionSummaryCount = motionSummaryCount;
+        this.deviceMotionWindowCount = deviceMotionWindowCount;
         this.samplingRequestCounts = Collections.unmodifiableMap(samplingRequestCounts);
         this.samplingDurationSeconds = Collections.unmodifiableMap(samplingDurationSeconds);
         this.decisionReasonCounts = Collections.unmodifiableMap(decisionReasonCounts);
@@ -231,7 +231,7 @@ public class HikingSampleReport {
         json.put("averageRejectDecisionTop4AvgCn0", averageRejectDecisionTop4AvgCn0);
         json.put("averageRejectDecisionLowCn0VisibleCount", averageRejectDecisionLowCn0VisibleCount);
         json.put("averageRejectDecisionWeakUsedCount", averageRejectDecisionWeakUsedCount);
-        json.put("motionSummaryCount", motionSummaryCount);
+        json.put("deviceMotionWindowCount", deviceMotionWindowCount);
         json.put("samplingRequestCounts", integerMapToJson(samplingRequestCounts));
         json.put("samplingDurationSeconds", doubleMapToJson(samplingDurationSeconds));
         json.put("decisionReasonCounts", integerMapToJson(decisionReasonCounts));

@@ -45,10 +45,6 @@ public class SessionFileStore {
         return new File(sessionDir, "session.json.tmp");
     }
 
-    public File diagnosticJsonl(File sessionDir) {
-        return new File(sessionDir, "diagnostic.jsonl");
-    }
-
     public File evidenceJsonl(File sessionDir) {
         return new File(sessionDir, "evidence.jsonl");
     }

@@ -1,9 +1,9 @@
 import {
   buildTargetOutput,
   formatDuration,
-  isDiagnosticCandidatePath,
-  isDiagnosticJsonlPath,
-  parseDiagnosticJsonl
+  isEvidenceCandidatePath,
+  isEvidenceJsonlPath,
+  parseEvidenceJsonl
 } from './diagnosticMap.mjs';
 import {
   DEFAULT_TARGET_PRODUCT_CONFIG,
@@ -16,9 +16,9 @@ const CLEANING_ALGORITHM_SECTIONS = [
   {
     title: '数据入口',
     rows: [
-      '推荐输入 evidence.jsonl；diagnostic.jsonl 只作为旧日志兼容输入',
+      '输入 evidence.jsonl',
       'Android 只作为纯证据产出端，Web 负责重新 intake、判点和生成清洗轨迹',
-      '先复原 raw_location、sampling_policy、gnss_snapshot、motion_summary',
+      '先复原 raw_location、sampling_policy、gnss_snapshot、device_motion_window、barometer_window',
       '所有连续性、GAP、速度计算使用 elapsedRealtimeNanos'
     ]
   },
@@ -96,10 +96,6 @@ const elements = {
   importStatus: document.querySelector('#importStatus'),
   importSpinner: document.querySelector('#importSpinner'),
   importText: document.querySelector('#importText'),
-  datasetCountText: document.querySelector('#datasetCountText'),
-  datasetRows: document.querySelector('#datasetRows'),
-  selectedFileText: document.querySelector('#selectedFileText'),
-  sampleSummary: document.querySelector('#sampleSummary'),
   selectedPointText: document.querySelector('#selectedPointText'),
   pointDetails: document.querySelector('#pointDetails'),
   mapView: document.querySelector('#mapView')
@@ -142,24 +138,24 @@ async function loadAlgorithmSource() {
 }
 
 async function importFiles(files, fromDirectory) {
-  setLoading(true, '正在识别 evidence.jsonl / diagnostic.jsonl...');
+  setLoading(true, '正在识别 evidence.jsonl...');
   await nextFrame();
-  const diagnosticFiles = files
+  const evidenceFiles = files
     .filter((file) => {
       const path = file.webkitRelativePath || file.name;
-      return fromDirectory ? isDiagnosticJsonlPath(path) : isDiagnosticCandidatePath(path);
+      return fromDirectory ? isEvidenceJsonlPath(path) : isEvidenceCandidatePath(path);
     })
     .sort((left, right) =>
       (left.webkitRelativePath || left.name).localeCompare(right.webkitRelativePath || right.name));
   const datasets = [];
   const errors = [];
   try {
-    for (const file of diagnosticFiles) {
+    for (const file of evidenceFiles) {
       const filePath = file.webkitRelativePath || file.name;
-      setLoading(true, `正在解析 ${datasets.length + 1}/${diagnosticFiles.length}: ${filePath}`);
+      setLoading(true, `正在解析 ${datasets.length + 1}/${evidenceFiles.length}: ${filePath}`);
       await nextFrame();
       try {
-        datasets.push(await readDiagnosticFile(file, datasets.length));
+        datasets.push(await readEvidenceFile(file, datasets.length));
       } catch (error) {
         errors.push(`${filePath}: ${error.message}`);
       }
@@ -168,8 +164,8 @@ async function importFiles(files, fromDirectory) {
     state.selectedDatasetId = datasets[0]?.id || null;
     state.selectedPoint = null;
     setImportText(errors.length
-      ? `找到 ${diagnosticFiles.length} 个 evidence/diagnostic 文件，已导入 ${datasets.length} 个，失败 ${errors.length} 个：${errors[0]}`
-      : `找到 ${diagnosticFiles.length} 个 evidence/diagnostic 文件，已导入 ${datasets.length} 个`);
+      ? `找到 ${evidenceFiles.length} 个 evidence 文件，已导入 ${datasets.length} 个，失败 ${errors.length} 个：${errors[0]}`
+      : `找到 ${evidenceFiles.length} 个 evidence 文件，已导入 ${datasets.length} 个`);
     render();
     fitAllBounds();
   } finally {
@@ -177,10 +173,10 @@ async function importFiles(files, fromDirectory) {
   }
 }
 
-async function readDiagnosticFile(file, index) {
+async function readEvidenceFile(file, index) {
   const filePath = file.webkitRelativePath || file.name;
   const text = await file.text();
-  const model = parseDiagnosticJsonl(text, filePath);
+  const model = parseEvidenceJsonl(text, filePath);
   const targetProduct = buildTargetTrackProduct(model, { config: state.cleaningConfig });
   return {
     id: `dataset-${index + 1}`,
@@ -189,7 +185,7 @@ async function readDiagnosticFile(file, index) {
     color: COLORS[index % COLORS.length],
     model,
     targetProduct,
-    targetOutput: buildTargetOutput(model),
+    targetOutput: buildTargetOutput(model, targetProduct),
     visible: true
   };
 }
@@ -247,6 +243,7 @@ function isDefaultCleaningConfig() {
 function recomputeTargetProducts() {
   for (const dataset of state.datasets) {
     dataset.targetProduct = buildTargetTrackProduct(dataset.model, { config: state.cleaningConfig });
+    dataset.targetOutput = buildTargetOutput(dataset.model, dataset.targetProduct);
   }
 }
 
@@ -278,111 +275,9 @@ function nextFrame() {
 }
 
 function render() {
-  renderDatasets();
-  renderSelectedSummary();
   renderPointDetails();
   renderCleaningAlgorithm();
   renderMap();
-}
-
-function renderDatasets() {
-  elements.datasetCountText.textContent = `${state.datasets.length} 个`;
-  if (state.datasets.length === 0) {
-    elements.datasetRows.innerHTML = '<p class="empty-note">导入一个或多个 evidence.jsonl</p>';
-    return;
-  }
-  elements.datasetRows.innerHTML = state.datasets.map((dataset) => datasetRowMarkup(dataset)).join('');
-  for (const row of elements.datasetRows.querySelectorAll('[data-dataset-id]')) {
-    row.addEventListener('click', () => {
-      state.selectedDatasetId = row.dataset.datasetId;
-      state.selectedPoint = null;
-      if (state.popup) state.popup.remove();
-      render();
-      focusDataset(selectedDataset());
-    });
-  }
-  for (const checkbox of elements.datasetRows.querySelectorAll('[data-visible-id]')) {
-    checkbox.addEventListener('click', (event) => event.stopPropagation());
-    checkbox.addEventListener('change', () => {
-      const dataset = state.datasets.find((item) => item.id === checkbox.dataset.visibleId);
-      if (dataset) dataset.visible = checkbox.checked;
-      renderMap();
-    });
-  }
-}
-
-function datasetRowMarkup(dataset) {
-  const product = dataset.targetProduct;
-  return `
-    <button class="dataset-row ${dataset.id === state.selectedDatasetId ? 'selected' : ''}" type="button" data-dataset-id="${dataset.id}">
-      <span class="file-cell"><i style="background:${dataset.color}"></i><b>${escapeHtml(dataset.fileName)}</b></span>
-      <span>${escapeHtml(dataset.model.deviceLabel || '-')}</span>
-      <span>${product.stats.trustedPointCount}</span>
-      <span>${formatMeters(product.stats.totalDistanceMeters)}</span>
-      <span>${formatDuration(product.stats.movingTimeSeconds)}</span>
-      <span>${formatPace(paceSecondsPerKm(product.stats.totalDistanceMeters, product.stats.movingTimeSeconds))}</span>
-      <span>${formatAscent(dataset.targetOutput.selectedTotalAscentMeters)}</span>
-      <input data-visible-id="${dataset.id}" type="checkbox" ${dataset.visible ? 'checked' : ''} aria-label="显示 ${escapeHtml(dataset.fileName)}" />
-    </button>
-  `;
-}
-
-function renderSelectedSummary() {
-  const dataset = selectedDataset();
-  elements.selectedFileText.textContent = dataset ? dataset.fileName : '-';
-  if (!dataset) {
-    elements.sampleSummary.innerHTML = '<p class="empty-note">选择文件后查看 Web 清洗结果、raw、GNSS、pressure、motion 摘要</p>';
-    return;
-  }
-  const { summaries, findings } = dataset.targetOutput;
-  const product = dataset.targetProduct;
-  elements.sampleSummary.innerHTML = `
-    ${summaryBlock('target product', [
-      `参数状态 ${product.usesDefaultConfig ? '默认' : '自定义'}`,
-      `目标可信点 ${product.stats.trustedPointCount}`,
-      `目标里程 ${formatMeters(product.stats.totalDistanceMeters)}`,
-      `目标运动耗时 ${formatDuration(product.stats.movingTimeSeconds)}`,
-      `segment ${product.stats.segmentCount} / GAP ${product.stats.gapCount}`,
-      `weak ${product.stats.weakPointCount} / reject ${product.stats.rejectedPointCount} / intake ${product.stats.intakeRejectedPointCount}`,
-      `静止压缩 ${product.stationarySessionCollapsed ? '已触发，清洗轨迹为单点' : '未触发'}`,
-      `旧 Android 对照 ${product.alignment.matchedDecisionCount}/${product.alignment.comparedDecisionCount}`,
-      product.alignment.mismatches.length
-        ? `差异 ${product.alignment.mismatches.length}`
-        : '差异 0'
-    ])}
-    ${summaryBlock('raw_location', [
-      `数量 ${summaries.raw.count}`,
-      `时间范围 ${formatNanoRange(summaries.raw.timeStartNanos, summaries.raw.timeEndNanos)}`,
-      `精度 ${formatMeters(summaries.raw.minAccuracyMeters)} - ${formatMeters(summaries.raw.maxAccuracyMeters)}`,
-      `未解释 ${summaries.raw.unexplainedCount}`
-    ])}
-    ${summaryBlock('recorded decision（兼容旧日志）', [
-      `数量 ${summaries.decision.decisionCount}`,
-      `anchor ${summaries.decision.anchorCount} / accept ${summaries.decision.acceptCount}`,
-      `weak ${summaries.decision.weakCount} / reject ${summaries.decision.rejectCount}`,
-      `intake ${summaries.decision.intakeRejectedCount}`,
-      `主要 reason ${summaries.decision.topReasons.map((item) => item.reason).join(', ') || '-'}`
-    ])}
-    ${summaryBlock('GNSS', [
-      `snapshot ${summaries.gnss.snapshotCount}`,
-      `used-in-fix 平均 ${formatOneDecimal(summaries.gnss.averageUsedInFixTotal)}`,
-      `usedAvgCn0 ${formatCn0(summaries.gnss.averageUsedAvgCn0)} / top4 ${formatCn0(summaries.gnss.averageTop4AvgCn0)}`,
-      `stale ${summaries.gnss.staleRawCount} (${formatPercent(summaries.gnss.staleRawRatio)})`
-    ])}
-    ${summaryBlock('pressure', [
-      `样本 ${summaries.pressure.pressureSampleCount}`,
-      `拒绝 ${summaries.pressure.pressureRejectedCount}`,
-      `selected ${formatAscent(summaries.pressure.selectedTotalAscentMeters)}`,
-      `barometer ${formatAscent(summaries.pressure.barometerTotalAscentMeters)} / GNSS ${formatAscent(summaries.pressure.gnssTotalAscentMeters)}`
-    ])}
-    ${summaryBlock('motion', [
-      `motion_summary ${summaries.motion.motionSummaryCount}`,
-      `still ${summaries.motion.stillCount} (${formatPercent(summaries.motion.stillRatio)})`,
-      `stationary/recovery 相关 ${summaries.motion.stationaryEvidenceCount}`
-    ])}
-    ${product.findings.length ? summaryBlock('target findings', product.findings) : ''}
-    ${findings.length ? summaryBlock('findings', findings) : ''}
-  `;
 }
 
 function summaryBlock(title, rows) {
@@ -444,6 +339,7 @@ function cleanedPointDetailsMarkup(dataset, point) {
       `recomputedDecisionId ${point.recomputedDecisionId}`,
       `result ${point.result}`,
       `reason ${point.reason}`,
+      `coordinateSource ${point.coordinateSource || '-'}`,
       `lat/lng ${formatLatLng(point)}`,
       `segmentId ${point.segmentId}`,
       `distanceDelta ${formatMeters(point.distanceDeltaMeters)}`,
@@ -480,16 +376,6 @@ function pointDetailsMarkup(dataset, point) {
       `speed ${formatSpeed(point.speed)}`,
       `elapsedRealtime ${formatNanos(point.elapsedRealtimeNanos)}`
     ])}
-    ${detailBlock('recorded decision / intake（旧日志对照）', [
-      `result ${decision.result || 'raw'}`,
-      `reason ${decision.reason || '-'}`,
-      `trustGrade ${decision.trustGrade || '-'}`,
-      `cloudType ${decision.cloudType || '-'}`,
-      `cloudId ${valueOrDash(decision.cloudId)}`,
-      `trackPointId ${valueOrDash(decision.trackPointId)}`,
-      `segmentId ${valueOrDash(decision.segmentId)}`,
-      decision.intakeRejected ? 'Android recorded intake 拒绝，仅用于旧日志对照' : ''
-    ].filter(Boolean))}
     ${detailBlock('GNSS 证据', [
       `snapshotId ${valueOrDash(decision.sourceGnssSnapshotId ?? point.sourceGnssSnapshotId)}`,
       `used/visible ${valueOrDash(snapshot?.usedInFixTotal)} / ${valueOrDash(snapshot?.visibleTotal)}`,

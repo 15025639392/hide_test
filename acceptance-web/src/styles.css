@@ -163,20 +163,17 @@ button:disabled {
 
 .layout {
   display: grid;
-  grid-template-columns: 520px minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr) 360px;
   min-height: 0;
 }
 
-.left-panel,
 .right-panel {
   z-index: 1;
   overflow: auto;
-  border-right: 1px solid var(--line);
   background: rgba(7, 17, 19, 0.92);
 }
 
 .right-panel {
-  border-right: 0;
   border-left: 1px solid var(--line);
 }
 
@@ -291,10 +288,6 @@ button:disabled {
   font-size: 12px;
 }
 
-.dataset-table {
-  min-width: 0;
-}
-
 .config-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -322,77 +315,6 @@ button:disabled {
 
 .config-grid button {
   width: 100%;
-}
-
-.dataset-head,
-.dataset-row {
-  display: grid;
-  grid-template-columns: minmax(120px, 1.45fr) minmax(78px, 0.9fr) 58px 70px 76px 72px 78px 26px;
-  gap: 8px;
-  align-items: center;
-}
-
-.dataset-head {
-  padding: 9px 10px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 850;
-}
-
-.dataset-rows {
-  display: grid;
-  gap: 1px;
-}
-
-.dataset-row {
-  width: 100%;
-  height: auto;
-  min-height: 48px;
-  border: 0;
-  border-top: 1px solid rgba(203, 213, 225, 0.08);
-  border-radius: 0;
-  padding: 8px 10px;
-  background: transparent;
-  color: var(--ink);
-  cursor: pointer;
-  text-align: left;
-}
-
-.dataset-row:hover,
-.dataset-row.selected {
-  background: rgba(45, 212, 191, 0.10);
-}
-
-.dataset-row span {
-  overflow: hidden;
-  color: #dce8eb;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dataset-row input {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--accent);
-}
-
-.file-cell {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.file-cell i {
-  width: 10px;
-  height: 10px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-}
-
-.file-cell b {
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .summary-list,
@@ -493,11 +415,6 @@ button:disabled {
 
 @media (max-width: 1280px) {
   .layout {
-    grid-template-columns: 430px minmax(0, 1fr) 320px;
-  }
-
-  .dataset-head,
-  .dataset-row {
-    grid-template-columns: minmax(110px, 1.2fr) 60px 48px 64px 64px 62px 68px 24px;
+    grid-template-columns: minmax(0, 1fr) 320px;
   }
 }

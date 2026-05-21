@@ -14,7 +14,7 @@ Authoritative recording chain:
 ```text
 RecordingForegroundService
   -> LocationManager.GPS_PROVIDER
-  -> RawPoint / GnssQualitySnapshot / diagnostic.jsonl
+  -> RawPoint / GnssQualitySnapshot / evidence.jsonl
   -> SamplingEpoch / SamplingIntake
   -> TrackTrustEngine / TrackCloudWindow
   -> TrackPoint / session.json
@@ -77,7 +77,7 @@ Baseline behavior:
 | Accuracy > 80m | intake reject `accuracy_too_large` |
 | Implied speed > 12m/s | `weak / weak_signal_stage2` |
 | Gap > 120s | `weak / recovery_cloud_pending` until RECOVERY_CLOUD is stable |
-| Sustained vehicle-like movement | `reject / transport_suspected`, enter transport mode |
+| Sustained vehicle-like movement | `accept / transport_suspected_kept`, keep continuity and mark risk |
 | Stable walking after transport | `accept / gap_recovery`, zero delta, new segment |
 | Stable stationary cloud with recent still-motion evidence | `anchor / stationary_anchor` |
 | Stationary cloud without still-motion evidence, before stability, or paused keepalive near the anchor | `reject / stationary_cloud_jitter` |
@@ -156,7 +156,7 @@ For every governance step, answer these before editing:
 - Does this change alter `movingTimeSeconds`?
 - Does this change alter trusted GPX output?
 - Does this change alter `partial.gpx` output?
-- Does this change alter `diagnostic.jsonl` schema?
+- Does this change alter `evidence.jsonl` schema?
 - Does this change affect old session reading?
 - Does replay need a fixture（回放样本） update?
 
@@ -449,7 +449,7 @@ rejected, GAP, or stale-GNSS evidence without changing trusted track policy.
 Suggested extraction order:
 
 1. Add `WeakGnssReportGenerator` that reads `session.json` and
-   `diagnostic.jsonl` through `SessionManifest`.
+   `evidence.jsonl` through `SessionManifest`.
 2. Add `WeakGnssReport` JSON and text output for weak/reject/GAP/no-location
    evidence.
 3. Add compatibility tests for old `gnss_snapshot` events that do not contain
@@ -582,7 +582,7 @@ Completed:
 - Phase 9 / Task 3: added sample-report coverage for weak/reject decision GNSS
   correlation while preserving legacy compatibility.
 - Phase 10 / Task 1: added `WeakGnssReportGenerator` for standalone weak GNSS
-  diagnostics from `SessionManifest` and `diagnostic.jsonl`.
+  diagnostics from `SessionManifest` and `evidence.jsonl`.
 - Phase 10 / Task 2: added `WeakGnssReport` JSON and text output for
   weak/reject/GAP/no-location evidence.
 - Phase 10 / Task 3: added weak GNSS report tests for Phase 6 metrics and

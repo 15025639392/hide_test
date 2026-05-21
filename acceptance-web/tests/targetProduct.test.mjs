@@ -1,18 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseDiagnosticJsonl } from '../src/diagnosticMap.mjs';
+import { parseEvidenceJsonl } from '../src/diagnosticMap.mjs';
 import { buildTargetTrackProduct } from '../src/targetProduct.mjs';
 
-test('buildTargetTrackProduct rebuilds target track from diagnostic raw evidence', () => {
-  const model = parseDiagnosticJsonl([
+test('buildTargetTrackProduct rebuilds target track from pure evidence', () => {
+  const model = parseEvidenceJsonl([
     '{"event":"session_metadata","sessionId":"S1","strategyVersion":"stage2-track-trust-v3-sampling-cloud","recordStartElapsedRealtimeNanos":1000000000}',
     '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","locationRequestMinTimeMs":1000,"locationRequestMinDistanceMeters":0,"eventElapsedRealtimeNanos":1000000000}',
     '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":8,"top4AvgCn0":32}',
     '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":5,"elapsedRealtimeNanos":1000000000,"sourceGnssSnapshotId":1}',
-    '{"event":"decision","decisionId":1,"rawPointId":1,"result":"anchor","reason":"first_fix_good"}',
-    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.0001,"lng":120,"accuracy":5,"elapsedRealtimeNanos":4000000000,"sourceGnssSnapshotId":1}',
-    '{"event":"decision","decisionId":2,"rawPointId":2,"result":"accept","reason":"moving_good_fix"}'
+    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.0001,"lng":120,"accuracy":5,"elapsedRealtimeNanos":4000000000,"sourceGnssSnapshotId":1}'
   ].join('\n'));
 
   const product = buildTargetTrackProduct(model);
@@ -26,11 +24,10 @@ test('buildTargetTrackProduct rebuilds target track from diagnostic raw evidence
   assert.equal(product.stats.trustedPointCount, 2);
   assert.ok(product.stats.totalDistanceMeters > 10);
   assert.equal(product.stats.movingTimeSeconds, 3);
-  assert.equal(product.alignment.matchedDecisionCount, 2);
 });
 
-test('buildTargetTrackProduct does not require Android recorded decisions', () => {
-  const model = parseDiagnosticJsonl([
+test('buildTargetTrackProduct builds from pure evidence without Android decisions', () => {
+  const model = parseEvidenceJsonl([
     '{"event":"session_metadata","sessionId":"S1","strategyVersion":"stage2-track-trust-v3-sampling-cloud","recordStartElapsedRealtimeNanos":1000000000}',
     '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
     '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":8,"top4AvgCn0":32}',
@@ -43,11 +40,24 @@ test('buildTargetTrackProduct does not require Android recorded decisions', () =
   assert.equal(product.track.length, 2);
   assert.equal(product.track[0].recomputedDecisionId, 1);
   assert.equal(product.track[1].recomputedDecisionId, 2);
-  assert.equal(product.alignment.comparedDecisionCount, 0);
+});
+
+test('buildTargetTrackProduct uses Android createdElapsedRealtimeNanos as record start', () => {
+  const model = parseEvidenceJsonl([
+    '{"event":"session_metadata","sessionId":"S1","createdElapsedRealtimeNanos":5000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":5000000000}',
+    '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":5,"elapsedRealtimeNanos":3000000000,"samplingEpochId":1}'
+  ].join('\n'));
+
+  const product = buildTargetTrackProduct(model);
+
+  assert.equal(product.track.length, 0);
+  assert.equal(product.excluded.intakeRejected.length, 1);
+  assert.equal(product.excluded.intakeRejected[0].reason, 'before_record_start');
 });
 
 test('buildTargetTrackProduct recomputes intake instead of relying on Android intake events', () => {
-  const model = parseDiagnosticJsonl([
+  const model = parseEvidenceJsonl([
     '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
     '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
     '{"event":"raw_location","rawPointId":1,"provider":"network","lat":30,"lng":120,"accuracy":5,"elapsedRealtimeNanos":1000000000}'
@@ -61,7 +71,7 @@ test('buildTargetTrackProduct recomputes intake instead of relying on Android in
 });
 
 test('buildTargetTrackProduct keeps gap recovery in target track with zero delta', () => {
-  const model = parseDiagnosticJsonl([
+  const model = parseEvidenceJsonl([
     '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
     '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
     '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":8,"top4AvgCn0":35}',
@@ -80,7 +90,7 @@ test('buildTargetTrackProduct keeps gap recovery in target track with zero delta
 });
 
 test('buildTargetTrackProduct supports custom cleaning parameters', () => {
-  const model = parseDiagnosticJsonl([
+  const model = parseEvidenceJsonl([
     '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
     '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
     '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":8,"top4AvgCn0":35}',
@@ -97,7 +107,7 @@ test('buildTargetTrackProduct supports custom cleaning parameters', () => {
 });
 
 test('buildTargetTrackProduct keeps isolated transport-like evidence as risk instead of deleting it', () => {
-  const model = parseDiagnosticJsonl([
+  const model = parseEvidenceJsonl([
     '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
     '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
     '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":8,"top4AvgCn0":35}',
@@ -112,6 +122,8 @@ test('buildTargetTrackProduct keeps isolated transport-like evidence as risk ins
   assert.equal(product.track.length, 2);
   assert.equal(product.track[1].reason, 'transport_suspected_kept');
   assert.equal(product.track[1].cloudType, 'TRANSPORT_RISK_CLOUD');
+  assert.equal(product.track[1].coordinateSource, 'raw');
+  assert.equal(product.track[1].virtualCoordinate, false);
   assert.equal(product.excluded.weak.length, 1);
   assert.equal(product.excluded.weak[0].reason, 'weak_signal_stage2');
   assert.equal(product.excluded.rejected.length, 0);
@@ -121,7 +133,7 @@ test('buildTargetTrackProduct keeps isolated transport-like evidence as risk ins
 });
 
 test('buildTargetTrackProduct keeps continuous transport-like evidence as risk instead of deleting it', () => {
-  const model = parseDiagnosticJsonl([
+  const model = parseEvidenceJsonl([
     '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
     '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
     '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":8,"top4AvgCn0":35}',
@@ -137,12 +149,13 @@ test('buildTargetTrackProduct keeps continuous transport-like evidence as risk i
   assert.equal(product.track[1].reason, 'transport_suspected_kept');
   assert.equal(product.track[2].reason, 'transport_suspected_kept');
   assert.equal(product.track[3].reason, 'transport_suspected_kept');
+  assert.ok(product.track.slice(1).every((point) => point.coordinateSource === 'raw'));
   assert.equal(product.excluded.rejected.length, 0);
   assert.equal(product.stats.transportCount, 3);
 });
 
 test('buildTargetTrackProduct keeps high-speed evidence when reported speed supports real movement', () => {
-  const model = parseDiagnosticJsonl([
+  const model = parseEvidenceJsonl([
     '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
     '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
     '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":8,"top4AvgCn0":35}',
@@ -158,21 +171,22 @@ test('buildTargetTrackProduct keeps high-speed evidence when reported speed supp
   assert.equal(product.track[1].reason, 'transport_suspected_kept');
   assert.equal(product.track[2].reason, 'transport_suspected_kept');
   assert.equal(product.track[3].reason, 'transport_suspected_kept');
+  assert.ok(product.track.slice(1).every((point) => point.virtualCoordinate === false));
   assert.equal(product.excluded.weak.length, 0);
   assert.equal(product.excluded.rejected.length, 0);
 });
 
 test('buildTargetTrackProduct collapses fully stationary sessions to one target point', () => {
-  const model = parseDiagnosticJsonl([
+  const model = parseEvidenceJsonl([
     '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
     '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
     '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":8,"top4AvgCn0":35}',
-    '{"event":"motion_summary","firstElapsedRealtimeNanos":1000000000,"lastElapsedRealtimeNanos":2000000000,"isDeviceStill":true}',
-    '{"event":"motion_summary","firstElapsedRealtimeNanos":3000000000,"lastElapsedRealtimeNanos":4000000000,"isDeviceStill":true}',
-    '{"event":"motion_summary","firstElapsedRealtimeNanos":5000000000,"lastElapsedRealtimeNanos":6000000000,"isDeviceStill":true}',
-    '{"event":"motion_summary","firstElapsedRealtimeNanos":7000000000,"lastElapsedRealtimeNanos":8000000000,"isDeviceStill":true}',
-    '{"event":"motion_summary","firstElapsedRealtimeNanos":9000000000,"lastElapsedRealtimeNanos":10000000000,"isDeviceStill":true}',
-    '{"event":"motion_summary","firstElapsedRealtimeNanos":11000000000,"lastElapsedRealtimeNanos":12000000000,"isDeviceStill":true}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":1000000000,"endElapsedRealtimeNanos":2000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":3000000000,"endElapsedRealtimeNanos":4000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":5000000000,"endElapsedRealtimeNanos":6000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":7000000000,"endElapsedRealtimeNanos":8000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":9000000000,"endElapsedRealtimeNanos":10000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":11000000000,"endElapsedRealtimeNanos":12000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
     '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":5,"elapsedRealtimeNanos":1000000000,"sourceGnssSnapshotId":1}',
     '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.00001,"lng":120,"accuracy":5,"elapsedRealtimeNanos":3000000000,"sourceGnssSnapshotId":1}',
     '{"event":"raw_location","rawPointId":3,"provider":"gps","lat":30.000011,"lng":120,"accuracy":5,"elapsedRealtimeNanos":5000000000,"sourceGnssSnapshotId":1}',
@@ -188,4 +202,23 @@ test('buildTargetTrackProduct collapses fully stationary sessions to one target 
   assert.equal(product.track[0].reason, 'stationary_session_anchor');
   assert.equal(product.stats.totalDistanceMeters, 0);
   assert.equal(product.stats.movingTimeSeconds, 0);
+});
+
+test('buildTargetTrackProduct uses accelerometer dynamic RMS when linear acceleration is unavailable', () => {
+  const model = parseEvidenceJsonl([
+    '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":8,"top4AvgCn0":35}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":1000000000,"endElapsedRealtimeNanos":2000000000,"linearAccelerationSampleCount":0,"linearAccelerationRmsMps2":0,"accelerometerSampleCount":10,"accelerometerDynamicRmsMps2":0.5,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":2000000000,"endElapsedRealtimeNanos":3000000000,"linearAccelerationSampleCount":0,"linearAccelerationRmsMps2":0,"accelerometerSampleCount":10,"accelerometerDynamicRmsMps2":0.5,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":5,"elapsedRealtimeNanos":1000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.00001,"lng":120,"accuracy":5,"elapsedRealtimeNanos":2000000000,"sourceGnssSnapshotId":1}'
+  ].join('\n'));
+
+  const product = buildTargetTrackProduct(model);
+
+  assert.equal(product.track.length, 2);
+  assert.equal(product.track[1].reason, 'continuity_rescue_stationary_jitter');
+  assert.equal(product.excluded.rejected.length, 0);
+  assert.notEqual(product.stationarySessionCollapsed, true);
 });

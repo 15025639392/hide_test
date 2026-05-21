@@ -173,7 +173,7 @@ SensorManager
 
 目标：验证是否值得做融合，不进入主链路。
 
-- 输入：`diagnostic.jsonl` + `imu_summary` + 可选 raw GNSS + 参考 GPX。
+- 输入：`evidence.jsonl` + `imu_summary` + 可选 raw GNSS + 参考 GPX。
 - 输出：`experimental_imu_gnss_report.txt` 和单独实验轨迹。
 - 指标：相对参考轨迹的横向误差、GAP 后恢复误差、静止段误累计、弱信号段误判率、电量和日志体积。
 

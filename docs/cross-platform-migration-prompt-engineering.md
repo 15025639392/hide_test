@@ -134,7 +134,7 @@ SDK 不负责：
 - app/src/main/java/com/example/gnsssatdemo/track/model/GnssSnapshotDiagnosticFields.java
 
 请输出：
-1. diagnostic.jsonl 必须保留的事件类型和字段。
+1. evidence.jsonl 必须保留的事件类型和字段。
 2. 可选字段、历史兼容字段和新增字段规则。
 3. 弱 GPS 报告必须保留的统计字段。
 4. 样本报告必须保留的统计字段。
@@ -191,7 +191,7 @@ SDK 不负责：
 2. Android 字段到目标平台字段的映射表。
 3. 无法一一映射字段的降级策略。
 4. 后台采样限制和风险。
-5. 如何生成与 Android 兼容的 diagnostic.jsonl。
+5. 如何生成与 Android 兼容的 evidence.jsonl。
 6. 如何保证策略核心只接收平台中立输入。
 7. SDK 适配层应该暴露哪些接口给宿主 App。
 
@@ -221,7 +221,7 @@ SDK 不负责：
 4. 判点引擎。
 5. segment、距离、运动时间累计。
 6. SDK 公共 API。
-7. diagnostic.jsonl 输出。
+7. evidence.jsonl 输出。
 8. replay runner 或等价离线回放工具。
 
 暂不实现：
@@ -260,7 +260,7 @@ SDK 不负责：
 6. movingTimeSeconds
 7. GAP 处理
 8. 弱 GPS 解释字段
-9. diagnostic.jsonl 事件和关键字段
+9. evidence.jsonl 事件和关键字段
 
 请输出：
 1. 完全一致项。

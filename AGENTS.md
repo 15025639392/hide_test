@@ -61,7 +61,7 @@ RecordingForegroundService
 
 - 每个系统 `Location` 必须先成为 `RawPoint`，并写入 `raw_location` 诊断证据。
 - `SamplingIntake` 只做入口契约和硬性样本合法性校验。
-- 被 `SamplingIntake` 拒绝的点写 `location_intake_rejected`，不进入点云、decision
+- 被 `SamplingIntake` 拒绝的点只保留 raw_location 纯证据，由目标算法重放时解释，不写旧拒绝事件
   或 TrackPoint。
 - 合法 `RawPoint` 才进入 `TrackTrustEngine / TrackCloudWindow`。
 - 可信 GPX 只能包含可信的 `anchor` 和 `accept` TrackPoint。
@@ -93,7 +93,7 @@ RecordingForegroundService
 
 - 系统 GNSS 采样、前台记录服务、session 输出。
 - RawPoint、SamplingEpoch、SamplingIntake、TrackTrustEngine、TrackCloudWindow。
-- 可信 GPX、partial GPX、`session.json`、`diagnostic.jsonl`。
+- 可信 GPX、partial GPX、`session.json`、`evidence.jsonl`。
 - 弱 GPS 报告、徒步样本报告、replay runner。
 - replay fixtures、单元测试和多设备爬升验收 Web 工具。
 
@@ -154,7 +154,7 @@ npm test
 下一步重点不是继续大范围重构，也不是打磨 UI，而是证明目标函数可靠：
 
 - 多台 Android 真机同路线采样。
-- 对比 `session.json`、`diagnostic.jsonl`、`track.gpx`、弱 GPS 报告和样本报告。
+- 对比 `session.json`、`evidence.jsonl`、`track.gpx`、弱 GPS 报告和样本报告。
 - 使用 `acceptance-web/` 验证多设备气压计累计爬升一致性。
 - 从真实 session 中补充 replay fixtures，覆盖弱 GPS、长 GAP、休息恢复、
   城市峡谷、山谷、隧道/室内出口和疑似交通工具移动。

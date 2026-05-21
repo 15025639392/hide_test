@@ -30,7 +30,7 @@ public class SessionManifestReaderTest {
         json.put("deviceModel", "Pixel 8");
         json.put("deviceName", "shiba");
         json.put("androidSdkInt", 35);
-        json.put("diagnosticLogFileName", "diagnostic.jsonl");
+        json.put("diagnosticLogFileName", "evidence.jsonl");
         json.put("trustedGpxFileName", "track.gpx");
         json.put("partialGpxFileName", "partial.gpx");
         json.put("lastEventSeq", 22L);
@@ -54,7 +54,7 @@ public class SessionManifestReaderTest {
         json.put("gapCount", 2);
         json.put("lastKnownErrorCode", "");
         Files.write(store.sessionJson(dir).toPath(), json.toString().getBytes(StandardCharsets.UTF_8));
-        Files.write(store.diagnosticJsonl(dir).toPath(),
+        Files.write(store.evidenceJsonl(dir).toPath(),
                 "{\"eventSeq\":21}\n{\"eventSeq\":22}\n".getBytes(StandardCharsets.UTF_8));
         Files.write(store.trackGpx(dir).toPath(), "<gpx />\n".getBytes(StandardCharsets.UTF_8));
         Files.write(store.partialGpx(dir).toPath(), "<gpx partial=\"true\" />\n".getBytes(StandardCharsets.UTF_8));
@@ -110,7 +110,7 @@ public class SessionManifestReaderTest {
         File root = Files.createTempDirectory("track-sessions").toFile();
         SessionFileStore store = new SessionFileStore(root);
         File dir = store.createSessionDir("session-2");
-        Files.write(store.diagnosticJsonl(dir).toPath(), "{}\n".getBytes(StandardCharsets.UTF_8));
+        Files.write(store.evidenceJsonl(dir).toPath(), "{}\n".getBytes(StandardCharsets.UTF_8));
 
         SessionManifest manifest = new SessionManifestReader(store).read(dir);
 
@@ -149,11 +149,11 @@ public class SessionManifestReaderTest {
         json.put("sessionId", "session-4");
         json.put("completionState", "FINISHED");
         json.put("integrityState", "OK");
-        json.put("diagnosticLogFileName", "diagnostic.jsonl");
+        json.put("diagnosticLogFileName", "evidence.jsonl");
         json.put("trustedGpxFileName", "track.gpx");
         json.put("lastEventSeq", 10L);
         Files.write(store.sessionJson(dir).toPath(), json.toString().getBytes(StandardCharsets.UTF_8));
-        Files.write(store.diagnosticJsonl(dir).toPath(),
+        Files.write(store.evidenceJsonl(dir).toPath(),
                 "{\"eventSeq\":8}\n{\"eventSeq\":9}\n".getBytes(StandardCharsets.UTF_8));
 
         SessionManifest manifest = new SessionManifestReader(store).read(dir);
@@ -173,11 +173,11 @@ public class SessionManifestReaderTest {
         json.put("sessionId", "session-5");
         json.put("completionState", "ACTIVE");
         json.put("integrityState", "OK");
-        json.put("diagnosticLogFileName", "diagnostic.jsonl");
+        json.put("diagnosticLogFileName", "evidence.jsonl");
         json.put("trustedGpxFileName", "track.gpx");
         json.put("lastEventSeq", 2L);
         Files.write(store.sessionJson(dir).toPath(), json.toString().getBytes(StandardCharsets.UTF_8));
-        Files.write(store.diagnosticJsonl(dir).toPath(),
+        Files.write(store.evidenceJsonl(dir).toPath(),
                 "{\"eventSeq\":1}\n{bad json\n".getBytes(StandardCharsets.UTF_8));
 
         SessionManifest manifest = new SessionManifestReader(store).read(dir);
@@ -198,11 +198,11 @@ public class SessionManifestReaderTest {
         json.put("sessionId", "session-active");
         json.put("completionState", "ACTIVE");
         json.put("integrityState", "OK");
-        json.put("diagnosticLogFileName", "diagnostic.jsonl");
+        json.put("diagnosticLogFileName", "evidence.jsonl");
         json.put("trustedGpxFileName", "track.gpx");
         json.put("lastEventSeq", 1L);
         Files.write(store.sessionJson(dir).toPath(), json.toString().getBytes(StandardCharsets.UTF_8));
-        Files.write(store.diagnosticJsonl(dir).toPath(),
+        Files.write(store.evidenceJsonl(dir).toPath(),
                 "{\"eventSeq\":1}\n".getBytes(StandardCharsets.UTF_8));
 
         SessionManifest manifest = new SessionManifestReader(store).read(dir);

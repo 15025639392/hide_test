@@ -41,6 +41,11 @@ public class WeakGnssReportGenerator {
                 accumulator.onEvent(new JSONObject(trimmed));
             }
         }
+        try {
+            accumulator.applyTrackProduct(new EvidenceTrackProductBuilder().build(diagnosticFile));
+        } catch (IOException | JSONException ignored) {
+            // The report can still describe raw GNSS evidence when product rebuild fails.
+        }
         accumulator.finish();
         return accumulator;
     }
@@ -70,10 +75,6 @@ public class WeakGnssReportGenerator {
                 onRawLocation(event);
             } else if ("gnss_snapshot".equals(eventName)) {
                 onGnssSnapshot(event);
-            } else if ("decision".equals(eventName)) {
-                onDecision(event);
-            } else if ("location_intake_rejected".equals(eventName)) {
-                onLocationIntakeRejected(event);
             } else if ("session_event".equals(eventName)) {
                 onSessionEvent(event);
             }
@@ -101,32 +102,38 @@ public class WeakGnssReportGenerator {
             gnssById.put(event.optLong(GnssSnapshotDiagnosticFields.SNAPSHOT_ID), snapshot);
         }
 
-        void onDecision(JSONObject event) {
-            String result = event.optString("result", "");
-            String reason = event.optString("reason", "");
-            RawSummary raw = rawById.get(event.optLong("rawPointId"));
-            GnssMetricSnapshot snapshot = snapshotFor(event, raw);
-            if ("weak".equals(result)) {
-                weakDecisionCount++;
-                weakMetrics.add(raw, snapshot);
-            } else if ("reject".equals(result)) {
-                rejectDecisionCount++;
-                rejectMetrics.add(raw, snapshot);
-                if (reason.startsWith("transport_")) {
-                    transportMetrics.add(raw, snapshot);
-                }
-            }
-            if ("gap_recovery".equals(reason)) {
-                gapRecoveryCount++;
-                gapRecoveryElapsedTimes.add(event.optLong("eventElapsedRealtimeNanos", -1L));
+        void applyTrackProduct(EvidenceTrackProductBuilder.Result product) {
+            weakDecisionCount = 0;
+            rejectDecisionCount = 0;
+            gapRecoveryCount = 0;
+            weakMetrics.clear();
+            rejectMetrics.clear();
+            transportMetrics.clear();
+            gapRecoveryElapsedTimes.clear();
+            for (EvidenceTrackProductBuilder.DecisionRecord decision : product.decisions) {
+                onDecisionRecord(decision);
             }
         }
 
-        void onLocationIntakeRejected(JSONObject event) {
-            RawSummary raw = rawById.get(event.optLong("rawPointId"));
-            GnssMetricSnapshot snapshot = snapshotFor(event, raw);
-            rejectDecisionCount++;
-            rejectMetrics.add(raw, snapshot);
+        void onDecisionRecord(EvidenceTrackProductBuilder.DecisionRecord decision) {
+            RawSummary raw = rawById.get(decision.rawPointId);
+            GnssMetricSnapshot snapshot = snapshotFor(decision.sourceGnssSnapshotId, raw);
+            if ("weak".equals(decision.result)) {
+                weakDecisionCount++;
+                weakMetrics.add(raw, snapshot);
+            } else if ("reject".equals(decision.result)
+                    || "intake_rejected".equals(decision.result)) {
+                rejectDecisionCount++;
+                rejectMetrics.add(raw, snapshot);
+            }
+            if ("transport_suspected_kept".equals(decision.reason)) {
+                transportMetrics.add(raw, snapshot);
+            }
+            if ("gap_recovery".equals(decision.reason)
+                    || "continuity_rescue_gap_recovery".equals(decision.reason)) {
+                gapRecoveryCount++;
+                gapRecoveryElapsedTimes.add(decision.elapsedRealtimeNanos);
+            }
         }
 
         void onSessionEvent(JSONObject event) {
@@ -140,9 +147,9 @@ public class WeakGnssReportGenerator {
             }
         }
 
-        GnssMetricSnapshot snapshotFor(JSONObject event, RawSummary raw) {
-            if (event.has("sourceGnssSnapshotId")) {
-                return gnssById.get(event.optLong("sourceGnssSnapshotId"));
+        GnssMetricSnapshot snapshotFor(Long sourceGnssSnapshotId, RawSummary raw) {
+            if (sourceGnssSnapshotId != null) {
+                return gnssById.get(sourceGnssSnapshotId);
             }
             if (raw != null && raw.sourceGnssSnapshotId != null) {
                 return gnssById.get(raw.sourceGnssSnapshotId);
@@ -289,6 +296,16 @@ public class WeakGnssReportGenerator {
         double usedInFixTotal;
         double usedAvgCn0Total;
         double top4AvgCn0Total;
+
+        void clear() {
+            decisionCount = 0;
+            linkedGnssCount = 0;
+            accuracyTotal = 0.0;
+            accuracyCount = 0;
+            usedInFixTotal = 0.0;
+            usedAvgCn0Total = 0.0;
+            top4AvgCn0Total = 0.0;
+        }
 
         void add(RawSummary raw, GnssMetricSnapshot snapshot) {
             decisionCount++;

@@ -1,7 +1,7 @@
 package com.example.gnsssatdemo.track.engine;
 
 import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
-import com.example.gnsssatdemo.track.model.MotionSummary;
+import com.example.gnsssatdemo.track.model.DeviceMotionWindow;
 import com.example.gnsssatdemo.track.model.RawPoint;
 import com.example.gnsssatdemo.track.model.TrackPoint;
 
@@ -18,24 +18,26 @@ public class TrackTrustEngine {
     public static final double IMPOSSIBLE_SPEED_METERS_PER_SECOND = 12.0;
     public static final double TRANSPORT_SPEED_METERS_PER_SECOND = 3.5;
     public static final double TRANSPORT_MIN_DISTANCE_METERS = 20.0;
+    public static final float CONTINUITY_RESCUE_MAX_ACCURACY_METERS = 650f;
+    public static final double CONTINUITY_RESCUE_MAX_SPEED_METERS_PER_SECOND = 6.0;
     private static final long MOTION_WINDOW_NANOS = 5_000_000_000L;
     private long nextCloudId = 1L;
     private TrackCloudWindow currentCloud;
     private String currentCloudType = "";
-    private boolean transportMode;
     private boolean resetMovingCloudAfterAccept;
+    private RawPoint recoveryPreviousRawPoint;
 
     public void reset() {
         nextCloudId = 1L;
         currentCloud = null;
         currentCloudType = "";
-        transportMode = false;
         resetMovingCloudAfterAccept = false;
+        recoveryPreviousRawPoint = null;
     }
 
     public TrackTrustDecision decide(RawPoint rawPoint, SamplingEpoch epoch,
                                      GnssQualitySnapshot snapshot,
-                                     List<MotionSummary> motionSummaries,
+                                     List<DeviceMotionWindow> motionWindows,
                                      TrackPoint previousTrustedTrackPoint) {
         String cloudType = chooseCloudType(rawPoint, epoch, previousTrustedTrackPoint);
         if (!cloudType.equals(currentCloudType)
@@ -44,11 +46,12 @@ public class TrackTrustEngine {
                 || shouldResetMovingCloud(cloudType)) {
             currentCloud = new TrackCloudWindow(nextCloudId++, cloudType, epoch.samplingEpochId);
             currentCloudType = cloudType;
-            if ("MOVING_CLOUD".equals(cloudType)) {
+            if ("MOVING_CLOUD".equals(cloudType) || "TRANSPORT_RISK_CLOUD".equals(cloudType)) {
                 resetMovingCloudAfterAccept = false;
             }
+            recoveryPreviousRawPoint = null;
         }
-        TrackCloudWindow.Snapshot cloud = currentCloud.add(rawPoint, snapshot, motionSummaries);
+        TrackCloudWindow.Snapshot cloud = currentCloud.add(rawPoint, snapshot, motionWindows);
         boolean stable = currentCloud.isStable()
                 || ("RECOVERY_CLOUD".equals(cloudType)
                 && currentCloud.recoveryFastPath()
@@ -65,16 +68,15 @@ public class TrackTrustEngine {
             reason = rawPoint.accuracyMeters <= FIRST_FIX_GOOD_ACCURACY_METERS
                     ? "first_fix_good" : "first_fix_relaxed";
             grade = "ANCHOR";
-        } else if ("TRANSPORT_CLOUD".equals(cloudType)) {
-            transportMode = true;
-            result = "reject";
-            reason = "transport_suspected";
-            grade = "REJECT";
         } else if ("RECOVERY_CLOUD".equals(cloudType)) {
             if (stable) {
-                transportMode = false;
                 result = "accept";
                 reason = "gap_recovery";
+                grade = "RECOVERY";
+                startsNewSegment = previousTrustedTrackPoint != null;
+            } else if (isRecoveryContinuityRescuePoint(rawPoint, recoveryPreviousRawPoint)) {
+                result = "accept";
+                reason = "continuity_rescue_gap_recovery";
                 grade = "RECOVERY";
                 startsNewSegment = previousTrustedTrackPoint != null;
             } else {
@@ -83,51 +85,76 @@ public class TrackTrustEngine {
                 grade = "WEAK";
             }
         } else if ("WEAK_CLOUD".equals(cloudType)) {
-            result = "weak";
-            reason = "weak_signal_stage2";
-            grade = "WEAK";
+            if (isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint)) {
+                result = "accept";
+                reason = "continuity_rescue_low_accuracy";
+                grade = "TRUSTED";
+                resetMovingCloudAfterAccept = true;
+            } else {
+                result = "weak";
+                reason = "weak_signal_stage2";
+                grade = "WEAK";
+            }
         } else if ("STATIONARY_CLOUD".equals(cloudType)) {
-            if (stable && hasRecentStillMotion(rawPoint.elapsedRealtimeNanos, motionSummaries)) {
+            if (stable && hasRecentStillMotion(rawPoint.elapsedRealtimeNanos, motionWindows)) {
                 result = "anchor";
                 reason = "stationary_anchor";
                 grade = "ANCHOR";
+            } else if (!hasRecentStillMotion(rawPoint.elapsedRealtimeNanos, motionWindows)
+                    && isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint)) {
+                result = "accept";
+                reason = "continuity_rescue_stationary_jitter";
+                grade = "TRUSTED";
+                resetMovingCloudAfterAccept = true;
             } else {
                 result = "reject";
                 reason = "stationary_cloud_jitter";
                 grade = "REJECT";
             }
+        } else if ("TRANSPORT_RISK_CLOUD".equals(cloudType)) {
+            result = "accept";
+            reason = "transport_suspected_kept";
+            grade = "TRUSTED";
+            resetMovingCloudAfterAccept = true;
         } else {
             if (stable) {
                 result = "accept";
                 reason = "moving_good_fix";
                 grade = "TRUSTED";
                 resetMovingCloudAfterAccept = true;
-                if (previousTrustedTrackPoint != null) {
-                    distanceDelta = TrackCloudWindow.distanceMeters(previousTrustedTrackPoint.latitude,
-                            previousTrustedTrackPoint.longitude,
-                            cloud.centerLatitude, cloud.centerLongitude);
-                    movingTimeDelta = Math.max(0.0,
-                            (rawPoint.elapsedRealtimeNanos
-                                    - previousTrustedTrackPoint.elapsedRealtimeNanos)
-                                    / 1_000_000_000.0);
-                }
             } else {
                 result = "weak";
                 reason = "moving_cloud_unstable";
                 grade = "WEAK";
             }
         }
+        if ("RECOVERY_CLOUD".equals(cloudType)) {
+            recoveryPreviousRawPoint = rawPoint;
+        }
+        double targetLatitude = usesRawCoordinate(reason) ? rawPoint.latitude : cloud.centerLatitude;
+        double targetLongitude = usesRawCoordinate(reason) ? rawPoint.longitude : cloud.centerLongitude;
+        boolean virtualTrackPointCoordinate = !usesRawCoordinate(reason);
+        if (("accept".equals(result) || "anchor".equals(result))
+                && previousTrustedTrackPoint != null
+                && shouldAccumulateMovement(reason)) {
+            distanceDelta = TrackCloudWindow.distanceMeters(previousTrustedTrackPoint.latitude,
+                    previousTrustedTrackPoint.longitude, targetLatitude, targetLongitude);
+            movingTimeDelta = Math.max(0.0,
+                    (rawPoint.elapsedRealtimeNanos - previousTrustedTrackPoint.elapsedRealtimeNanos)
+                            / 1_000_000_000.0);
+        }
         TrackTrustScore score = scoreWithSpeedPlausibility(cloud.score, rawPoint,
                 previousTrustedTrackPoint);
         return new TrackTrustDecision(result, reason, grade, cloud.cloudType, cloud.cloudId,
                 cloud.sampleCount, cloud.weightSum, cloud.weightedRadiusMeters,
-                cloud.centerLatitude, cloud.centerLongitude, cloud.representativeRawPointId,
-                cloud.contributingRawPointIds, true, score, epoch.samplingEpochId,
+                targetLatitude, targetLongitude, cloud.representativeRawPointId,
+                cloud.contributingRawPointIds, virtualTrackPointCoordinate, score, epoch.samplingEpochId,
                 startsNewSegment, distanceDelta, movingTimeDelta, rawPoint);
     }
 
     private boolean shouldResetMovingCloud(String cloudType) {
-        return "MOVING_CLOUD".equals(cloudType) && resetMovingCloudAfterAccept;
+        return ("MOVING_CLOUD".equals(cloudType) || "TRANSPORT_RISK_CLOUD".equals(cloudType))
+                && resetMovingCloudAfterAccept;
     }
 
     private String chooseCloudType(RawPoint rawPoint, SamplingEpoch epoch,
@@ -155,21 +182,94 @@ public class TrackTrustEngine {
         }
         if (deltaSeconds > 0.0) {
             double speed = distance / deltaSeconds;
+            if (isTransportRisk(rawPoint, speed, distance)) {
+                return "TRANSPORT_RISK_CLOUD";
+            }
             if (speed > IMPOSSIBLE_SPEED_METERS_PER_SECOND) {
                 return "WEAK_CLOUD";
             }
-            if (speed >= TRANSPORT_SPEED_METERS_PER_SECOND
-                    && distance >= TRANSPORT_MIN_DISTANCE_METERS) {
-                return "TRANSPORT_CLOUD";
-            }
-        }
-        if (transportMode) {
-            return "RECOVERY_CLOUD";
         }
         if (distance < stationaryThreshold(rawPoint)) {
             return "STATIONARY_CLOUD";
         }
         return "MOVING_CLOUD";
+    }
+
+    private boolean isTransportRisk(RawPoint rawPoint, double derivedSpeedMetersPerSecond,
+                                    double distanceMeters) {
+        if (derivedSpeedMetersPerSecond < TRANSPORT_SPEED_METERS_PER_SECOND
+                && (!rawPoint.hasSpeed
+                || rawPoint.speedMetersPerSecond < TRANSPORT_SPEED_METERS_PER_SECOND)) {
+            return false;
+        }
+        if (distanceMeters >= TRANSPORT_MIN_DISTANCE_METERS) {
+            return true;
+        }
+        return rawPoint.hasSpeed
+                && rawPoint.speedMetersPerSecond >= TRANSPORT_SPEED_METERS_PER_SECOND
+                && distanceMeters >= stationaryThreshold(rawPoint);
+    }
+
+    public boolean canRescueContinuityPoint(RawPoint rawPoint, TrackPoint previousTrustedTrackPoint,
+                                            String intakeReason) {
+        return "accuracy_too_large".equals(intakeReason)
+                && isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint);
+    }
+
+    private boolean isContinuityRescuePoint(RawPoint rawPoint,
+                                            TrackPoint previousTrustedTrackPoint) {
+        if (previousTrustedTrackPoint == null || rawPoint == null) {
+            return false;
+        }
+        if (!Double.isFinite(rawPoint.accuracyMeters)
+                || rawPoint.accuracyMeters > CONTINUITY_RESCUE_MAX_ACCURACY_METERS) {
+            return false;
+        }
+        long elapsedDelta = rawPoint.elapsedRealtimeNanos
+                - previousTrustedTrackPoint.elapsedRealtimeNanos;
+        if (elapsedDelta <= 0L || elapsedDelta > GAP_NANOS) {
+            return false;
+        }
+        double distance = TrackCloudWindow.distanceMeters(previousTrustedTrackPoint.latitude,
+                previousTrustedTrackPoint.longitude, rawPoint.latitude, rawPoint.longitude);
+        double speed = distance / (elapsedDelta / 1_000_000_000.0);
+        return speed <= CONTINUITY_RESCUE_MAX_SPEED_METERS_PER_SECOND
+                || (rawPoint.hasSpeed
+                && rawPoint.speedMetersPerSecond <= CONTINUITY_RESCUE_MAX_SPEED_METERS_PER_SECOND);
+    }
+
+    private boolean isRecoveryContinuityRescuePoint(RawPoint rawPoint, RawPoint previousRawPoint) {
+        if (previousRawPoint == null || rawPoint == null) {
+            return false;
+        }
+        if (!Double.isFinite(rawPoint.accuracyMeters)
+                || rawPoint.accuracyMeters > CONTINUITY_RESCUE_MAX_ACCURACY_METERS) {
+            return false;
+        }
+        long elapsedDelta = rawPoint.elapsedRealtimeNanos - previousRawPoint.elapsedRealtimeNanos;
+        if (elapsedDelta <= 0L || elapsedDelta > GAP_NANOS) {
+            return false;
+        }
+        double distance = TrackCloudWindow.distanceMeters(previousRawPoint.latitude,
+                previousRawPoint.longitude, rawPoint.latitude, rawPoint.longitude);
+        double speed = distance / (elapsedDelta / 1_000_000_000.0);
+        return speed <= CONTINUITY_RESCUE_MAX_SPEED_METERS_PER_SECOND
+                || (rawPoint.hasSpeed
+                && rawPoint.speedMetersPerSecond <= CONTINUITY_RESCUE_MAX_SPEED_METERS_PER_SECOND);
+    }
+
+    private boolean usesRawCoordinate(String reason) {
+        return "moving_good_fix".equals(reason)
+                || "transport_suspected_kept".equals(reason)
+                || "gap_recovery".equals(reason)
+                || (reason != null && reason.startsWith("continuity_rescue_"));
+    }
+
+    private boolean shouldAccumulateMovement(String reason) {
+        return "moving_good_fix".equals(reason)
+                || "transport_suspected_kept".equals(reason)
+                || "continuity_rescue_low_accuracy".equals(reason)
+                || "continuity_rescue_stationary_jitter".equals(reason);
     }
 
     private boolean recoveryFastPathAllowed(RawPoint rawPoint,
@@ -192,24 +292,33 @@ public class TrackTrustEngine {
     }
 
     private boolean hasRecentStillMotion(long elapsedRealtimeNanos,
-                                         List<MotionSummary> motionSummaries) {
-        if (motionSummaries == null) {
+                                         List<DeviceMotionWindow> motionWindows) {
+        if (motionWindows == null) {
             return false;
         }
         long cutoff = elapsedRealtimeNanos - MOTION_WINDOW_NANOS;
         int total = 0;
         int still = 0;
-        for (MotionSummary summary : motionSummaries) {
-            if (summary.lastElapsedRealtimeNanos < cutoff
-                    || summary.firstElapsedRealtimeNanos > elapsedRealtimeNanos) {
+        for (DeviceMotionWindow window : motionWindows) {
+            if (window.endElapsedRealtimeNanos < cutoff
+                    || window.startElapsedRealtimeNanos > elapsedRealtimeNanos) {
                 continue;
             }
             total++;
-            if (summary.deviceStill) {
+            if (isLowMotionWindow(window)) {
                 still++;
             }
         }
         return total > 0 && still / (double) total >= 0.75;
+    }
+
+    private boolean isLowMotionWindow(DeviceMotionWindow window) {
+        double accelRms = window.linearAccelerationSampleCount > 0
+                ? window.linearAccelerationRmsMps2 : window.accelerometerDynamicRmsMps2;
+        return accelRms <= 0.18
+                && window.gyroscopeRmsRadps <= 0.08
+                && window.stepDetectorCount == 0
+                && window.stepCounterDelta == 0;
     }
 
     private TrackTrustScore scoreWithSpeedPlausibility(TrackTrustScore score, RawPoint rawPoint,

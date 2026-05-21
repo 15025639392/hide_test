@@ -1,7 +1,7 @@
 package com.example.gnsssatdemo.track.export;
 
-import com.example.gnsssatdemo.track.model.TrackPoint;
 import com.example.gnsssatdemo.track.engine.TrackAscentCalculator;
+import com.example.gnsssatdemo.track.model.TrackPoint;
 
 import org.junit.Test;
 
@@ -14,56 +14,37 @@ import static org.junit.Assert.assertEquals;
 
 public class DiagnosticTrackPointReaderTest {
     @Test
-    public void readTrackPoints_reconstructsAcceptedDecisionPoints() throws Exception {
-        File dir = Files.createTempDirectory("diagnostic-track-reader").toFile();
-        File diagnostic = new File(dir, "diagnostic.jsonl");
+    public void readTrackPoints_rebuildsTargetProductFromPureEvidence() throws Exception {
+        File dir = Files.createTempDirectory("evidence-track-reader").toFile();
+        File evidence = new File(dir, "evidence.jsonl");
         String jsonl = ""
-                + "{\"event\":\"raw_location\",\"rawPointId\":1,\"provider\":\"gps\","
-                + "\"lat\":29.0,\"lng\":106.0,\"accuracy\":10.0,\"timeMillis\":1000,"
-                + "\"elapsedRealtimeNanos\":2000,\"sourceGnssSnapshotId\":7}\n"
-                + "{\"event\":\"decision\",\"decisionId\":1,\"rawPointId\":1,"
-                + "\"result\":\"anchor\",\"reason\":\"first_fix_good\",\"trackPointId\":1,"
-                + "\"segmentId\":1,\"distanceDeltaMeters\":0.0,"
-                + "\"movingTimeDeltaSeconds\":0.0}\n"
-                + "{\"event\":\"raw_location\",\"rawPointId\":2,\"provider\":\"gps\","
-                + "\"lat\":29.00018,\"lng\":106.0,\"accuracy\":3.0,\"timeMillis\":2000,"
-                + "\"elapsedRealtimeNanos\":12000}\n"
-                + "{\"event\":\"decision\",\"decisionId\":2,\"rawPointId\":2,"
-                + "\"result\":\"accept\",\"reason\":\"moving_good_fix\",\"trackPointId\":2,"
-                + "\"segmentId\":1,\"distanceDeltaMeters\":20.0,"
-                + "\"movingTimeDeltaSeconds\":10.0}\n"
-                + "{\"event\":\"decision\",\"decisionId\":3,\"rawPointId\":3,"
-                + "\"result\":\"reject\",\"reason\":\"weak_signal_stage2\"}\n";
-        Files.write(diagnostic.toPath(), jsonl.getBytes(StandardCharsets.UTF_8));
+                + "{\"event\":\"session_metadata\",\"createdElapsedRealtimeNanos\":1000000000}\n"
+                + raw(1, 29.0, 106.0, 10.0, 2_000_000_000L, null)
+                + raw(2, 29.00018, 106.0, 3.0, 12_000_000_000L, null);
+        Files.write(evidence.toPath(), jsonl.getBytes(StandardCharsets.UTF_8));
 
-        List<TrackPoint> points = new DiagnosticTrackPointReader().readTrackPoints(diagnostic);
+        List<TrackPoint> points = new DiagnosticTrackPointReader().readTrackPoints(evidence);
 
         assertEquals(2, points.size());
         assertEquals(1L, points.get(0).trackPointId);
         assertEquals(1L, points.get(0).sourceRawPointId);
         assertEquals(1L, points.get(0).sourceDecisionId);
-        assertEquals(29.0, points.get(0).latitude, 0.0);
-        assertEquals(7L, points.get(0).sourceGnssSnapshotId.longValue());
+        assertEquals("anchor", points.get(0).decisionResult);
+        assertEquals("first_fix_good", points.get(0).decisionReason);
         assertEquals("accept", points.get(1).decisionResult);
         assertEquals("moving_good_fix", points.get(1).decisionReason);
-        assertEquals(20.0, points.get(1).distanceDeltaMeters, 0.0);
     }
 
     @Test
-    public void readTrackPoints_reconstructsWeakDecisionPoints() throws Exception {
-        File dir = Files.createTempDirectory("diagnostic-track-reader-weak").toFile();
-        File diagnostic = new File(dir, "diagnostic.jsonl");
+    public void readTrackPoints_rebuildsWeakPointsFromRawEvidence() throws Exception {
+        File dir = Files.createTempDirectory("evidence-track-reader-weak").toFile();
+        File evidence = new File(dir, "evidence.jsonl");
         String jsonl = ""
-                + "{\"event\":\"raw_location\",\"rawPointId\":1,\"provider\":\"gps\","
-                + "\"lat\":29.0,\"lng\":106.0,\"accuracy\":55.0,\"timeMillis\":1000,"
-                + "\"elapsedRealtimeNanos\":2000}\n"
-                + "{\"event\":\"decision\",\"decisionId\":1,\"rawPointId\":1,"
-                + "\"result\":\"weak\",\"reason\":\"weak_signal_stage2\","
-                + "\"trackPointId\":1000000001,\"segmentId\":1,"
-                + "\"distanceDeltaMeters\":0.0,\"movingTimeDeltaSeconds\":0.0}\n";
-        Files.write(diagnostic.toPath(), jsonl.getBytes(StandardCharsets.UTF_8));
+                + "{\"event\":\"session_metadata\",\"createdElapsedRealtimeNanos\":1000000000}\n"
+                + raw(1, 29.0, 106.0, 55.0, 2_000_000_000L, null);
+        Files.write(evidence.toPath(), jsonl.getBytes(StandardCharsets.UTF_8));
 
-        List<TrackPoint> points = new DiagnosticTrackPointReader().readTrackPoints(diagnostic);
+        List<TrackPoint> points = new DiagnosticTrackPointReader().readTrackPoints(evidence);
 
         assertEquals(1, points.size());
         assertEquals(1_000_000_001L, points.get(0).trackPointId);
@@ -72,128 +53,82 @@ public class DiagnosticTrackPointReaderTest {
     }
 
     @Test
-    public void readTrackPoints_ignoresRejectDecisionEvenWhenItHasTrackPointId() throws Exception {
-        File dir = Files.createTempDirectory("diagnostic-track-reader-reject-trackpoint").toFile();
-        File diagnostic = new File(dir, "diagnostic.jsonl");
+    public void readTrackPoints_doesNotUseWeakPointAsPreviousTrustedPoint() throws Exception {
+        File dir = Files.createTempDirectory("evidence-track-reader-weak-gap").toFile();
+        File evidence = new File(dir, "evidence.jsonl");
         String jsonl = ""
-                + "{\"event\":\"raw_location\",\"rawPointId\":1,\"provider\":\"gps\","
-                + "\"lat\":29.0,\"lng\":106.0,\"accuracy\":8.0,\"timeMillis\":1000,"
-                + "\"elapsedRealtimeNanos\":2000}\n"
-                + "{\"event\":\"decision\",\"decisionId\":1,\"rawPointId\":1,"
-                + "\"result\":\"anchor\",\"reason\":\"first_fix_good\",\"trackPointId\":1,"
-                + "\"segmentId\":1,\"distanceDeltaMeters\":0.0,"
-                + "\"movingTimeDeltaSeconds\":0.0}\n"
-                + "{\"event\":\"raw_location\",\"rawPointId\":2,\"provider\":\"gps\","
-                + "\"lat\":29.00005,\"lng\":106.0,\"accuracy\":5.0,\"timeMillis\":2000,"
-                + "\"elapsedRealtimeNanos\":12000}\n"
-                + "{\"event\":\"decision\",\"decisionId\":2,\"rawPointId\":2,"
-                + "\"result\":\"reject\",\"reason\":\"stationary_cloud_jitter\","
-                + "\"trackPointId\":1,\"segmentId\":1,"
-                + "\"distanceDeltaMeters\":0.0,\"movingTimeDeltaSeconds\":0.0}\n";
-        Files.write(diagnostic.toPath(), jsonl.getBytes(StandardCharsets.UTF_8));
+                + "{\"event\":\"session_metadata\",\"createdElapsedRealtimeNanos\":1000000000}\n"
+                + raw(1, 29.0, 106.0, 8.0, 2_000_000_000L, null)
+                + raw(2, 29.001, 106.0, 55.0, 12_000_000_000L, null)
+                + raw(3, 29.0002, 106.0, 8.0, 200_000_000_000L, null)
+                + raw(4, 29.00021, 106.0, 8.0, 201_000_000_000L, null);
+        Files.write(evidence.toPath(), jsonl.getBytes(StandardCharsets.UTF_8));
 
-        List<TrackPoint> points = new DiagnosticTrackPointReader().readTrackPoints(diagnostic);
+        List<TrackPoint> points = new DiagnosticTrackPointReader().readTrackPoints(evidence);
 
-        assertEquals(1, points.size());
-        assertEquals(1L, points.get(0).trackPointId);
-        assertEquals("anchor", points.get(0).decisionResult);
+        assertEquals(4, points.size());
+        assertEquals("weak", points.get(1).decisionResult);
+        assertEquals("recovery_cloud_pending", points.get(2).decisionReason);
+        assertEquals("continuity_rescue_gap_recovery", points.get(3).decisionReason);
+        assertEquals(2L, points.get(3).segmentId);
     }
 
     @Test
-    public void readTrackPoints_keepsOriginalPointWhenSameTrackPointIdAppearsAgain()
-            throws Exception {
-        File dir = Files.createTempDirectory("diagnostic-track-reader-refine-anchor").toFile();
-        File diagnostic = new File(dir, "diagnostic.jsonl");
+    public void readTrackPoints_keepsTransportRiskAsTrustedTrack() throws Exception {
+        File dir = Files.createTempDirectory("evidence-track-reader-transport").toFile();
+        File evidence = new File(dir, "evidence.jsonl");
         String jsonl = ""
-                + "{\"event\":\"raw_location\",\"rawPointId\":1,\"provider\":\"gps\","
-                + "\"lat\":29.0,\"lng\":106.0,\"accuracy\":20.0,\"timeMillis\":1000,"
-                + "\"elapsedRealtimeNanos\":2000}\n"
-                + "{\"event\":\"decision\",\"decisionId\":1,\"rawPointId\":1,"
-                + "\"result\":\"anchor\",\"reason\":\"first_fix_relaxed\",\"trackPointId\":1,"
-                + "\"segmentId\":1,\"distanceDeltaMeters\":0.0,"
-                + "\"movingTimeDeltaSeconds\":0.0}\n"
-                + "{\"event\":\"raw_location\",\"rawPointId\":2,\"provider\":\"gps\","
-                + "\"lat\":29.00002,\"lng\":106.0,\"accuracy\":8.0,\"timeMillis\":2000,"
-                + "\"elapsedRealtimeNanos\":12000}\n"
-                + "{\"event\":\"decision\",\"decisionId\":2,\"rawPointId\":2,"
-                + "\"result\":\"anchor\",\"reason\":\"stationary_anchor\","
-                + "\"trackPointId\":1,\"segmentId\":1,"
-                + "\"distanceDeltaMeters\":0.0,\"movingTimeDeltaSeconds\":0.0}\n";
-        Files.write(diagnostic.toPath(), jsonl.getBytes(StandardCharsets.UTF_8));
+                + "{\"event\":\"session_metadata\",\"createdElapsedRealtimeNanos\":1000000000}\n"
+                + raw(1, 29.0, 106.0, 8.0, 2_000_000_000L, null)
+                + raw(2, 29.01, 106.0, 8.0, 22_000_000_000L, 5.0);
+        Files.write(evidence.toPath(), jsonl.getBytes(StandardCharsets.UTF_8));
 
-        List<TrackPoint> points = new DiagnosticTrackPointReader().readTrackPoints(diagnostic);
+        List<TrackPoint> points = new DiagnosticTrackPointReader().readDisplayTrackPoints(evidence);
 
-        assertEquals(1, points.size());
-        assertEquals(1L, points.get(0).trackPointId);
-        assertEquals(1L, points.get(0).sourceRawPointId);
-        assertEquals(1L, points.get(0).sourceDecisionId);
-        assertEquals("first_fix_relaxed", points.get(0).decisionReason);
-        assertEquals(20.0, points.get(0).accuracyMeters, 0.0);
+        assertEquals(2, points.size());
+        assertEquals("accept", points.get(1).decisionResult);
+        assertEquals("transport_suspected_kept", points.get(1).decisionReason);
+        assertEquals(2L, points.get(1).sourceRawPointId);
     }
 
     @Test
-    public void readDisplayTrackPoints_includesTransportRejectPointsForMapOnly() throws Exception {
-        File dir = Files.createTempDirectory("diagnostic-track-reader-transport").toFile();
-        File diagnostic = new File(dir, "diagnostic.jsonl");
+    public void readAscentInputs_reconstructsBarometerWindows() throws Exception {
+        File dir = Files.createTempDirectory("evidence-track-reader-pressure").toFile();
+        File evidence = new File(dir, "evidence.jsonl");
         String jsonl = ""
-                + "{\"event\":\"raw_location\",\"rawPointId\":1,\"provider\":\"gps\","
-                + "\"lat\":29.0,\"lng\":106.0,\"accuracy\":8.0,\"timeMillis\":1000,"
-                + "\"elapsedRealtimeNanos\":2000}\n"
-                + "{\"event\":\"decision\",\"decisionId\":1,\"rawPointId\":1,"
-                + "\"result\":\"anchor\",\"reason\":\"first_fix_good\",\"trackPointId\":1,"
-                + "\"segmentId\":1,\"distanceDeltaMeters\":0.0,"
-                + "\"movingTimeDeltaSeconds\":0.0}\n"
-                + "{\"event\":\"raw_location\",\"rawPointId\":2,\"provider\":\"gps\","
-                + "\"lat\":29.01,\"lng\":106.0,\"accuracy\":8.0,\"timeMillis\":2000,"
-                + "\"elapsedRealtimeNanos\":22000}\n"
-                + "{\"event\":\"decision\",\"decisionId\":2,\"rawPointId\":2,"
-                + "\"result\":\"reject\",\"reason\":\"transport_suspected\"}\n";
-        Files.write(diagnostic.toPath(), jsonl.getBytes(StandardCharsets.UTF_8));
-
-        List<TrackPoint> trustedPoints = new DiagnosticTrackPointReader().readTrackPoints(diagnostic);
-        List<TrackPoint> displayPoints = new DiagnosticTrackPointReader().readDisplayTrackPoints(diagnostic);
-
-        assertEquals(1, trustedPoints.size());
-        assertEquals(2, displayPoints.size());
-        assertEquals("transport", displayPoints.get(1).decisionResult);
-        assertEquals("transport_suspected", displayPoints.get(1).decisionReason);
-        assertEquals(2L, displayPoints.get(1).sourceRawPointId);
-    }
-
-    @Test
-    public void readAscentInputs_reconstructsPressureSamples() throws Exception {
-        File dir = Files.createTempDirectory("diagnostic-track-reader-pressure").toFile();
-        File diagnostic = new File(dir, "diagnostic.jsonl");
-        String jsonl = ""
-                + "{\"event\":\"pressure_sample\",\"eventElapsedRealtimeNanos\":1000,"
-                + "\"pressureSampleId\":1,\"pressureHpa\":1000.0,"
-                + "\"sensorAccuracy\":3,\"rawBarometerAltitudeMeters\":100.0}\n"
-                + "{\"event\":\"pressure_sample_rejected\","
-                + "\"eventElapsedRealtimeNanos\":10000001000,"
-                + "\"barometerSampleId\":2,\"pressureHpa\":0.0,"
-                + "\"sensorAccuracy\":3,\"rejectReason\":\"invalid_pressure\"}\n"
-                + "{\"event\":\"pressure_sample\",\"eventElapsedRealtimeNanos\":30000001000,"
-                + "\"pressureSampleId\":2,\"pressureHpa\":999.0,"
-                + "\"sensorAccuracy\":3,\"rawBarometerAltitudeMeters\":110.0}\n"
-                + "{\"event\":\"raw_location\",\"rawPointId\":1,\"provider\":\"gps\","
-                + "\"lat\":29.0,\"lng\":106.0,\"accuracy\":8.0,\"timeMillis\":1000,"
-                + "\"elapsedRealtimeNanos\":2000}\n"
-                + "{\"event\":\"decision\",\"decisionId\":1,\"rawPointId\":1,"
-                + "\"result\":\"weak\",\"reason\":\"weak_signal_stage2\","
-                + "\"trackPointId\":1000000001,\"segmentId\":1,"
-                + "\"distanceDeltaMeters\":0.0,\"movingTimeDeltaSeconds\":0.0}\n";
-        Files.write(diagnostic.toPath(), jsonl.getBytes(StandardCharsets.UTF_8));
+                + "{\"event\":\"session_metadata\",\"createdElapsedRealtimeNanos\":1000000000}\n"
+                + "{\"event\":\"barometer_window\",\"barometerWindowId\":1,"
+                + "\"endElapsedRealtimeNanos\":1000,\"avgPressureHpa\":1000.0,"
+                + "\"lastSensorAccuracy\":3,\"avgRawAltitudeMeters\":100.0}\n"
+                + "{\"event\":\"barometer_window\",\"barometerWindowId\":2,"
+                + "\"endElapsedRealtimeNanos\":30000001000,\"avgPressureHpa\":999.0,"
+                + "\"lastSensorAccuracy\":3,\"avgRawAltitudeMeters\":110.0}\n"
+                + raw(1, 29.0, 106.0, 55.0, 2_000_000_000L, null);
+        Files.write(evidence.toPath(), jsonl.getBytes(StandardCharsets.UTF_8));
 
         DiagnosticTrackPointReader.AscentInputs inputs =
-                new DiagnosticTrackPointReader().readAscentInputs(diagnostic);
+                new DiagnosticTrackPointReader().readAscentInputs(evidence);
         TrackAscentCalculator.Result result = TrackAscentCalculator.ascentResult(
                 inputs.trackPoints, inputs.barometerSamples);
 
         assertEquals(1, inputs.trackPoints.size());
-        assertEquals(3, inputs.barometerSamples.size());
+        assertEquals(2, inputs.barometerSamples.size());
         assertEquals("BAROMETER", result.source);
         assertEquals(3.5, result.totalAscentMeters, 0.0001);
         assertEquals(2, result.barometerSampleCount);
-        assertEquals(1, result.barometerRejectedSampleCount);
+        assertEquals(0, result.barometerRejectedSampleCount);
+    }
+
+    private String raw(long id, double lat, double lng, double accuracy,
+                       long elapsedRealtimeNanos, Double speed) {
+        return "{\"event\":\"raw_location\",\"rawPointId\":" + id
+                + ",\"provider\":\"gps\",\"lat\":" + lat
+                + ",\"lng\":" + lng
+                + ",\"accuracy\":" + accuracy
+                + ",\"timeMillis\":" + elapsedRealtimeNanos / 1_000_000L
+                + ",\"hasElapsedRealtimeNanos\":true"
+                + ",\"elapsedRealtimeNanos\":" + elapsedRealtimeNanos
+                + ",\"speed\":" + (speed == null ? "null" : speed)
+                + "}\n";
     }
 }

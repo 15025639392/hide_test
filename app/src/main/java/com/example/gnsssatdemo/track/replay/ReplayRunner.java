@@ -8,7 +8,7 @@ import com.example.gnsssatdemo.track.engine.TrackTrustDecision;
 import com.example.gnsssatdemo.track.engine.TrackTrustEngine;
 import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
 import com.example.gnsssatdemo.track.model.GnssSnapshotDiagnosticFields;
-import com.example.gnsssatdemo.track.model.MotionSummary;
+import com.example.gnsssatdemo.track.model.DeviceMotionWindow;
 import com.example.gnsssatdemo.track.model.RawPoint;
 import com.example.gnsssatdemo.track.model.TrackPoint;
 
@@ -50,7 +50,7 @@ public class ReplayRunner {
         Map<Long, GnssQualitySnapshot> gnssSnapshots = new HashMap<>();
         Map<Long, SamplingEpoch> samplingEpochs = new HashMap<>();
         List<TrackPoint> trackPoints = new ArrayList<>();
-        List<MotionSummary> recentMotionSummaries = new ArrayList<>();
+        List<DeviceMotionWindow> recentDeviceMotionWindows = new ArrayList<>();
         List<ReplayDecision> decisions = new ArrayList<>();
 
         String[] lines = jsonl.split("\\r?\\n");
@@ -93,9 +93,9 @@ public class ReplayRunner {
             } else if (GnssSnapshotDiagnosticFields.EVENT.equals(eventName)) {
                 GnssQualitySnapshot snapshot = gnssSnapshotFromEvent(event);
                 gnssSnapshots.put(snapshot.snapshotId, snapshot);
-            } else if ("motion_summary".equals(eventName)) {
-                MotionSummary summary = motionSummaryFromEvent(event);
-                rememberMotionSummary(recentMotionSummaries, summary);
+            } else if ("device_motion_window".equals(eventName)) {
+                DeviceMotionWindow window = deviceMotionWindowFromEvent(event);
+                rememberDeviceMotionWindow(recentDeviceMotionWindows, window);
             } else if ("raw_location".equals(eventName)) {
                 if (recordStartElapsedRealtimeNanos <= 0L) {
                     return ReplayReport.invalid("missing_session_metadata_before_raw_location");
@@ -121,7 +121,7 @@ public class ReplayRunner {
                     TrackPoint previousTrackPoint = lastTrackPoint(trackPoints);
                     TrackTrustDecision decision = trustEngine.decide(rawPoint, rawEpoch,
                             snapshotById(gnssSnapshots, rawPoint.sourceGnssSnapshotId),
-                            recentMotionSummaries, previousTrackPoint);
+                            recentDeviceMotionWindows, previousTrackPoint);
                     actualResult = decision.result;
                     actualReason = decision.reason;
                     if (decision.createsTrustedTrackPoint()) {
@@ -203,15 +203,26 @@ public class ReplayRunner {
         return epoch;
     }
 
-    private MotionSummary motionSummaryFromEvent(JSONObject event) {
-        return new MotionSummary(event.optLong("motionSummaryId"),
-                event.optLong("firstElapsedRealtimeNanos"),
-                event.optLong("lastElapsedRealtimeNanos"),
-                event.optInt("sampleCount", 0),
-                event.optDouble("dynamicAccelRmsMps2", 0.0),
-                event.optDouble("stillScore", 0.0),
-                event.optBoolean("isDeviceStill", event.optBoolean("deviceStill", false)),
-                event.optString("sourceSensorType", ""));
+    private DeviceMotionWindow deviceMotionWindowFromEvent(JSONObject event) {
+        return new DeviceMotionWindow(event.optLong("deviceMotionWindowId"),
+                event.optLong("startElapsedRealtimeNanos"),
+                event.optLong("endElapsedRealtimeNanos"),
+                event.optInt("linearAccelerationSampleCount", 0),
+                event.optInt("accelerometerSampleCount", 0),
+                event.optInt("gyroscopeSampleCount", 0),
+                event.optInt("rotationVectorSampleCount", 0),
+                event.optDouble("linearAccelerationRmsMps2", 0.0),
+                event.optDouble("linearAccelerationMaxMps2", 0.0),
+                event.optDouble("accelerometerDynamicRmsMps2", 0.0),
+                event.optDouble("accelerometerDynamicMaxMps2", 0.0),
+                event.optDouble("gyroscopeRmsRadps", 0.0),
+                event.optDouble("gyroscopeMaxRadps", 0.0),
+                event.optDouble("yawDeltaDegrees", 0.0),
+                event.optDouble("pitchDeltaDegrees", 0.0),
+                event.optDouble("rollDeltaDegrees", 0.0),
+                event.optInt("stepDetectorCount", 0),
+                event.optInt("stepCounterDelta", 0),
+                event.optBoolean("stepCounterAvailable", false));
     }
 
     private GnssQualitySnapshot gnssSnapshotFromEvent(JSONObject event) {
@@ -253,11 +264,11 @@ public class ReplayRunner {
         return trackPoints.isEmpty() ? null : trackPoints.get(trackPoints.size() - 1);
     }
 
-    private void rememberMotionSummary(List<MotionSummary> recentMotionSummaries,
-                                       MotionSummary summary) {
-        recentMotionSummaries.add(summary);
-        while (recentMotionSummaries.size() > RECENT_SUMMARY_LIMIT) {
-            recentMotionSummaries.remove(0);
+    private void rememberDeviceMotionWindow(List<DeviceMotionWindow> recentDeviceMotionWindows,
+                                            DeviceMotionWindow window) {
+        recentDeviceMotionWindows.add(window);
+        while (recentDeviceMotionWindows.size() > RECENT_SUMMARY_LIMIT) {
+            recentDeviceMotionWindows.remove(0);
         }
     }
 

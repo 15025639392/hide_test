@@ -160,7 +160,7 @@ public class TrackAscentCalculator {
     }
 
     private static boolean isBarometerEligible(TrackPoint point) {
-        return !"transport_suspected".equals(point.decisionReason);
+        return true;
     }
 
     private static boolean isAnchorReason(String reason) {

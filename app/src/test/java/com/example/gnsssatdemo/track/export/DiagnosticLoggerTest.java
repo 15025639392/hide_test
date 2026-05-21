@@ -15,7 +15,7 @@ public class DiagnosticLoggerTest {
     @Test
     public void append_writesEnvelopeFieldsAndMonotonicEventSeq() throws Exception {
         File dir = Files.createTempDirectory("diagnostic-logger-test").toFile();
-        File log = new File(dir, "diagnostic.jsonl");
+        File log = new File(dir, "evidence.jsonl");
 
         try (DiagnosticLogger logger = new DiagnosticLogger(log)) {
             JSONObject first = new JSONObject();
@@ -45,23 +45,23 @@ public class DiagnosticLoggerTest {
     }
 
     @Test
-    public void append_preservesExistingEventFields() throws Exception {
+    public void append_preservesExistingEvidenceFields() throws Exception {
         File dir = Files.createTempDirectory("diagnostic-logger-test").toFile();
-        File log = new File(dir, "diagnostic.jsonl");
+        File log = new File(dir, "evidence.jsonl");
 
         try (DiagnosticLogger logger = new DiagnosticLogger(log)) {
             JSONObject event = new JSONObject();
-            event.put("event", "decision");
-            event.put("decisionId", 7L);
-            event.put("reason", "first_fix_good");
+            event.put("event", "raw_location");
+            event.put("rawPointId", 7L);
+            event.put("provider", "gps");
 
             logger.append(event, "session-2", 300L);
         }
 
         JSONObject line = new JSONObject(Files.readAllLines(log.toPath(), StandardCharsets.UTF_8).get(0));
-        assertEquals("decision", line.getString("event"));
-        assertEquals(7L, line.getLong("decisionId"));
-        assertEquals("first_fix_good", line.getString("reason"));
+        assertEquals("raw_location", line.getString("event"));
+        assertEquals(7L, line.getLong("rawPointId"));
+        assertEquals("gps", line.getString("provider"));
         assertEquals("session-2", line.getString("sessionId"));
     }
 }

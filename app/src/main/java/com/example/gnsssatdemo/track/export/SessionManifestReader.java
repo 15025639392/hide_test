@@ -24,7 +24,7 @@ public class SessionManifestReader {
         }
         try {
             JSONObject json = new JSONObject(readText(sessionJson));
-            String diagnosticFileName = json.optString("diagnosticLogFileName", "diagnostic.jsonl");
+            String diagnosticFileName = json.optString("diagnosticLogFileName", "evidence.jsonl");
             String trustedGpxFileName = json.optString("trustedGpxFileName", "track.gpx");
             String partialGpxFileName = json.optString("partialGpxFileName", "partial.gpx");
             File diagnosticFile = new File(sessionDir, diagnosticFileName);
@@ -84,13 +84,13 @@ public class SessionManifestReader {
     }
 
     private SessionManifest missing(File sessionDir) {
-        File diagnosticFile = fileStore.diagnosticJsonl(sessionDir);
+        File diagnosticFile = fileStore.evidenceJsonl(sessionDir);
         File trustedGpxFile = fileStore.trackGpx(sessionDir);
         File partialGpxFile = fileStore.partialGpx(sessionDir);
         DiagnosticLogSummary diagnosticSummary = readDiagnosticLogSummary(diagnosticFile);
         return new SessionManifest(SessionManifest.READ_MISSING_SESSION_JSON, sessionDir, sessionDir.getName(),
                 0L, 0L, "", "", 0, "", "", "", "", "", 0,
-                "diagnostic.jsonl", "track.gpx", "partial.gpx",
+                "evidence.jsonl", "track.gpx", "partial.gpx",
                 0L, 0L, 0, 0, 0, 0, 0.0, 0.0, -1.0, "NONE", -1.0, 0, 0, -1.0,
                 0, 0, 0, 0, 0, "", diagnosticFile.exists(),
                 trustedGpxFile.exists(), partialGpxFile.exists(), fileLengthIfExists(diagnosticFile),
@@ -99,13 +99,13 @@ public class SessionManifestReader {
     }
 
     private SessionManifest invalid(File sessionDir) {
-        File diagnosticFile = fileStore.diagnosticJsonl(sessionDir);
+        File diagnosticFile = fileStore.evidenceJsonl(sessionDir);
         File trustedGpxFile = fileStore.trackGpx(sessionDir);
         File partialGpxFile = fileStore.partialGpx(sessionDir);
         DiagnosticLogSummary diagnosticSummary = readDiagnosticLogSummary(diagnosticFile);
         return new SessionManifest(SessionManifest.READ_INVALID_SESSION_JSON, sessionDir, sessionDir.getName(),
                 0L, 0L, "", "", 0, "", "", "", "", "", 0,
-                "diagnostic.jsonl", "track.gpx", "partial.gpx",
+                "evidence.jsonl", "track.gpx", "partial.gpx",
                 0L, 0L, 0, 0, 0, 0, 0.0, 0.0, -1.0, "NONE", -1.0, 0, 0, -1.0,
                 0, 0, 0, 0, 0, "", diagnosticFile.exists(),
                 trustedGpxFile.exists(), partialGpxFile.exists(), fileLengthIfExists(diagnosticFile),

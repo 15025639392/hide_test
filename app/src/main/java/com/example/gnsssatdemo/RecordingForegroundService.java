@@ -30,7 +30,8 @@ import com.example.gnsssatdemo.track.engine.BasicTrackSession;
 import com.example.gnsssatdemo.track.engine.SamplingEpoch;
 import com.example.gnsssatdemo.track.engine.TrackAscentCalculator;
 import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
-import com.example.gnsssatdemo.track.model.MotionSummary;
+import com.example.gnsssatdemo.track.model.BarometerWindow;
+import com.example.gnsssatdemo.track.model.DeviceMotionWindow;
 import com.example.gnsssatdemo.track.model.TrackPoint;
 
 import org.json.JSONException;
@@ -102,7 +103,7 @@ public class RecordingForegroundService extends Service {
             new GnssQualitySnapshotFactory();
     private LocationManager locationManager;
     private SensorManager sensorManager;
-    private Sensor motionSensor;
+    private final List<Sensor> deviceMotionSensors = new ArrayList<>();
     private Sensor pressureSensor;
     private BasicTrackSession trackSession;
     private Location lastLocation;
@@ -118,13 +119,22 @@ public class RecordingForegroundService extends Service {
     private long lastPressureSampleElapsedRealtimeNanos;
     private static final long PRESSURE_SAMPLE_MIN_INTERVAL_NANOS = 1_000_000_000L;
     private final RecordingSamplingState samplingState = new RecordingSamplingState();
-    private final AccelerometerMotionSampler motionSampler =
-            new AccelerometerMotionSampler(new AccelerometerMotionSampler.Listener() {
+    private final DeviceMotionWindowSampler deviceMotionWindowSampler =
+            new DeviceMotionWindowSampler(new DeviceMotionWindowSampler.Listener() {
                 @Override
-                public void onMotionSummary(MotionSummary summary) {
+                public void onDeviceMotionWindow(DeviceMotionWindow window) {
                     if (trackSession != null && trackSession.isActive()) {
-                        trackSession.onMotionSummary(summary);
+                        trackSession.onDeviceMotionWindow(window);
                         updateLocationRequestForCurrentPolicy(false);
+                    }
+                }
+            });
+    private final BarometerWindowSampler barometerWindowSampler =
+            new BarometerWindowSampler(new BarometerWindowSampler.Listener() {
+                @Override
+                public void onBarometerWindow(BarometerWindow window) {
+                    if (trackSession != null && trackSession.isActive()) {
+                        trackSession.onBarometerWindow(window);
                     }
                 }
             });
@@ -132,7 +142,7 @@ public class RecordingForegroundService extends Service {
     private final SensorEventListener motionSensorListener = new SensorEventListener() {
         @Override
         public void onSensorChanged(SensorEvent event) {
-            motionSampler.onSensorChanged(event);
+            deviceMotionWindowSampler.onSensorChanged(event);
         }
 
         @Override
@@ -148,6 +158,8 @@ public class RecordingForegroundService extends Service {
                 return;
             }
             long elapsedRealtimeNanos = event.timestamp;
+            barometerWindowSampler.addSample(event.values[0], event.accuracy,
+                    elapsedRealtimeNanos);
             if (lastPressureSampleElapsedRealtimeNanos > 0L
                     && elapsedRealtimeNanos - lastPressureSampleElapsedRealtimeNanos
                     < PRESSURE_SAMPLE_MIN_INTERVAL_NANOS) {
@@ -213,10 +225,12 @@ public class RecordingForegroundService extends Service {
         locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
         sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
         if (sensorManager != null) {
-            motionSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
-            if (motionSensor == null) {
-                motionSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-            }
+            addDeviceMotionSensor(Sensor.TYPE_LINEAR_ACCELERATION);
+            addDeviceMotionSensor(Sensor.TYPE_ACCELEROMETER);
+            addDeviceMotionSensor(Sensor.TYPE_GYROSCOPE);
+            addDeviceMotionSensor(Sensor.TYPE_ROTATION_VECTOR);
+            addDeviceMotionSensor(Sensor.TYPE_STEP_DETECTOR);
+            addDeviceMotionSensor(Sensor.TYPE_STEP_COUNTER);
             pressureSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE);
         }
         trackSession = new BasicTrackSession(this);
@@ -279,7 +293,8 @@ public class RecordingForegroundService extends Service {
         }
         try {
             samplingState.reset();
-            motionSampler.reset();
+            deviceMotionWindowSampler.reset();
+            barometerWindowSampler.reset();
             trackSession.start(isGpsProviderEnabled(), true, true, pressureSensor != null);
             startMotionCallbacks();
             startPressureCallbacks();
@@ -294,6 +309,13 @@ public class RecordingForegroundService extends Service {
             updateNotification("开始记录失败: " + e.getMessage());
             sendStatus("开始记录失败: " + e.getMessage());
             stopSelf();
+        }
+    }
+
+    private void addDeviceMotionSensor(int sensorType) {
+        Sensor sensor = sensorManager.getDefaultSensor(sensorType);
+        if (sensor != null) {
+            deviceMotionSensors.add(sensor);
         }
     }
 
@@ -355,19 +377,23 @@ public class RecordingForegroundService extends Service {
     }
 
     private void startMotionCallbacks() {
-        if (motionSensorRegistered || sensorManager == null || motionSensor == null) {
+        if (motionSensorRegistered || sensorManager == null) {
             return;
         }
-        motionSampler.reset();
-        motionSensorRegistered = sensorManager.registerListener(motionSensorListener, motionSensor,
-                100_000, mainHandler);
+        deviceMotionWindowSampler.reset();
+        boolean registered = false;
+        for (Sensor sensor : deviceMotionSensors) {
+            registered |= sensorManager.registerListener(motionSensorListener, sensor,
+                    100_000, mainHandler);
+        }
+        motionSensorRegistered = registered;
     }
 
     private void stopMotionCallbacks() {
         if (sensorManager == null || !motionSensorRegistered) {
             return;
         }
-        motionSampler.flush();
+        deviceMotionWindowSampler.flush();
         sensorManager.unregisterListener(motionSensorListener);
         motionSensorRegistered = false;
     }
@@ -377,6 +403,7 @@ public class RecordingForegroundService extends Service {
             return;
         }
         lastPressureSampleElapsedRealtimeNanos = 0L;
+        barometerWindowSampler.reset();
         pressureSensorRegistered = sensorManager.registerListener(pressureSensorListener,
                 pressureSensor, SensorManager.SENSOR_DELAY_NORMAL, mainHandler);
     }
@@ -386,6 +413,7 @@ public class RecordingForegroundService extends Service {
             return;
         }
         sensorManager.unregisterListener(pressureSensorListener);
+        barometerWindowSampler.flush();
         pressureSensorRegistered = false;
         lastPressureSampleElapsedRealtimeNanos = 0L;
     }

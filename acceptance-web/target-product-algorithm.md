@@ -1,6 +1,6 @@
 # evidence.jsonl 到目标成品轨迹算法
 
-本文定义 Web 端从 Android 纯证据 `evidence.jsonl` 离线生成目标成品轨迹的算法口径；`diagnostic.jsonl` 仅作为旧日志兼容输入。
+本文定义 Web 端从 Android 纯证据 `evidence.jsonl` 离线生成目标成品轨迹的算法口径。
 
 Android 在这一阶段只作为数据产出端：负责真实设备采集、生成
 `evidence.jsonl`、`session.json` 等证据文件。
@@ -52,13 +52,12 @@ stage2-track-trust-v3-sampling-cloud
 ```text
 Android:
   真实采集端和证据产出端
-  产出 raw_location、sampling_policy、gnss_snapshot、motion_summary 等纯证据事件
+  产出 raw_location、sampling_policy、gnss_snapshot、device_motion_window、barometer_window 等纯证据事件
 
 Web:
   离线分析端和目标成品复算端
-  读取 evidence.jsonl；兼容读取旧 diagnostic.jsonl
+  读取 evidence.jsonl
   生成 TargetTrackProduct
-  可选地与 Android recorded decision 做对齐 diff
 ```
 
 因此，本文算法只服务 Web 离线分析和目标成品预览。即使 Web 复算结果与 Android
@@ -66,14 +65,14 @@ Web:
 实时轨迹计算。
 
 Web 清洗算法不能依赖 Android 已记录的 `decision` 或 `location_intake_rejected`
-作为输入真相。它们只能是兼容旧诊断日志时的对照材料。长期口径应让
+作为输入真相。长期口径应让
 `evidence.jsonl` 保持纯证据属性：采样请求、原始定位、卫星质量、
-运动摘要和运行时事件由 Android 产出；最终判点、清洗轨迹和目标统计由 Web
+设备运动窗口、气压窗口和运行时事件由 Android 产出；最终判点、清洗轨迹和目标统计由 Web
 算法自己承担。
 
 ## 输入事件
 
-Web 端以 `evidence.jsonl` 为推荐输入，并兼容旧 `diagnostic.jsonl`。需要识别这些事件：
+Web 端以 `evidence.jsonl` 为输入。需要识别这些事件：
 
 ```text
 session_metadata
@@ -82,11 +81,9 @@ runtime_snapshot
 sampling_policy
 gnss_snapshot
 raw_location
-location_intake_rejected
-decision
-motion_summary
+device_motion_window
+barometer_window
 session_event
-pressure_sample
 ```
 
 其中，生成平面目标轨迹的最小必要事件为：
@@ -96,12 +93,11 @@ session_metadata
 sampling_policy
 gnss_snapshot
 raw_location
-motion_summary
+device_motion_window
 ```
 
-`decision` 和 `location_intake_rejected` 不是 Web 清洗算法的必要输入。
-如果旧日志里存在这些 Android 已记录结果，Web 只能把它们用于对齐 diff 和解释展示；
-纯证据版 `evidence.jsonl` 不写入这些事件，Web 清洗算法仍应能生成
+`decision` 和 `location_intake_rejected` 不是 Web 清洗算法的输入真相；
+纯证据版 `evidence.jsonl` 不写入这些事件，Web 清洗算法负责生成
 `TargetTrackProduct`。
 
 ## 输出对象
@@ -135,11 +131,6 @@ TargetTrackProduct
     "weakPointCount": 0,
     "rejectedPointCount": 0,
     "intakeRejectedPointCount": 0
-  },
-  "alignment": {
-    "comparedDecisionCount": 0,
-    "matchedDecisionCount": 0,
-    "mismatches": []
   },
   "findings": []
 }
@@ -175,19 +166,18 @@ TargetTrackProduct
 ## 总流水线
 
 ```text
-1. parseDiagnosticJsonl
+1. parseEvidenceJsonl
 2. buildEvidenceStream
 3. rebuildSamplingTimeline
 4. rebuildIntakeResults
 5. rebuildGnssMatches
 6. runTrackTrustStrategy
 7. buildTargetTrackProduct
-8. compareWithRecordedDecision
 ```
 
 ### 1. 解析 JSONL
 
-逐行解析 `evidence.jsonl` 或兼容旧 `diagnostic.jsonl`：
+逐行解析 `evidence.jsonl`：
 
 - 空行忽略。
 - JSON 解析失败保留为 `parseErrors`。
@@ -347,7 +337,17 @@ distance < max(5m, accuracy * 1.5):
 
 ### 7. 点云加权中心
 
-TrackPoint 坐标来自 cloud weighted center，而不是直接取 raw 点坐标。
+TrackPoint 坐标按状态选择来源：
+
+```text
+stationary_anchor:
+  使用 cloud weighted center，压住静止漂移
+
+moving_good_fix / transport_suspected_kept / continuity_rescue_* / gap_recovery:
+  使用 raw 坐标，避免移动轨迹被历史点云中心拉回
+```
+
+cloud weighted center 仍然会被计算，用于点云稳定性、半径、代表点和解释字段。
 
 权重公式：
 
@@ -430,17 +430,20 @@ MOVING_CLOUD:
   unstable -> weak / moving_cloud_unstable
 
 TRANSPORT_RISK_CLOUD:
-  stable -> accept / transport_suspected_kept
+  accept / transport_suspected_kept
 
 STATIONARY_CLOUD:
   stable 且近期 still-motion 支持 -> anchor / stationary_anchor
+  连续性合理且无近期静止 motion 支持 -> accept / continuity_rescue_stationary_jitter
   否则 -> reject / stationary_cloud_jitter
 
 RECOVERY_CLOUD:
-  stable   -> accept / gap_recovery
-  unstable -> weak / recovery_cloud_pending
+  stable -> accept / gap_recovery
+  连续性合理 -> accept / continuity_rescue_gap_recovery
+  否则 -> weak / recovery_cloud_pending
 
 WEAK_CLOUD:
+  连续性合理 -> accept / continuity_rescue_low_accuracy
   weak / weak_signal_stage2
 
 ```
@@ -450,8 +453,8 @@ WEAK_CLOUD:
 近期 still-motion 支持：
 
 ```text
-最近 5 秒窗口内 motion_summary 存在
-且 deviceStill 占比 >= 75%
+最近 5 秒窗口内 device_motion_window 存在
+且加速度 RMS、陀螺仪 RMS、步数增量都处于低运动区间
 ```
 
 ### 9. 目标成品轨迹
@@ -482,19 +485,29 @@ first_fix_good / first_fix_relaxed:
   movingTimeDeltaSeconds = 0
 
 moving_good_fix:
-  distanceDeltaMeters = distance(previousTrustedTrackPoint, cloudCenter)
+  coordinateSource = raw
+  distanceDeltaMeters = distance(previousTrustedTrackPoint, raw)
   movingTimeDeltaSeconds = elapsed(currentRaw, previousTrustedTrackPoint)
 
 transport_suspected_kept:
-  distanceDeltaMeters = distance(previousTrustedTrackPoint, cloudCenter)
+  coordinateSource = raw
+  distanceDeltaMeters = distance(previousTrustedTrackPoint, raw)
   movingTimeDeltaSeconds = elapsed(currentRaw, previousTrustedTrackPoint)
   进入目标成品，但保留疑似交通工具风险 reason
 
 stationary_anchor:
+  coordinateSource = cloud_center
   distanceDeltaMeters = 0
   movingTimeDeltaSeconds = 0
 
 gap_recovery:
+  coordinateSource = raw
+  startsNewSegment = true
+  distanceDeltaMeters = 0
+  movingTimeDeltaSeconds = 0
+
+continuity_rescue_gap_recovery:
+  coordinateSource = raw
   startsNewSegment = true
   distanceDeltaMeters = 0
   movingTimeDeltaSeconds = 0
@@ -511,50 +524,6 @@ GAP 的视觉和统计语义必须分开：
 segmentId 可以递增
 GAP 两端直线不能计入 totalDistanceMeters
 ```
-
-## Android 对齐 diff
-
-Web 复算完成后，如果兼容旧 `diagnostic.jsonl` 时存在 Android recorded decision，
-可以做可选对齐 diff。这个 diff 只用于比较 Android 实时策略和 Web 离线清洗结果，
-不能反向成为 Web 清洗依据。
-
-对齐 key 优先级：
-
-```text
-rawPointId
-decisionId
-trackPointId
-```
-
-可比较：
-
-```text
-result
-reason
-segmentId
-distanceDeltaMeters
-movingTimeDeltaSeconds
-cloudType
-cloudId
-cloudSampleCount
-cloudWeightedRadiusMeters
-```
-
-距离和浮点字段允许小误差：
-
-```text
-distance epsilon <= 0.01m
-time epsilon <= 0.001s
-coordinate epsilon <= 1e-7 degree
-```
-
-如果 Web 无法完全复原 `SamplingEpoch` 或 GNSS 匹配，diff 应标记为：
-
-```text
-low_confidence_rebuild
-```
-
-不能把低置信复算差异直接视为 Android 策略错误。
 
 ## 页面呈现建议
 
@@ -592,12 +561,11 @@ cloud radius             可选半径圈
 - 目标轨迹只包含 `anchor` 和 `accept`。
 - `gap_recovery` 进入目标轨迹，但 delta 为 0。
 - 疑似交通工具只标记为 `transport_suspected_kept` 并保留，不作为轨迹剔除条件。
-- Web 复算统计稳定可解释，旧 diagnostic 对照差异只作为参考。
+- Web 复算统计稳定可解释。
 - 无法复原的字段进入 `findings`，不静默吞掉。
 
 第二阶段通过标准：
 
-- 兼容旧 diagnostic 时，Web 复算 decision 可与 Android recorded decision 做可选 diff。
 - replay fixture 的 Web 复算结果与 Android replay 结果一致。
 - 真实多设备样本能用同一目标成品结构做对比。
 - 目标成品结构可作为后续 SDK 契约草案的一部分。
@@ -612,8 +580,6 @@ cloud radius             可选半径圈
 3. 新增 SamplingIntake JS 复刻及单元测试
 4. 新增 evidence -> TargetTrackProduct 集成测试
 5. 接入现有地图，默认显示 Web 清洗目标结果
-6. 兼容旧日志时增加 Android recorded 对照视图
-7. 增加 diff 面板
 ```
 
 实现前不要调整 Android 实时策略阈值、decision reason、segment 逻辑、距离累计或既有诊断 schema。

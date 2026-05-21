@@ -31,11 +31,6 @@ const DECISION_REASON_EXPLANATIONS = {
     meaning: '距上一可信点间隔过长，恢复点开启或延续 segment，但当前恢复 delta 不回填距离。',
     evidence: '重点看间隔秒数、no_location_timeout、sampling_policy、GAP 前后 GNSS snapshot。'
   },
-  transport_suspected: {
-    title: '疑似交通工具',
-    meaning: '速度和位移更像交通工具移动，当前点不进入徒步可信距离。',
-    evidence: '重点看推算速度、系统 reported speed、持续时间，以及 GNSS 质量是否并不差。'
-  },
   transport_suspected_kept: {
     title: '交通工具风险保留',
     meaning: '速度和位移触发交通工具风险，但该风险只作为解释标签，仍保留进目标轨迹，避免误删正常轨迹。',
@@ -48,13 +43,13 @@ const DECISION_REASON_EXPLANATIONS = {
   },
   stationary_anchor: {
     title: '静止点云 anchor',
-    meaning: '静止点云稳定且有近期 motion_summary 静止证据后，输出零 delta anchor，用作可信静止位置。',
-    evidence: '重点看 cloudWeightedRadiusMeters、cloudSampleCount、motion_summary 和 representativeRawPointId。'
+    meaning: '静止点云稳定且有近期 device_motion_window 低运动证据后，输出零 delta anchor，用作可信静止位置。',
+    evidence: '重点看 cloudWeightedRadiusMeters、cloudSampleCount、device_motion_window 和 representativeRawPointId。'
   },
   stationary_cloud_jitter: {
     title: '静止点云漂移',
     meaning: '点位接近静止区域，但没有足够 still-motion 支持成为 anchor；不累计距离，也不单独触发 PAUSED。',
-    evidence: '重点看点云半径、accuracy、motion_summary 和距上一可信 TrackPoint 的距离，慢速移动也可能落在这里。'
+    evidence: '重点看点云半径、accuracy、device_motion_window 和距上一可信 TrackPoint 的距离，慢速移动也可能落在这里。'
   },
   moving_cloud_unstable: {
     title: '移动点云未稳定',
@@ -103,15 +98,16 @@ const DECISION_REASON_EXPLANATIONS = {
   }
 };
 
-export function isDiagnosticJsonlPath(path) {
-  return /(^|\/)(diagnostic|evidence)\.jsonl(?:\.json)?$/i.test(String(path || ''));
+export function isEvidenceJsonlPath(path) {
+  return /(^|\/)evidence\.jsonl(?:\.json)?$/i.test(String(path || ''));
 }
 
-export function isDiagnosticCandidatePath(path) {
-  return /\.jsonl(?:\.json)?$/i.test(String(path || ''));
+export function isEvidenceCandidatePath(path) {
+  return /(^|\/)(evidence|gnss_evidence_[^/]+)\.jsonl(?:\.json)?$/i
+    .test(String(path || ''));
 }
 
-export function parseDiagnosticJsonl(text, filePath = 'diagnostic.jsonl') {
+export function parseEvidenceJsonl(text, filePath = 'evidence.jsonl') {
   const events = [];
   const parseErrors = [];
   const lines = String(text || '').split(/\r?\n/);
@@ -136,16 +132,24 @@ export function parseDiagnosticJsonl(text, filePath = 'diagnostic.jsonl') {
   return buildDiagnosticModel(events, parseErrors, filePath);
 }
 
-export function buildTargetOutput(model) {
-  const trustedTrack = model.trustedPoints;
+export function buildTargetOutput(model, targetProduct = null) {
+  const trustedTrack = targetProduct?.track || model.trustedPoints;
   const rawTrack = model.points;
-  const totalDistanceMeters = sumPoints(trustedTrack, 'distanceDeltaMeters');
-  const movingTimeSeconds = sumPoints(trustedTrack, 'movingTimeDeltaSeconds');
+  const totalDistanceMeters = targetProduct?.stats?.totalDistanceMeters
+    ?? sumPoints(trustedTrack, 'distanceDeltaMeters');
+  const movingTimeSeconds = targetProduct?.stats?.movingTimeSeconds
+    ?? sumPoints(trustedTrack, 'movingTimeDeltaSeconds');
   const paceSecondsPerKm = totalDistanceMeters > 0 && movingTimeSeconds > 0
     ? movingTimeSeconds / (totalDistanceMeters / 1000)
     : null;
   const ascent = ascentEvidence(model.events);
-  const unexplainedRawCount = model.points.filter((point) => !point.decision).length;
+  const explainedRawCount = targetProduct
+    ? targetProduct.stats.trustedPointCount
+      + targetProduct.stats.weakPointCount
+      + targetProduct.stats.rejectedPointCount
+      + targetProduct.stats.intakeRejectedPointCount
+    : model.points.filter((point) => point.decision).length;
+  const unexplainedRawCount = Math.max(0, model.points.length - explainedRawCount);
   const findings = [];
   if (model.parseErrors.length > 0) {
     findings.push(`解析错误 ${model.parseErrors.length} 行`);
@@ -169,8 +173,8 @@ export function buildTargetOutput(model) {
     paceSecondsPerKm,
     selectedTotalAscentMeters: ascent.selectedTotalAscentMeters,
     summaries: {
-      raw: rawSummary(model.points),
-      decision: decisionSummary(model),
+      raw: rawSummary(model.points, targetProduct),
+      decision: decisionSummary(model, targetProduct),
       gnss: gnssSummary(model),
       pressure: pressureSummary(model, ascent),
       motion: motionSummary(model)
@@ -189,35 +193,29 @@ export function explainDecisionReason(result, reason) {
     result: String(result || ''),
     reason: key,
     title: key || '未记录原因',
-    meaning: '当前页面还没有这个 decision reason 的专门中文解释，请结合 result、上下文和原始字段复核。',
-    evidence: '重点看 raw_location、decision、GNSS snapshot、时间间隔、速度和 session_event。'
+    meaning: '当前页面还没有这个算法原因的专门中文解释，请结合 result、上下文和原始字段复核。',
+    evidence: '重点看 raw_location、GNSS snapshot、时间间隔、速度和 session_event。'
   };
 }
 
 function buildDiagnosticModel(events, parseErrors, filePath) {
   const metadata = events.find((event) => event.event === 'session_metadata') || {};
   const rawById = new Map();
-  const decisions = [];
-  const intakeRejections = [];
   const gnssById = new Map();
-  const pressureSamples = [];
-  const motionSummaries = [];
+  const barometerWindows = [];
+  const deviceMotionWindows = [];
   const sessionEvents = [];
   const samplingPolicies = [];
 
   for (const event of events) {
     if (event.event === 'raw_location' && isFiniteNumber(event.lat) && isFiniteNumber(event.lng)) {
       rawById.set(Number(event.rawPointId), normalizeRawPoint(event));
-    } else if (event.event === 'decision') {
-      decisions.push(event);
-    } else if (event.event === 'location_intake_rejected') {
-      intakeRejections.push(event);
     } else if (event.event === 'gnss_snapshot') {
       gnssById.set(Number(event.snapshotId), event);
-    } else if (event.event === 'pressure_sample') {
-      pressureSamples.push(event);
-    } else if (event.event === 'motion_summary') {
-      motionSummaries.push(event);
+    } else if (event.event === 'barometer_window') {
+      barometerWindows.push(event);
+    } else if (event.event === 'device_motion_window') {
+      deviceMotionWindows.push(event);
     } else if (event.event === 'session_event') {
       sessionEvents.push(event);
     } else if (event.event === 'sampling_policy') {
@@ -226,31 +224,13 @@ function buildDiagnosticModel(events, parseErrors, filePath) {
   }
 
   const points = Array.from(rawById.values()).sort(comparePointTime);
-  for (const decision of decisions) {
-    const point = rawById.get(Number(decision.rawPointId));
-    if (!point) {
-      continue;
-    }
-    point.decision = normalizeDecision(decision);
-    point.kind = classifyDecision(point.decision.result);
-    const snapshotId = Number(decision.sourceGnssSnapshotId || point.sourceGnssSnapshotId);
-    if (gnssById.has(snapshotId)) {
-      point.gnss = gnssById.get(snapshotId);
-    }
-  }
-  for (const rejection of intakeRejections) {
-    const point = rawById.get(Number(rejection.rawPointId));
-    if (!point || point.decision) {
-      continue;
-    }
-    point.decision = normalizeIntakeRejection(rejection);
-    point.kind = 'intake_rejected';
+  for (const point of points) {
     const snapshotId = Number(point.sourceGnssSnapshotId);
     if (gnssById.has(snapshotId)) {
       point.gnss = gnssById.get(snapshotId);
     }
   }
-  enrichPoints(points, motionSummaries);
+  enrichPoints(points, deviceMotionWindows, barometerWindows);
 
   const trustedPoints = points.filter((point) => TRUSTED_RESULTS.has(point.kind));
   const rejectedPoints = points.filter((point) => point.kind === 'reject' || point.kind === 'intake_rejected');
@@ -261,12 +241,13 @@ function buildDiagnosticModel(events, parseErrors, filePath) {
   const reasonCounts = countReasons(points);
   const evidence = buildEvidenceModel({
     points,
-    decisions,
+    decisions: [],
     parseErrors,
     gnssSnapshots: Array.from(gnssById.values()),
     sessionEvents,
     samplingPolicies,
-    motionSummaries
+    deviceMotionWindows,
+    barometerWindows
   });
   const timelineItems = buildTimelineItems(points, sessionEvents, samplingPolicies);
 
@@ -289,8 +270,8 @@ function buildDiagnosticModel(events, parseErrors, filePath) {
     timelineItems,
     summary: {
       rawCount: points.length,
-      decisionCount: decisions.length,
-      intakeRejectedCount: intakeRejections.length,
+      decisionCount: 0,
+      intakeRejectedCount: 0,
       trustedCount: trustedPoints.length,
       rejectedCount: rejectedPoints.length,
       weakCount: weakPoints.length,
@@ -298,15 +279,15 @@ function buildDiagnosticModel(events, parseErrors, filePath) {
       linkedGnssPointCount: evidence.metrics.linkedGnssPointCount,
       staleRawCount: evidence.metrics.staleRawCount,
       gnssSnapshotCount: gnssById.size,
-      pressureSampleCount: pressureSamples.length,
-      motionSummaryCount: motionSummaries.length,
+      barometerWindowCount: barometerWindows.length,
+      deviceMotionWindowCount: deviceMotionWindows.length,
       sessionEventCount: sessionEvents.length,
       samplingPolicyCount: samplingPolicies.length,
       noLocationTimeoutCount: evidence.metrics.noLocationTimeoutCount,
       gapRecoveryCount: evidence.metrics.gapRecoveryCount,
       parseErrorCount: parseErrors.length,
-      totalDistanceMeters: sumNumeric(decisions, 'distanceDeltaMeters'),
-      movingTimeSeconds: sumNumeric(decisions, 'movingTimeDeltaSeconds'),
+      totalDistanceMeters: 0,
+      movingTimeSeconds: 0,
       durationSeconds: durationSeconds(points)
     }
   };
@@ -332,50 +313,6 @@ function normalizeRawPoint(event) {
     sourceGnssSnapshotMatchedFromFuture: event.sourceGnssSnapshotMatchedFromFuture === true,
     gnssQualityStale: event.gnssQualityStale === true,
     kind: 'raw'
-  };
-}
-
-function normalizeDecision(event) {
-  const result = String(event.result || '');
-  const reason = String(event.reason || '');
-  return {
-    decisionId: Number(event.decisionId),
-    result,
-    reason,
-    reasonExplanation: explainDecisionReason(result, reason),
-    state: String(event.state || ''),
-    trustGrade: String(event.trustGrade || ''),
-    cloudType: String(event.cloudType || ''),
-    cloudId: nullableNumber(event.cloudId),
-    segmentId: nullableNumber(event.segmentId),
-    trackPointId: nullableNumber(event.trackPointId),
-    distanceDeltaMeters: nullableNumber(event.distanceDeltaMeters),
-    movingTimeDeltaSeconds: nullableNumber(event.movingTimeDeltaSeconds),
-    sourceGnssSnapshotId: nullableNumber(event.sourceGnssSnapshotId),
-    eventElapsedRealtimeNanos: nullableNumber(event.eventElapsedRealtimeNanos),
-    startsNewSegment: event.startsNewSegment === true
-  };
-}
-
-function normalizeIntakeRejection(event) {
-  const reason = String(event.rejectReason || event.reason || '');
-  return {
-    decisionId: null,
-    result: 'intake_rejected',
-    reason,
-    reasonExplanation: explainDecisionReason('intake_rejected', reason),
-    state: String(event.samplingState || ''),
-    trustGrade: '',
-    cloudType: '',
-    cloudId: null,
-    segmentId: null,
-    trackPointId: null,
-    distanceDeltaMeters: 0,
-    movingTimeDeltaSeconds: 0,
-    sourceGnssSnapshotId: null,
-    eventElapsedRealtimeNanos: nullableNumber(event.eventElapsedRealtimeNanos),
-    startsNewSegment: false,
-    intakeRejected: true
   };
 }
 
@@ -434,11 +371,13 @@ function splitReasonKey(value) {
   return [text.slice(0, index), text.slice(index + 1) || '-'];
 }
 
-function enrichPoints(points, motionSummaries) {
+function enrichPoints(points, deviceMotionWindows, barometerWindows) {
   let previousTrustedPoint = null;
-  const sortedMotionSummaries = [...motionSummaries].sort(compareEventTime);
+  const sortedDeviceMotionWindows = [...deviceMotionWindows].sort(compareEventTime);
+  const sortedBarometerWindows = [...barometerWindows].sort(compareEventTime);
   for (const point of points) {
-    point.nearestMotionSummary = nearestMotionSummary(point, sortedMotionSummaries);
+    point.nearestDeviceMotionWindow = nearestWindow(point, sortedDeviceMotionWindows);
+    point.nearestBarometerWindow = nearestWindow(point, sortedBarometerWindows);
     point.diagnosticContext = buildPointContext(point, previousTrustedPoint);
     point.insights = buildPointInsights(point);
     if (TRUSTED_RESULTS.has(point.kind)) {
@@ -569,11 +508,11 @@ function buildPointInsights(point) {
   }
 
   if (decision.reason.startsWith('stationary_')) {
-    const motion = point.nearestMotionSummary;
+    const motion = point.nearestDeviceMotionWindow;
     if (motion) {
       insights.push({
-        level: motion.isDeviceStill === true ? 'info' : 'review',
-        text: `附近 motion_summary still=${motion.isDeviceStill === true ? 'true' : 'false'}，stillScore=${formatOneDecimal(motion.stillScore)}。`
+        level: 'info',
+        text: `附近 device_motion_window accelRms=${formatOneDecimal(deviceMotionAccelRms(motion))}，gyroRms=${formatOneDecimal(numericField(motion, 'gyroscopeRmsRadps'))}。`
       });
     }
   }
@@ -601,7 +540,8 @@ function buildEvidenceModel({
   gnssSnapshots,
   sessionEvents,
   samplingPolicies,
-  motionSummaries
+  deviceMotionWindows,
+  barometerWindows
 }) {
   const weakPoints = points.filter((point) => point.kind === 'weak');
   const rejectedPoints = points.filter((point) => point.kind === 'reject');
@@ -651,7 +591,8 @@ function buildEvidenceModel({
       noLocationTimeoutCount: noLocationEvents.length,
       maxNoLocationTimeoutSeconds,
       samplingPolicyCount: samplingPolicies.length,
-      motionSummaryCount: motionSummaries.length,
+      deviceMotionWindowCount: deviceMotionWindows.length,
+      barometerWindowCount: barometerWindows.length,
       weakMetrics,
       rejectMetrics,
       transportMetrics
@@ -694,7 +635,7 @@ function buildFindings({
     findings.push({
       level: 'fail',
       title: '缺少解释事件',
-      detail: '没有 decision 或 location_intake_rejected，不能解释原始点是否进入可信轨迹。'
+      detail: '没有目标轨迹重算结果，不能解释原始点是否进入可信轨迹。'
     });
   }
   if (points.length > 0 && explainedPointCount > 0 && points.length !== explainedPointCount) {
@@ -841,29 +782,28 @@ function buildTimelineItems(points, sessionEvents, samplingPolicies) {
   return items.sort((a, b) => a.sortTime - b.sortTime);
 }
 
-function nearestMotionSummary(point, motionSummaries) {
-  if (!Number.isFinite(point.elapsedRealtimeNanos) || motionSummaries.length === 0) {
+function nearestWindow(point, windows) {
+  if (!Number.isFinite(point.elapsedRealtimeNanos) || windows.length === 0) {
     return null;
   }
   let best = null;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  for (const summary of motionSummaries) {
-    const first = numericField(summary, 'firstElapsedRealtimeNanos');
-    const last = numericField(summary, 'lastElapsedRealtimeNanos');
-    if (first === null || last === null) {
+  let bestDistance = Infinity;
+  for (const window of windows) {
+    const start = numericField(window, 'startElapsedRealtimeNanos');
+    const end = numericField(window, 'endElapsedRealtimeNanos');
+    if (start === null || end === null) {
       continue;
     }
-    const distance = point.elapsedRealtimeNanos < first
-      ? first - point.elapsedRealtimeNanos
-      : point.elapsedRealtimeNanos > last
-        ? point.elapsedRealtimeNanos - last
-        : 0;
+    const distance = point.elapsedRealtimeNanos >= start && point.elapsedRealtimeNanos <= end
+      ? 0
+      : Math.min(Math.abs(point.elapsedRealtimeNanos - start),
+        Math.abs(point.elapsedRealtimeNanos - end));
     if (distance < bestDistance) {
-      best = summary;
+      best = window;
       bestDistance = distance;
     }
   }
-  return bestDistance <= 5_000_000_000 ? best : null;
+  return best;
 }
 
 function pointBounds(points) {
@@ -901,7 +841,7 @@ function sumPoints(points, field) {
   }, 0);
 }
 
-function rawSummary(points) {
+function rawSummary(points, targetProduct = null) {
   const accuracies = points
     .map((point) => point.accuracy)
     .filter((value) => Number.isFinite(value));
@@ -914,11 +854,50 @@ function rawSummary(points) {
     timeEndNanos: elapsedValues.length ? Math.max(...elapsedValues) : null,
     minAccuracyMeters: accuracies.length ? Math.min(...accuracies) : null,
     maxAccuracyMeters: accuracies.length ? Math.max(...accuracies) : null,
-    unexplainedCount: points.filter((point) => !point.decision).length
+    unexplainedCount: targetProduct
+      ? Math.max(0, points.length - targetProduct.stats.trustedPointCount
+        - targetProduct.stats.weakPointCount
+        - targetProduct.stats.rejectedPointCount
+        - targetProduct.stats.intakeRejectedPointCount)
+      : points.filter((point) => !point.decision).length
   };
 }
 
-function decisionSummary(model) {
+function decisionSummary(model, targetProduct = null) {
+  if (targetProduct) {
+    const reasonCounts = new Map();
+    for (const point of targetProduct.track) {
+      incrementReason(reasonCounts, point.result, point.reason);
+    }
+    for (const point of targetProduct.excluded.weak) {
+      incrementReason(reasonCounts, point.result, point.reason);
+    }
+    for (const point of targetProduct.excluded.rejected) {
+      incrementReason(reasonCounts, point.result, point.reason);
+    }
+    for (const point of targetProduct.excluded.intakeRejected) {
+      incrementReason(reasonCounts, point.result, point.reason);
+    }
+    return {
+      decisionCount: targetProduct.stats.trustedPointCount
+        + targetProduct.stats.weakPointCount
+        + targetProduct.stats.rejectedPointCount
+        + targetProduct.stats.intakeRejectedPointCount,
+      anchorCount: targetProduct.track.filter((point) => point.result === 'anchor').length,
+      acceptCount: targetProduct.track.filter((point) => point.result === 'accept').length,
+      weakCount: targetProduct.stats.weakPointCount,
+      rejectCount: targetProduct.stats.rejectedPointCount,
+      intakeRejectedCount: targetProduct.stats.intakeRejectedPointCount,
+      topReasons: Array.from(reasonCounts, ([reason, count]) => {
+        const [result, reasonText] = splitReasonKey(reason);
+        return {
+          reason,
+          count,
+          explanation: explainDecisionReason(result, reasonText)
+        };
+      }).sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason)).slice(0, 5)
+    };
+  }
   const counts = {
     decisionCount: model.summary.decisionCount,
     anchorCount: model.points.filter((point) => point.decision?.result === 'anchor').length,
@@ -931,6 +910,11 @@ function decisionSummary(model) {
     ...counts,
     topReasons: model.reasonCounts.slice(0, 5)
   };
+}
+
+function incrementReason(counts, result, reason) {
+  const key = `${result || ''}:${reason || '-'}`;
+  counts.set(key, (counts.get(key) || 0) + 1);
 }
 
 function gnssSummary(model) {
@@ -947,10 +931,9 @@ function gnssSummary(model) {
 }
 
 function pressureSummary(model, ascent) {
-  const rejected = model.events.filter((event) => event.event === 'pressure_sample_rejected');
+  const barometerWindows = model.events.filter((event) => event.event === 'barometer_window');
   return {
-    pressureSampleCount: model.summary.pressureSampleCount,
-    pressureRejectedCount: rejected.length,
+    barometerWindowCount: barometerWindows.length,
     selectedTotalAscentMeters: ascent.selectedTotalAscentMeters,
     selectedAscentSource: ascent.selectedAscentSource,
     barometerTotalAscentMeters: ascent.barometerTotalAscentMeters,
@@ -959,16 +942,13 @@ function pressureSummary(model, ascent) {
 }
 
 function motionSummary(model) {
-  const summaries = model.events.filter((event) => event.event === 'motion_summary');
-  const stillCount = summaries.filter((event) => event.isDeviceStill === true).length;
+  const deviceMotionWindows = model.events.filter((event) => event.event === 'device_motion_window');
   const stationaryEvidenceCount = model.points.filter((point) =>
     String(point.decision?.reason || '').startsWith('stationary_')
       || String(point.decision?.reason || '').includes('recovery')
   ).length;
   return {
-    motionSummaryCount: summaries.length,
-    stillCount,
-    stillRatio: summaries.length === 0 ? 0 : stillCount / summaries.length,
+    deviceMotionWindowCount: deviceMotionWindows.length,
     stationaryEvidenceCount
   };
 }
@@ -1022,8 +1002,17 @@ function numericField(object, field) {
   return Number.isFinite(value) ? value : null;
 }
 
+function deviceMotionAccelRms(motion) {
+  const linearSampleCount = numericField(motion, 'linearAccelerationSampleCount') ?? 0;
+  return linearSampleCount > 0
+    ? numericField(motion, 'linearAccelerationRmsMps2')
+    : numericField(motion, 'accelerometerDynamicRmsMps2');
+}
+
 function eventSortTime(event) {
   return numericField(event, 'eventElapsedRealtimeNanos')
+    ?? numericField(event, 'endElapsedRealtimeNanos')
+    ?? numericField(event, 'lastElapsedRealtimeNanos')
     ?? numericField(event, 'receivedElapsedRealtimeNanos')
     ?? numericField(event, 'locationRequestRegisteredElapsedRealtimeNanos')
     ?? numericField(event, 'eventWallTimeMillis')

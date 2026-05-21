@@ -88,7 +88,8 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
         cloudWeightedRadiusMeters: decision.cloudWeightedRadiusMeters,
         representativeRawPointId: decision.representativeRawPointId,
         contributingRawPointIds: decision.contributingRawPointIds,
-        virtualCoordinate: true
+        coordinateSource: decision.coordinateSource,
+        virtualCoordinate: decision.coordinateSource !== 'raw'
       };
       product.track.push(targetPoint);
       product.stats.totalDistanceMeters += decision.distanceDeltaMeters;
@@ -112,7 +113,6 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
     ? 0
     : new Set(product.track.map((point) => point.segmentId)).size;
   collapseStationarySessionIfNeeded(product, evidence);
-  product.alignment = compareWithRecordedDecisions(product, evidence.recordedDecisionsByRawPointId);
   product.findings = buildFindings(product, evidence);
   return product;
 }
@@ -233,7 +233,6 @@ function buildEvidence(events) {
   const gnssById = new Map();
   const samplingEpochs = [];
   const motionSummaries = [];
-  const recordedDecisionsByRawPointId = new Map();
   let recordStartElapsedRealtimeNanos = null;
   let strategyVersion = 'stage2-track-trust-v3-sampling-cloud';
 
@@ -241,6 +240,7 @@ function buildEvidence(events) {
     if (event.event === 'session_metadata') {
       strategyVersion = String(event.strategyVersion || strategyVersion);
       recordStartElapsedRealtimeNanos = numberField(event, 'recordStartElapsedRealtimeNanos')
+        ?? numberField(event, 'createdElapsedRealtimeNanos')
         ?? recordStartElapsedRealtimeNanos;
     } else if (event.event === 'raw_location') {
       rawPoints.push(normalizeRawPoint(event));
@@ -249,11 +249,8 @@ function buildEvidence(events) {
       if (id !== null) gnssById.set(id, event);
     } else if (event.event === 'sampling_policy') {
       samplingEpochs.push(normalizeSamplingEpoch(event, samplingEpochs.length + 1));
-    } else if (event.event === 'motion_summary') {
-      motionSummaries.push(event);
-    } else if (event.event === 'decision') {
-      const rawPointId = numberField(event, 'rawPointId');
-      if (rawPointId !== null) recordedDecisionsByRawPointId.set(rawPointId, event);
+    } else if (event.event === 'device_motion_window') {
+      motionSummaries.push(deviceMotionWindowAsMotionEvidence(event));
     }
   }
 
@@ -267,7 +264,6 @@ function buildEvidence(events) {
     gnssById,
     samplingEpochs,
     motionSummaries,
-    recordedDecisionsByRawPointId,
     recordStartElapsedRealtimeNanos,
     strategyVersion
   };
@@ -288,6 +284,32 @@ function normalizeRawPoint(event) {
     sourceGnssSnapshotId: numberField(event, 'sourceGnssSnapshotId'),
     samplingEpochId: numberField(event, 'samplingEpochId'),
     mock: event.mock === true || event.isMock === true
+  };
+}
+
+function deviceMotionWindowAsMotionEvidence(event) {
+  const linearSampleCount = numberField(event, 'linearAccelerationSampleCount') ?? 0;
+  const accelRms = linearSampleCount > 0
+    ? numberField(event, 'linearAccelerationRmsMps2') ?? 0
+    : numberField(event, 'accelerometerDynamicRmsMps2') ?? 0;
+  const gyroRms = numberField(event, 'gyroscopeRmsRadps') ?? 0;
+  const stepDelta = numberField(event, 'stepCounterDelta') ?? 0;
+  const stepDetectorCount = numberField(event, 'stepDetectorCount') ?? 0;
+  return {
+    event: 'device_motion_window',
+    firstElapsedRealtimeNanos: numberField(event, 'startElapsedRealtimeNanos'),
+    lastElapsedRealtimeNanos: numberField(event, 'endElapsedRealtimeNanos'),
+    sampleCount: (numberField(event, 'linearAccelerationSampleCount') ?? 0)
+      + (numberField(event, 'accelerometerSampleCount') ?? 0)
+      + (numberField(event, 'gyroscopeSampleCount') ?? 0)
+      + (numberField(event, 'rotationVectorSampleCount') ?? 0),
+    dynamicAccelRmsMps2: accelRms,
+    gyroscopeRmsRadps: gyroRms,
+    stepDelta,
+    stepDetectorCount,
+    isDeviceStill: accelRms <= 0.18 && gyroRms <= 0.08
+      && stepDelta === 0 && stepDetectorCount === 0,
+    evidenceSource: 'device_motion_window'
   };
 }
 
@@ -491,6 +513,15 @@ function createTrackTrustEngine(config) {
       if (cloudType === 'RECOVERY_CLOUD') {
         recoveryPreviousRawPoint = rawPoint;
       }
+      const targetCoordinate = targetCoordinateForDecision(rawPoint, cloud, reason);
+      if ((result === 'accept' || result === 'anchor')
+          && previousTrustedTrackPoint
+          && shouldAccumulateMovement(reason)) {
+        distanceDeltaMeters = distanceMeters(previousTrustedTrackPoint.lat,
+          previousTrustedTrackPoint.lng, targetCoordinate.lat, targetCoordinate.lng);
+        movingTimeDeltaSeconds = Math.max(0,
+          (rawPoint.elapsedRealtimeNanos - previousTrustedTrackPoint.elapsedRealtimeNanos) / 1_000_000_000);
+      }
 
       return {
         result,
@@ -500,8 +531,9 @@ function createTrackTrustEngine(config) {
         cloudSampleCount: cloud.sampleCount,
         cloudWeightSum: cloud.weightSum,
         cloudWeightedRadiusMeters: cloud.weightedRadiusMeters,
-        cloudCenterLatitude: cloud.centerLatitude,
-        cloudCenterLongitude: cloud.centerLongitude,
+        cloudCenterLatitude: targetCoordinate.lat,
+        cloudCenterLongitude: targetCoordinate.lng,
+        coordinateSource: targetCoordinate.source,
         representativeRawPointId: cloud.representativeRawPointId,
         contributingRawPointIds: cloud.contributingRawPointIds,
         startsNewSegment,
@@ -579,6 +611,27 @@ function isRecoveryContinuityRescuePoint(rawPoint, previousRawPoint, config) {
   const speed = distance / (elapsedDelta / 1_000_000_000);
   return speed <= config.continuityRescueMaxSpeedMetersPerSecond
     || (rawPoint.hasSpeed && rawPoint.speed <= config.continuityRescueMaxSpeedMetersPerSecond);
+}
+
+function targetCoordinateForDecision(rawPoint, cloud, reason) {
+  if (usesRawCoordinate(reason)) {
+    return { lat: rawPoint.lat, lng: rawPoint.lng, source: 'raw' };
+  }
+  return { lat: cloud.centerLatitude, lng: cloud.centerLongitude, source: 'cloud_center' };
+}
+
+function usesRawCoordinate(reason) {
+  return reason === 'moving_good_fix'
+    || reason === 'transport_suspected_kept'
+    || reason === 'gap_recovery'
+    || reason?.startsWith('continuity_rescue_');
+}
+
+function shouldAccumulateMovement(reason) {
+  return reason === 'moving_good_fix'
+    || reason === 'transport_suspected_kept'
+    || reason === 'continuity_rescue_low_accuracy'
+    || reason === 'continuity_rescue_stationary_jitter';
 }
 
 function recoveryFastPathAllowed(rawPoint, previousTrustedTrackPoint, config) {
@@ -775,31 +828,6 @@ function hasRecentStillMotion(elapsedRealtimeNanos, motionSummaries) {
   return total > 0 && still / total >= 0.75;
 }
 
-function compareWithRecordedDecisions(product, recordedDecisionsByRawPointId) {
-  const recomputed = new Map();
-  for (const point of product.track) recomputed.set(point.sourceRawPointId, point);
-  for (const point of product.excluded.weak) recomputed.set(point.rawPointId, point);
-  for (const point of product.excluded.rejected) recomputed.set(point.rawPointId, point);
-  let comparedDecisionCount = 0;
-  let matchedDecisionCount = 0;
-  const mismatches = [];
-  for (const [rawPointId, recorded] of recordedDecisionsByRawPointId.entries()) {
-    const actual = recomputed.get(rawPointId);
-    if (!actual) continue;
-    comparedDecisionCount++;
-    if (actual.result === recorded.result && actual.reason === recorded.reason) {
-      matchedDecisionCount++;
-    } else {
-      mismatches.push({
-        rawPointId,
-        recorded: { result: recorded.result, reason: recorded.reason },
-        recomputed: { result: actual.result, reason: actual.reason }
-      });
-    }
-  }
-  return { comparedDecisionCount, matchedDecisionCount, mismatches };
-}
-
 function excludedPoint(rawPoint, result, reason, epoch, decision = null) {
   return {
     rawPointId: rawPoint.rawPointId,
@@ -821,9 +849,6 @@ function buildFindings(product, evidence) {
   if (evidence.rawPoints.length === 0) findings.push('缺少 raw_location，无法生成目标成品');
   if (evidence.samplingEpochs.length === 0) {
     findings.push('缺少 sampling_policy，已使用合成 epoch 做低置信复算');
-  }
-  if (product.alignment.mismatches.length > 0) {
-    findings.push(`Web 复算与 Android recorded decision 存在 ${product.alignment.mismatches.length} 个 result/reason 差异`);
   }
   return findings;
 }
@@ -849,11 +874,6 @@ function emptyProduct(strategyVersion, sourceFilePath) {
       weakPointCount: 0,
       rejectedPointCount: 0,
       intakeRejectedPointCount: 0
-    },
-    alignment: {
-      comparedDecisionCount: 0,
-      matchedDecisionCount: 0,
-      mismatches: []
     },
     findings: []
   };

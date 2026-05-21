@@ -43,7 +43,7 @@ public class SessionJournalWriterTest {
         writer.openDiagnosticLogger();
 
         JSONObject event = new JSONObject();
-        event.put("event", "test_event");
+        event.put("event", "raw_location");
 
         writer.appendDiagnostic(event, "session-diagnostic", 456L);
         writer.closeQuietly();
@@ -51,16 +51,16 @@ public class SessionJournalWriterTest {
         assertEquals(1L, writer.getLastEventSeq());
         assertTrue(writer.getLastUpdatedWallTimeMillis() >= 123L);
         String jsonl = new String(Files.readAllBytes(
-                fileStore.diagnosticJsonl(sessionDir).toPath()), StandardCharsets.UTF_8);
+                fileStore.evidenceJsonl(sessionDir).toPath()), StandardCharsets.UTF_8);
         JSONObject written = new JSONObject(jsonl.trim());
-        assertEquals("test_event", written.getString("event"));
+        assertEquals("raw_location", written.getString("event"));
         assertEquals("session-diagnostic", written.getString("sessionId"));
         assertEquals(1L, written.getLong("eventSeq"));
         assertEquals(456L, written.getLong("eventElapsedRealtimeNanos"));
     }
 
     @Test
-    public void appendDiagnostic_writesOnlyPureEvidenceEventsToEvidenceJsonl()
+    public void appendDiagnostic_writesPureEvidenceEventsToEvidenceJsonl()
             throws Exception {
         SessionFileStore fileStore = newFileStore();
         File sessionDir = fileStore.createSessionDir("session-evidence");
@@ -71,29 +71,14 @@ public class SessionJournalWriterTest {
         JSONObject rawLocation = new JSONObject();
         rawLocation.put("event", "raw_location");
         rawLocation.put("rawPointId", 1);
-        JSONObject decision = new JSONObject();
-        decision.put("event", "decision");
-        decision.put("rawPointId", 1);
-        JSONObject intakeRejected = new JSONObject();
-        intakeRejected.put("event", "location_intake_rejected");
-        intakeRejected.put("rawPointId", 2);
 
         writer.appendDiagnostic(rawLocation, "session-evidence", 456L);
-        writer.appendDiagnostic(decision, "session-evidence", 457L);
-        writer.appendDiagnostic(intakeRejected, "session-evidence", 458L);
         writer.closeQuietly();
 
-        String diagnosticJsonl = new String(Files.readAllBytes(
-                fileStore.diagnosticJsonl(sessionDir).toPath()), StandardCharsets.UTF_8);
         String evidenceJsonl = new String(Files.readAllBytes(
                 fileStore.evidenceJsonl(sessionDir).toPath()), StandardCharsets.UTF_8);
 
-        assertTrue(diagnosticJsonl.contains("\"event\":\"raw_location\""));
-        assertTrue(diagnosticJsonl.contains("\"event\":\"decision\""));
-        assertTrue(diagnosticJsonl.contains("\"event\":\"location_intake_rejected\""));
         assertTrue(evidenceJsonl.contains("\"event\":\"raw_location\""));
-        assertTrue(!evidenceJsonl.contains("\"event\":\"decision\""));
-        assertTrue(!evidenceJsonl.contains("\"event\":\"location_intake_rejected\""));
     }
 
     private SessionFileStore newFileStore() throws Exception {

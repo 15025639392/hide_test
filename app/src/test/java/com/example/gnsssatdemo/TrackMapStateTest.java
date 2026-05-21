@@ -58,11 +58,11 @@ public class TrackMapStateTest {
         TrackMapState state = TrackMapState.build(Arrays.asList(
                 point(1L, 29.0, 106.0, "anchor", "first_fix_good", false, 0f, 0.0),
                 point(2L, 29.0002, 106.0, "accept", "moving_good_fix", false, 0f, 10.0),
-                point(3L, 29.0004, 106.0, "transport", "transport_suspected", false, 0f, 99.0),
+                point(3L, 29.0004, 106.0, "accept", "transport_suspected_kept", false, 0f, 99.0),
                 point(4L, 29.0005, 106.0, "weak", "weak_signal_stage2", false, 0f, 99.0)),
                 new TrackMapState.Fallback());
 
-        assertEquals(10.0, state.totalDistanceMeters, 0.0);
+        assertEquals(109.0, state.totalDistanceMeters, 0.0);
     }
 
     @Test

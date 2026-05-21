@@ -1,7 +1,7 @@
 package com.example.gnsssatdemo.track.engine;
 
 import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
-import com.example.gnsssatdemo.track.model.MotionSummary;
+import com.example.gnsssatdemo.track.model.DeviceMotionWindow;
 import com.example.gnsssatdemo.track.model.RawPoint;
 import com.example.gnsssatdemo.track.model.TrackPoint;
 
@@ -40,7 +40,7 @@ public class TrackTrustEngineTest {
         assertEquals("gap_recovery", recovered.reason);
         assertEquals("RECOVERY", recovered.trustGrade);
         assertTrue(recovered.startsNewSegment);
-        assertTrue(recovered.virtualTrackPointCoordinate);
+        assertFalse(recovered.virtualTrackPointCoordinate);
     }
 
     @Test
@@ -81,11 +81,11 @@ public class TrackTrustEngineTest {
                 epoch, snapshot, Collections.emptyList(), previous);
 
         assertEquals("STATIONARY_CLOUD", first.cloudType);
-        assertEquals("reject", first.result);
-        assertEquals("stationary_cloud_jitter", first.reason);
+        assertEquals("accept", first.result);
+        assertEquals("continuity_rescue_stationary_jitter", first.reason);
         assertEquals("STATIONARY_CLOUD", second.cloudType);
-        assertEquals("reject", second.result);
-        assertEquals("stationary_cloud_jitter", second.reason);
+        assertEquals("accept", second.result);
+        assertEquals("continuity_rescue_stationary_jitter", second.reason);
     }
 
     @Test
@@ -163,8 +163,11 @@ public class TrackTrustEngineTest {
                 true, elapsedRealtimeNanos, false, null);
     }
 
-    private MotionSummary stillSummary() {
-        return new MotionSummary(1L, 2_500_000_000L, 4_500_000_000L,
-                20, 0.02, 0.95, true, "TYPE_LINEAR_ACCELERATION");
+    private DeviceMotionWindow stillSummary() {
+        return new DeviceMotionWindow(1L, 2_500_000_000L, 4_500_000_000L,
+                20, 0, 20, 0,
+                0.02, 0.03, 0.0, 0.0,
+                0.01, 0.02, 0.0, 0.0, 0.0,
+                0, 0, false);
     }
 }

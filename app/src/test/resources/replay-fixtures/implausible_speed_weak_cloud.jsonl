@@ -1,4 +1,4 @@
 {"event":"session_metadata","createdElapsedRealtimeNanos":1000000000}
 {"event":"config_snapshot","strategyVersion":"stage2-track-trust-v3-sampling-cloud"}
 {"event":"raw_location","rawPointId":1,"provider":"gps","lat":29,"lng":106,"accuracy":10,"timeMillis":1,"elapsedRealtimeNanos":2000000000,"expectedResult":"anchor","expectedReason":"first_fix_good"}
-{"event":"raw_location","rawPointId":2,"provider":"gps","lat":29.01,"lng":106,"accuracy":5,"timeMillis":1,"elapsedRealtimeNanos":3000000000,"expectedResult":"weak","expectedReason":"weak_signal_stage2"}
+{"event":"raw_location","rawPointId":2,"provider":"gps","lat":29.01,"lng":106,"accuracy":5,"timeMillis":1,"elapsedRealtimeNanos":3000000000,"expectedResult":"accept","expectedReason":"transport_suspected_kept"}
