@@ -73,7 +73,6 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.text.DecimalFormat;
 import java.text.SimpleDateFormat;
@@ -95,12 +94,8 @@ import javax.xml.parsers.ParserConfigurationException;
 
 public class MainActivity extends Activity {
     private static final int REQ_LOCATION = 1001;
-    private static final int REQ_CREATE_GPX = 1002;
-    private static final int REQ_CREATE_DIAGNOSTIC = 1003;
     private static final int REQ_NOTIFICATIONS = 1004;
     private static final int REQ_IMPORT_REFERENCE_GPX = 1005;
-    private static final int REQ_CREATE_SAMPLE_REPORT = 1006;
-    private static final int REQ_CREATE_WEAK_GNSS_REPORT = 1007;
     private static final long NO_LOCATION_TIMEOUT_MILLIS = 30_000L;
     private static final float MIN_HEADING_RENDER_DELTA_DEGREES = 3f;
     private static final long HEADING_STALE_RENDER_DELAY_MILLIS = 550L;
@@ -146,10 +141,6 @@ public class MainActivity extends Activity {
     private GnssMeasurementsEvent lastMeasurements;
     private boolean listening;
     private BasicTrackSession trackSession;
-    private String pendingGpxText;
-    private String pendingDiagnosticText;
-    private String pendingSampleReportText;
-    private String pendingWeakGnssReportText;
     private long lastLocationReceivedElapsedRealtimeMillis;
     private boolean noLocationTimeoutLogged;
     private boolean foregroundServiceRecording;
@@ -482,35 +473,11 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQ_CREATE_GPX) {
-            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
-                writePendingGpx(data.getData());
-            } else {
-                setStatus("已取消导出 GPX");
-            }
-        } else if (requestCode == REQ_CREATE_DIAGNOSTIC) {
-            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
-                writePendingDiagnostic(data.getData());
-            } else {
-                setStatus("已取消导出诊断日志");
-            }
-        } else if (requestCode == REQ_IMPORT_REFERENCE_GPX) {
+        if (requestCode == REQ_IMPORT_REFERENCE_GPX) {
             if (resultCode == RESULT_OK && data != null && data.getData() != null) {
                 importReferenceGpx(data.getData());
             } else {
                 setStatus("已取消导入参考 GPX");
-            }
-        } else if (requestCode == REQ_CREATE_SAMPLE_REPORT) {
-            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
-                writePendingSampleReport(data.getData());
-            } else {
-                setStatus("已取消导出样本报告");
-            }
-        } else if (requestCode == REQ_CREATE_WEAK_GNSS_REPORT) {
-            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
-                writePendingWeakGnssReport(data.getData());
-            } else {
-                setStatus("已取消导出弱 GPS 报告");
             }
         }
     }
@@ -2038,10 +2005,13 @@ public class MainActivity extends Activity {
                 setStatus("这次记录没有可信 GPX 可导出：" + trackSession.trustedGpxUnavailableReason());
                 return;
             }
-            pendingGpxText = trackSession.buildGpx();
-            requestGpxDocument(trackSession.suggestedGpxFileName());
+            String gpxText = trackSession.buildGpx();
+            shareTextFile(gpxText, trackSession.suggestedGpxFileName(),
+                    "application/gpx+xml", "分享 GPX");
         } catch (IllegalStateException e) {
             setStatus("不能导出 GPX：" + e.getMessage());
+        } catch (IOException e) {
+            setStatus("GPX 分享失败：" + e.getMessage());
         }
     }
 
@@ -2053,21 +2023,22 @@ public class MainActivity extends Activity {
         }
         try {
             String fileName;
+            String gpxText;
             if (canExportHistoricalGpx(exportableManifest)) {
-                pendingGpxText = readText(new File(exportableManifest.sessionDir,
+                gpxText = readText(new File(exportableManifest.sessionDir,
                         exportableManifest.trustedGpxFileName));
-                if (pendingGpxText.isEmpty()) {
+                if (gpxText.isEmpty()) {
                     setStatus("历史 GPX 文件为空");
                     return;
                 }
-                fileName = "track_" + exportableManifest.sessionId + "_trusted.gpx";
-                setStatus("准备导出最近历史可信 GPX: "
+                fileName = trustedGpxShareFileName(exportableManifest);
+                setStatus("准备分享最近历史可信 GPX: "
                         + exportableManifest.sessionId);
             } else {
                 File partialFile = new File(exportableManifest.sessionDir,
                         exportableManifest.partialGpxFileName);
                 if (exportableManifest.partialGpxExists) {
-                    pendingGpxText = readText(partialFile);
+                    gpxText = readText(partialFile);
                 } else {
                     List<TrackPoint> points = new DiagnosticTrackPointReader().readTrackPoints(
                             new File(exportableManifest.sessionDir,
@@ -2076,19 +2047,19 @@ public class MainActivity extends Activity {
                         setStatus("历史 session 没有可导出的 partial TrackPoint");
                         return;
                     }
-                    pendingGpxText = new GpxExporter().buildPartialGpx(exportableManifest.sessionId,
+                    gpxText = new GpxExporter().buildPartialGpx(exportableManifest.sessionId,
                             points, exportableManifest.totalDistanceMeters,
                             exportableManifest.movingTimeSeconds);
                 }
-                if (pendingGpxText.isEmpty()) {
+                if (gpxText.isEmpty()) {
                     setStatus("历史 partial GPX 文件为空");
                     return;
                 }
-                fileName = "track_" + exportableManifest.sessionId + "_partial.gpx";
-                setStatus("准备导出最近历史 partial GPX: "
+                fileName = partialGpxShareFileName(exportableManifest);
+                setStatus("准备分享最近历史 partial GPX: "
                         + exportableManifest.sessionId);
             }
-            requestGpxDocument(fileName);
+            shareTextFile(gpxText, fileName, "application/gpx+xml", "分享 GPX");
         } catch (IOException | JSONException e) {
             setStatus("读取历史 GPX 失败: " + e.getMessage());
         }
@@ -2100,13 +2071,14 @@ public class MainActivity extends Activity {
             return;
         }
         try {
-            pendingGpxText = readText(new File(manifest.sessionDir, manifest.trustedGpxFileName));
-            if (pendingGpxText.isEmpty()) {
+            String gpxText = readText(new File(manifest.sessionDir, manifest.trustedGpxFileName));
+            if (gpxText.isEmpty()) {
                 setStatus("历史 GPX 文件为空");
                 return;
             }
-            setStatus("准备导出历史可信 GPX: " + manifest.sessionId);
-            requestGpxDocument("track_" + manifest.sessionId + "_trusted.gpx");
+            setStatus("准备分享历史可信 GPX: " + manifest.sessionId);
+            shareTextFile(gpxText, trustedGpxShareFileName(manifest),
+                    "application/gpx+xml", "分享 GPX");
         } catch (IOException e) {
             setStatus("读取历史 GPX 失败: " + e.getMessage());
         }
@@ -2207,34 +2179,6 @@ public class MainActivity extends Activity {
         return manifest != null && manifest.diagnosticLogExists;
     }
 
-    private void requestGpxDocument(String fileName) {
-        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("application/gpx+xml");
-        intent.putExtra(Intent.EXTRA_TITLE, fileName);
-        startActivityForResult(intent, REQ_CREATE_GPX);
-    }
-
-    private void writePendingGpx(Uri uri) {
-        if (pendingGpxText == null) {
-            setStatus("没有待导出的 GPX 内容");
-            return;
-        }
-        try (OutputStream outputStream = getContentResolver().openOutputStream(uri)) {
-            if (outputStream == null) {
-                setStatus("无法打开导出文件");
-                return;
-            }
-            outputStream.write(pendingGpxText.getBytes(StandardCharsets.UTF_8));
-            outputStream.flush();
-            setStatus("GPX 已导出: " + uri);
-        } catch (IOException e) {
-            setStatus("GPX 导出失败: " + e.getMessage());
-        } finally {
-            pendingGpxText = null;
-        }
-    }
-
     private void requestReferenceGpxDocument() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
@@ -2274,12 +2218,13 @@ public class MainActivity extends Activity {
 
     private void exportCurrentDiagnosticLog() {
         try {
-            pendingDiagnosticText = trackSession.getDiagnosticText();
-            if (pendingDiagnosticText.isEmpty()) {
+            String diagnosticText = trackSession.getDiagnosticText();
+            if (diagnosticText.isEmpty()) {
                 setStatus("诊断日志为空");
                 return;
             }
-            requestDiagnosticDocument(trackSession.suggestedDiagnosticFileName());
+            shareTextFile(diagnosticText, trackSession.suggestedDiagnosticFileName(),
+                    "application/json", "分享诊断日志");
         } catch (IOException e) {
             setStatus("读取诊断日志失败: " + e.getMessage());
         }
@@ -2292,14 +2237,15 @@ public class MainActivity extends Activity {
             return;
         }
         try {
-            pendingDiagnosticText = readText(new File(exportableManifest.sessionDir,
+            String diagnosticText = readText(new File(exportableManifest.sessionDir,
                     exportableManifest.diagnosticLogFileName));
-            if (pendingDiagnosticText.isEmpty()) {
+            if (diagnosticText.isEmpty()) {
                 setStatus("诊断日志为空");
                 return;
             }
-            setStatus("准备导出最近历史诊断: " + exportableManifest.sessionId);
-            requestDiagnosticDocument("diagnostic_" + exportableManifest.sessionId + ".jsonl");
+            setStatus("准备分享最近历史诊断: " + exportableManifest.sessionId);
+            shareTextFile(diagnosticText, diagnosticShareFileName(exportableManifest),
+                    "application/json", "分享诊断日志");
         } catch (IOException e) {
             setStatus("读取历史诊断日志失败: " + e.getMessage());
         }
@@ -2311,14 +2257,15 @@ public class MainActivity extends Activity {
             return;
         }
         try {
-            pendingDiagnosticText = readText(new File(manifest.sessionDir,
+            String diagnosticText = readText(new File(manifest.sessionDir,
                     manifest.diagnosticLogFileName));
-            if (pendingDiagnosticText.isEmpty()) {
+            if (diagnosticText.isEmpty()) {
                 setStatus("诊断日志为空");
                 return;
             }
-            setStatus("准备导出历史诊断: " + manifest.sessionId);
-            requestDiagnosticDocument("diagnostic_" + manifest.sessionId + ".jsonl");
+            setStatus("准备分享历史诊断: " + manifest.sessionId);
+            shareTextFile(diagnosticText, diagnosticShareFileName(manifest),
+                    "application/json", "分享诊断日志");
         } catch (IOException e) {
             setStatus("读取历史诊断日志失败: " + e.getMessage());
         }
@@ -2353,9 +2300,10 @@ public class MainActivity extends Activity {
 
     private void exportSampleReport(SessionManifest manifest) throws IOException, JSONException {
         HikingSampleReport report = new HikingSampleReportGenerator().generate(manifest);
-        pendingSampleReportText = report.toText();
-        setStatus("准备导出样本报告: " + manifest.sessionId + " / " + report.verdict);
-        requestSampleReportDocument("sample_report_" + manifest.sessionId + ".txt");
+        String reportText = report.toText();
+        setStatus("准备分享样本报告: " + manifest.sessionId + " / " + report.verdict);
+        shareTextFile(reportText, sampleReportShareFileName(manifest),
+                "text/plain", "分享样本报告");
     }
 
     private void exportCurrentWeakGnssReport() {
@@ -2387,11 +2335,12 @@ public class MainActivity extends Activity {
 
     private void exportWeakGnssReport(SessionManifest manifest) throws IOException, JSONException {
         WeakGnssReport report = new WeakGnssReportGenerator().generate(manifest);
-        pendingWeakGnssReportText = report.toText();
+        String reportText = report.toText();
         String internalSaveStatus = tryWriteInternalWeakGnssReportFiles(
-                manifest, report, pendingWeakGnssReportText);
-        setStatus("准备导出弱 GPS 报告: " + manifest.sessionId + internalSaveStatus);
-        requestWeakGnssReportDocument("weak_gnss_report_" + manifest.sessionId + ".txt");
+                manifest, report, reportText);
+        setStatus("准备分享弱 GPS 报告: " + manifest.sessionId + internalSaveStatus);
+        shareTextFile(reportText, weakGnssReportShareFileName(manifest),
+                "text/plain", "分享弱 GPS 报告");
     }
 
     private String tryWriteInternalWeakGnssReportFiles(SessionManifest manifest,
@@ -2412,28 +2361,53 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void requestDiagnosticDocument(String fileName) {
-        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("application/json");
-        intent.putExtra(Intent.EXTRA_TITLE, fileName);
-        startActivityForResult(intent, REQ_CREATE_DIAGNOSTIC);
+    private void shareTextFile(String text, String fileName, String mimeType, String title)
+            throws IOException {
+        File shareDir = new File(getCacheDir(), "shared_exports");
+        if (!shareDir.exists() && !shareDir.mkdirs()) {
+            throw new IOException("无法创建分享目录: " + shareDir);
+        }
+        File shareFile = new File(shareDir, sanitizeShareFileName(fileName));
+        writeText(shareFile, text);
+        Uri uri = new Uri.Builder()
+                .scheme("content")
+                .authority(getPackageName() + ".exportshare")
+                .appendPath("export")
+                .appendPath(shareFile.getName())
+                .build();
+        Intent intent = new Intent(Intent.ACTION_SEND);
+        intent.setType(mimeType);
+        intent.putExtra(Intent.EXTRA_STREAM, uri);
+        intent.putExtra(Intent.EXTRA_SUBJECT, shareFile.getName());
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        startActivity(Intent.createChooser(intent, title));
+        setStatus(title + ": " + shareFile.getName());
     }
 
-    private void requestSampleReportDocument(String fileName) {
-        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("text/plain");
-        intent.putExtra(Intent.EXTRA_TITLE, fileName);
-        startActivityForResult(intent, REQ_CREATE_SAMPLE_REPORT);
+    private String trustedGpxShareFileName(SessionManifest manifest) {
+        return "gnss_track_trusted_" + manifest.sessionId + ".gpx";
     }
 
-    private void requestWeakGnssReportDocument(String fileName) {
-        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("text/plain");
-        intent.putExtra(Intent.EXTRA_TITLE, fileName);
-        startActivityForResult(intent, REQ_CREATE_WEAK_GNSS_REPORT);
+    private String partialGpxShareFileName(SessionManifest manifest) {
+        return "gnss_track_partial_" + manifest.sessionId + ".gpx";
+    }
+
+    private String diagnosticShareFileName(SessionManifest manifest) {
+        return "gnss_diagnostic_" + manifest.sessionId + ".jsonl";
+    }
+
+    private String sampleReportShareFileName(SessionManifest manifest) {
+        return "hiking_sample_report_" + manifest.sessionId + ".txt";
+    }
+
+    private String weakGnssReportShareFileName(SessionManifest manifest) {
+        return "weak_gps_report_" + manifest.sessionId + ".txt";
+    }
+
+    private String sanitizeShareFileName(String fileName) {
+        String cleaned = fileName == null ? "" : fileName.trim()
+                .replaceAll("[\\\\/:*?\"<>|\\s]+", "_");
+        return cleaned.isEmpty() ? "gnss_export.txt" : cleaned;
     }
 
     private String readText(File file) throws IOException {
@@ -2455,66 +2429,6 @@ public class MainActivity extends Activity {
         try (FileOutputStream outputStream = new FileOutputStream(file)) {
             outputStream.write(text.getBytes(StandardCharsets.UTF_8));
             outputStream.flush();
-        }
-    }
-
-    private void writePendingDiagnostic(Uri uri) {
-        if (pendingDiagnosticText == null) {
-            setStatus("没有待导出的诊断日志");
-            return;
-        }
-        try (OutputStream outputStream = getContentResolver().openOutputStream(uri)) {
-            if (outputStream == null) {
-                setStatus("无法打开诊断日志导出文件");
-                return;
-            }
-            outputStream.write(pendingDiagnosticText.getBytes(StandardCharsets.UTF_8));
-            outputStream.flush();
-            setStatus("诊断日志已导出: " + uri);
-        } catch (IOException e) {
-            setStatus("诊断日志导出失败: " + e.getMessage());
-        } finally {
-            pendingDiagnosticText = null;
-        }
-    }
-
-    private void writePendingSampleReport(Uri uri) {
-        if (pendingSampleReportText == null) {
-            setStatus("没有待导出的样本报告");
-            return;
-        }
-        try (OutputStream outputStream = getContentResolver().openOutputStream(uri)) {
-            if (outputStream == null) {
-                setStatus("无法打开样本报告导出文件");
-                return;
-            }
-            outputStream.write(pendingSampleReportText.getBytes(StandardCharsets.UTF_8));
-            outputStream.flush();
-            setStatus("样本报告已导出: " + uri);
-        } catch (IOException e) {
-            setStatus("样本报告导出失败: " + e.getMessage());
-        } finally {
-            pendingSampleReportText = null;
-        }
-    }
-
-    private void writePendingWeakGnssReport(Uri uri) {
-        if (pendingWeakGnssReportText == null) {
-            setStatus("没有待导出的弱 GPS 报告");
-            return;
-        }
-        try (OutputStream outputStream = getContentResolver().openOutputStream(uri)) {
-            if (outputStream == null) {
-                setStatus("无法打开弱 GPS 报告导出文件");
-                return;
-            }
-            outputStream.write(pendingWeakGnssReportText.getBytes(StandardCharsets.UTF_8));
-            outputStream.flush();
-            setStatus("弱 GPS 报告已导出: " + uri);
-        } catch (IOException e) {
-            setStatus("弱 GPS 报告导出失败: " + e.getMessage());
-        } finally {
-            pendingWeakGnssReportText = null;
         }
     }
 

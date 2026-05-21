@@ -1268,15 +1268,15 @@ public class BasicTrackSession implements Closeable {
     }
 
     public String suggestedGpxFileName() {
-        return "track_" + safeSessionName() + "_trusted.gpx";
+        return "gnss_track_trusted_" + safeSessionName() + ".gpx";
     }
 
     public String suggestedPartialGpxFileName() {
-        return "track_" + safeSessionName() + "_partial.gpx";
+        return "gnss_track_partial_" + safeSessionName() + ".gpx";
     }
 
     public String suggestedDiagnosticFileName() {
-        return "diagnostic_" + safeSessionName() + ".jsonl";
+        return "gnss_diagnostic_" + safeSessionName() + ".jsonl";
     }
 
     private String safeSessionName() {

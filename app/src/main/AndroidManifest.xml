@@ -26,5 +26,10 @@
             android:name=".RecordingForegroundService"
             android:exported="false"
             android:foregroundServiceType="location" />
+        <provider
+            android:name=".ExportShareProvider"
+            android:authorities="${applicationId}.exportshare"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>
