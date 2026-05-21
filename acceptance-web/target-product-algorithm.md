@@ -309,10 +309,10 @@ Cloud 类型：
 ```text
 START_CLOUD
 MOVING_CLOUD
+TRANSPORT_RISK_CLOUD
 STATIONARY_CLOUD
 RECOVERY_CLOUD
 WEAK_CLOUD
-TRANSPORT_CLOUD
 ```
 
 选择规则：
@@ -336,10 +336,7 @@ speed > 12 m/s:
   -> WEAK_CLOUD
 
 speed >= 3.5 m/s 且 distance >= 20m:
-  -> TRANSPORT_CLOUD
-
-处于 transport mode:
-  -> RECOVERY_CLOUD
+  -> TRANSPORT_RISK_CLOUD
 
 distance < max(5m, accuracy * 1.5):
   -> STATIONARY_CLOUD
@@ -432,6 +429,9 @@ MOVING_CLOUD:
   stable   -> accept / moving_good_fix
   unstable -> weak / moving_cloud_unstable
 
+TRANSPORT_RISK_CLOUD:
+  stable -> accept / transport_suspected_kept
+
 STATIONARY_CLOUD:
   stable 且近期 still-motion 支持 -> anchor / stationary_anchor
   否则 -> reject / stationary_cloud_jitter
@@ -443,9 +443,9 @@ RECOVERY_CLOUD:
 WEAK_CLOUD:
   weak / weak_signal_stage2
 
-TRANSPORT_CLOUD:
-  reject / transport_suspected
 ```
+
+交通工具风险只作为解释标签，不作为剔除条件。
 
 近期 still-motion 支持：
 
@@ -485,6 +485,11 @@ moving_good_fix:
   distanceDeltaMeters = distance(previousTrustedTrackPoint, cloudCenter)
   movingTimeDeltaSeconds = elapsed(currentRaw, previousTrustedTrackPoint)
 
+transport_suspected_kept:
+  distanceDeltaMeters = distance(previousTrustedTrackPoint, cloudCenter)
+  movingTimeDeltaSeconds = elapsed(currentRaw, previousTrustedTrackPoint)
+  进入目标成品，但保留疑似交通工具风险 reason
+
 stationary_anchor:
   distanceDeltaMeters = 0
   movingTimeDeltaSeconds = 0
@@ -494,8 +499,8 @@ gap_recovery:
   distanceDeltaMeters = 0
   movingTimeDeltaSeconds = 0
 
-transport_suspected:
-  不进入目标成品
+transport_suspected_kept:
+  进入目标成品
   transportCount + 1
 ```
 
@@ -586,7 +591,7 @@ cloud radius             可选半径圈
 - 同一个 `evidence.jsonl` 能稳定生成 `TargetTrackProduct`。
 - 目标轨迹只包含 `anchor` 和 `accept`。
 - `gap_recovery` 进入目标轨迹，但 delta 为 0。
-- `transport_suspected` 不进入目标轨迹，不累计徒步距离。
+- 疑似交通工具只标记为 `transport_suspected_kept` 并保留，不作为轨迹剔除条件。
 - Web 复算统计稳定可解释，旧 diagnostic 对照差异只作为参考。
 - 无法复原的字段进入 `findings`，不静默吞掉。
 

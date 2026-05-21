@@ -44,7 +44,8 @@ const CLEANING_ALGORITHM_SECTIONS = [
       'GAP > 120s 进入 RECOVERY_CLOUD，恢复点 delta=0',
       'accuracy > 30m 进入 WEAK_CLOUD，不进入清洗轨迹',
       '静止阈值 = max(5m, accuracy * 1.5)',
-      '速度 > 12m/s 视为异常弱点；速度 >= 3.5m/s 且位移 >= 20m 视为疑似交通工具'
+      '速度 > 12m/s 视为异常弱点',
+      '速度 >= 3.5m/s 且位移 >= 20m 标记为交通工具风险并保留'
     ]
   },
   {
@@ -53,7 +54,7 @@ const CLEANING_ALGORITHM_SECTIONS = [
       '80m 是 raw 进入复算的宽门槛，用于保留弱 GPS 诊断证据',
       '30m 是可信点云分界，避免弱信号直接污染目标轨迹',
       '120s GAP 避免把长时间无定位两端直线计入徒步距离',
-      '交通工具阈值只拦截明显超出徒步范围的移动，减少误伤慢速徒步',
+      '交通工具风险只做解释标签，不作为删除条件，避免把快走、跑动、下坡或正常轨迹误删',
       '整段 motion 几乎全静止且 stationary_anchor 占主导时，Web 成品轨迹压缩为一个稳定中心点'
     ]
   }
@@ -78,6 +79,7 @@ const elements = {
   showRaw: document.querySelector('#showRaw'),
   showTrusted: document.querySelector('#showTrusted'),
   showCleaned: document.querySelector('#showCleaned'),
+  showCleanedPoints: document.querySelector('#showCleanedPoints'),
   showPoints: document.querySelector('#showPoints'),
   configStateText: document.querySelector('#configStateText'),
   applyConfigButton: document.querySelector('#applyConfigButton'),
@@ -113,7 +115,13 @@ elements.clearButton.addEventListener('click', clearAll);
 elements.fitBoundsButton.addEventListener('click', fitAllBounds);
 elements.applyConfigButton.addEventListener('click', applyCleaningConfig);
 elements.resetConfigButton.addEventListener('click', resetCleaningConfig);
-for (const input of [elements.showRaw, elements.showTrusted, elements.showCleaned, elements.showPoints]) {
+for (const input of [
+  elements.showRaw,
+  elements.showTrusted,
+  elements.showCleaned,
+  elements.showCleanedPoints,
+  elements.showPoints
+]) {
   input.addEventListener('change', renderMap);
 }
 
@@ -655,7 +663,10 @@ function renderMap() {
   state.map.getSource('raw-lines').setData(elements.showRaw.checked ? rawFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('trusted-lines').setData(elements.showTrusted.checked ? trustedFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('cleaned-lines').setData(elements.showCleaned.checked ? cleanedFeatureCollection(visible) : emptyFeatureCollection());
-  state.map.getSource('cleaned-points').setData(elements.showCleaned.checked ? cleanedPointFeatureCollection(visible) : emptyFeatureCollection());
+  state.map.getSource('cleaned-points').setData(
+    elements.showCleaned.checked && elements.showCleanedPoints.checked
+      ? cleanedPointFeatureCollection(visible)
+      : emptyFeatureCollection());
   state.map.getSource('points').setData(elements.showPoints.checked ? pointFeatureCollection(visible) : emptyFeatureCollection());
 }
 

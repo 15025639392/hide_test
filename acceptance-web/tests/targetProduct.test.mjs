@@ -96,7 +96,7 @@ test('buildTargetTrackProduct supports custom cleaning parameters', () => {
   assert.equal(customProduct.usesDefaultConfig, false);
 });
 
-test('buildTargetTrackProduct excludes weak, transport and intake rejected evidence', () => {
+test('buildTargetTrackProduct keeps isolated transport-like evidence as risk instead of deleting it', () => {
   const model = parseDiagnosticJsonl([
     '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
     '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
@@ -109,14 +109,57 @@ test('buildTargetTrackProduct excludes weak, transport and intake rejected evide
 
   const product = buildTargetTrackProduct(model);
 
-  assert.equal(product.track.length, 1);
+  assert.equal(product.track.length, 2);
+  assert.equal(product.track[1].reason, 'transport_suspected_kept');
+  assert.equal(product.track[1].cloudType, 'TRANSPORT_RISK_CLOUD');
   assert.equal(product.excluded.weak.length, 1);
   assert.equal(product.excluded.weak[0].reason, 'weak_signal_stage2');
-  assert.equal(product.excluded.rejected.length, 1);
-  assert.equal(product.excluded.rejected[0].reason, 'transport_suspected');
+  assert.equal(product.excluded.rejected.length, 0);
   assert.equal(product.excluded.intakeRejected.length, 1);
   assert.equal(product.excluded.intakeRejected[0].reason, 'provider_not_gps');
   assert.equal(product.stats.transportCount, 1);
+});
+
+test('buildTargetTrackProduct keeps continuous transport-like evidence as risk instead of deleting it', () => {
+  const model = parseDiagnosticJsonl([
+    '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":8,"top4AvgCn0":35}',
+    '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":5,"elapsedRealtimeNanos":1000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.0005,"lng":120,"accuracy":5,"elapsedRealtimeNanos":11000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":3,"provider":"gps","lat":30.0015,"lng":120,"accuracy":5,"elapsedRealtimeNanos":41000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":4,"provider":"gps","lat":30.0030,"lng":120,"accuracy":5,"elapsedRealtimeNanos":71000000000,"sourceGnssSnapshotId":1}'
+  ].join('\n'));
+
+  const product = buildTargetTrackProduct(model);
+
+  assert.equal(product.track.length, 4);
+  assert.equal(product.track[1].reason, 'transport_suspected_kept');
+  assert.equal(product.track[2].reason, 'transport_suspected_kept');
+  assert.equal(product.track[3].reason, 'transport_suspected_kept');
+  assert.equal(product.excluded.rejected.length, 0);
+  assert.equal(product.stats.transportCount, 3);
+});
+
+test('buildTargetTrackProduct keeps high-speed evidence when reported speed supports real movement', () => {
+  const model = parseDiagnosticJsonl([
+    '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":8,"top4AvgCn0":35}',
+    '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":29.60957711,"lng":106.50348649,"accuracy":16.776222,"speed":14.92,"elapsedRealtimeNanos":1000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":29.60941662,"lng":106.50348031,"accuracy":8.955809,"speed":14.83,"elapsedRealtimeNanos":2000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":3,"provider":"gps","lat":29.60929297,"lng":106.50345473,"accuracy":7.651239,"speed":14.6,"elapsedRealtimeNanos":3000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":4,"provider":"gps","lat":29.60916716,"lng":106.50344466,"accuracy":6.425503,"speed":14.38,"elapsedRealtimeNanos":4000000000,"sourceGnssSnapshotId":1}'
+  ].join('\n'));
+
+  const product = buildTargetTrackProduct(model);
+
+  assert.deepEqual(product.track.map((point) => point.sourceRawPointId), [1, 2, 3, 4]);
+  assert.equal(product.track[1].reason, 'transport_suspected_kept');
+  assert.equal(product.track[2].reason, 'transport_suspected_kept');
+  assert.equal(product.track[3].reason, 'transport_suspected_kept');
+  assert.equal(product.excluded.weak.length, 0);
+  assert.equal(product.excluded.rejected.length, 0);
 });
 
 test('buildTargetTrackProduct collapses fully stationary sessions to one target point', () => {

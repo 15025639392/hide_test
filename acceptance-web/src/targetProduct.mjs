@@ -7,6 +7,8 @@ const EARTH_RADIUS_METERS = 6_371_000;
 export const DEFAULT_TARGET_PRODUCT_CONFIG = Object.freeze({
   maxIntakeAccuracyMeters: 80,
   weakCloudAccuracyMeters: 30,
+  continuityRescueMaxAccuracyMeters: 650,
+  continuityRescueMaxSpeedMetersPerSecond: 6,
   gapSeconds: 120,
   stationaryDistanceMeters: 5,
   stationaryAccuracyMultiplier: 1.5,
@@ -22,6 +24,7 @@ export const DEFAULT_TARGET_PRODUCT_CONFIG = Object.freeze({
 const DEFAULT_CLOUD_RULES = {
   START_CLOUD: { minSamples: 1, minWeight: 0.03, minRadius: 0, accuracyMultiplier: 1 },
   MOVING_CLOUD: { minSamples: 1, minWeight: 0.03, minRadius: 15, accuracyMultiplier: 1.5 },
+  TRANSPORT_RISK_CLOUD: { minSamples: 1, minWeight: 0.03, minRadius: 15, accuracyMultiplier: 1.5 },
   STATIONARY_CLOUD: { minSamples: 2, minWeight: 0.08, minRadius: 8, accuracyMultiplier: 1.2 },
   RECOVERY_CLOUD: { minSamples: 2, minWeight: 0.08, minRadius: 12, accuracyMultiplier: 1.5 }
 };
@@ -45,7 +48,8 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
     rawPointCount++;
     const epoch = findSamplingEpoch(rawPoint, evidence.samplingEpochs);
     const intake = acceptRawPoint(rawPoint, epoch, evidence, config);
-    if (!intake.accepted) {
+    if (!intake.accepted && !canRescueContinuityPoint(rawPoint,
+      previousTrustedTrackPoint, intake.reason, config)) {
       product.excluded.intakeRejected.push(excludedPoint(rawPoint, 'intake_rejected',
         intake.reason, epoch));
       continue;
@@ -56,11 +60,10 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
       previousTrustedTrackPoint);
     decisionId++;
 
-    if (decision.result === 'reject' && decision.reason === 'transport_suspected') {
-      product.stats.transportCount++;
-    }
-
     if (decision.result === 'anchor' || decision.result === 'accept') {
+      if (decision.reason === 'transport_suspected_kept') {
+        product.stats.transportCount++;
+      }
       if (decision.startsNewSegment && previousTrustedTrackPoint) {
         segmentId++;
         product.stats.gapCount++;
@@ -123,6 +126,8 @@ function normalizeConfig(config = {}) {
   return {
     maxIntakeAccuracyMeters: positiveNumber(merged.maxIntakeAccuracyMeters, DEFAULT_TARGET_PRODUCT_CONFIG.maxIntakeAccuracyMeters),
     weakCloudAccuracyMeters: positiveNumber(merged.weakCloudAccuracyMeters, DEFAULT_TARGET_PRODUCT_CONFIG.weakCloudAccuracyMeters),
+    continuityRescueMaxAccuracyMeters: positiveNumber(merged.continuityRescueMaxAccuracyMeters, DEFAULT_TARGET_PRODUCT_CONFIG.continuityRescueMaxAccuracyMeters),
+    continuityRescueMaxSpeedMetersPerSecond: positiveNumber(merged.continuityRescueMaxSpeedMetersPerSecond, DEFAULT_TARGET_PRODUCT_CONFIG.continuityRescueMaxSpeedMetersPerSecond),
     gapSeconds: positiveNumber(merged.gapSeconds, DEFAULT_TARGET_PRODUCT_CONFIG.gapSeconds),
     stationaryDistanceMeters: positiveNumber(merged.stationaryDistanceMeters, DEFAULT_TARGET_PRODUCT_CONFIG.stationaryDistanceMeters),
     stationaryAccuracyMultiplier: positiveNumber(merged.stationaryAccuracyMultiplier, DEFAULT_TARGET_PRODUCT_CONFIG.stationaryAccuracyMultiplier),
@@ -377,19 +382,23 @@ function createTrackTrustEngine(config) {
   let nextCloudId = 1;
   let currentCloud = null;
   let currentCloudType = '';
-  let transportMode = false;
   let resetMovingCloudAfterAccept = false;
+  let recoveryPreviousRawPoint = null;
 
   return {
     decide(rawPoint, epoch, snapshot, motionSummaries, previousTrustedTrackPoint) {
-      const cloudType = chooseCloudType(rawPoint, epoch, previousTrustedTrackPoint, transportMode, config);
+      const cloudType = chooseCloudType(rawPoint, epoch, previousTrustedTrackPoint, config);
       if (cloudType !== currentCloudType
           || currentCloud === null
           || currentCloud.samplingEpochId !== epoch.samplingEpochId
-          || (cloudType === 'MOVING_CLOUD' && resetMovingCloudAfterAccept)) {
+          || ((cloudType === 'MOVING_CLOUD' || cloudType === 'TRANSPORT_RISK_CLOUD')
+            && resetMovingCloudAfterAccept)) {
         currentCloud = new TrackCloudWindow(nextCloudId++, cloudType, epoch.samplingEpochId, config);
         currentCloudType = cloudType;
-        if (cloudType === 'MOVING_CLOUD') resetMovingCloudAfterAccept = false;
+        if (cloudType === 'MOVING_CLOUD' || cloudType === 'TRANSPORT_RISK_CLOUD') {
+          resetMovingCloudAfterAccept = false;
+        }
+        recoveryPreviousRawPoint = null;
       }
 
       const cloud = currentCloud.add(rawPoint, snapshot, motionSummaries);
@@ -407,30 +416,62 @@ function createTrackTrustEngine(config) {
         result = 'anchor';
         reason = rawPoint.accuracy <= FIRST_FIX_GOOD_ACCURACY_METERS
           ? 'first_fix_good' : 'first_fix_relaxed';
-      } else if (cloudType === 'TRANSPORT_CLOUD') {
-        transportMode = true;
-        result = 'reject';
-        reason = 'transport_suspected';
       } else if (cloudType === 'RECOVERY_CLOUD') {
         if (stable) {
-          transportMode = false;
           result = 'accept';
           reason = 'gap_recovery';
+          startsNewSegment = previousTrustedTrackPoint !== null;
+        } else if (isRecoveryContinuityRescuePoint(rawPoint, recoveryPreviousRawPoint, config)) {
+          result = 'accept';
+          reason = 'continuity_rescue_gap_recovery';
           startsNewSegment = previousTrustedTrackPoint !== null;
         } else {
           result = 'weak';
           reason = 'recovery_cloud_pending';
         }
       } else if (cloudType === 'WEAK_CLOUD') {
-        result = 'weak';
-        reason = 'weak_signal_stage2';
+        if (isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint, config)) {
+          result = 'accept';
+          reason = 'continuity_rescue_low_accuracy';
+          resetMovingCloudAfterAccept = true;
+          if (previousTrustedTrackPoint) {
+            distanceDeltaMeters = distanceMeters(previousTrustedTrackPoint.lat,
+              previousTrustedTrackPoint.lng, cloud.centerLatitude, cloud.centerLongitude);
+            movingTimeDeltaSeconds = Math.max(0,
+              (rawPoint.elapsedRealtimeNanos - previousTrustedTrackPoint.elapsedRealtimeNanos) / 1_000_000_000);
+          }
+        } else {
+          result = 'weak';
+          reason = 'weak_signal_stage2';
+        }
       } else if (cloudType === 'STATIONARY_CLOUD') {
         if (stable && hasRecentStillMotion(rawPoint.elapsedRealtimeNanos, motionSummaries)) {
           result = 'anchor';
           reason = 'stationary_anchor';
+        } else if (!hasRecentStillMotion(rawPoint.elapsedRealtimeNanos, motionSummaries)
+            && isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint, config)) {
+          result = 'accept';
+          reason = 'continuity_rescue_stationary_jitter';
+          resetMovingCloudAfterAccept = true;
+          if (previousTrustedTrackPoint) {
+            distanceDeltaMeters = distanceMeters(previousTrustedTrackPoint.lat,
+              previousTrustedTrackPoint.lng, cloud.centerLatitude, cloud.centerLongitude);
+            movingTimeDeltaSeconds = Math.max(0,
+              (rawPoint.elapsedRealtimeNanos - previousTrustedTrackPoint.elapsedRealtimeNanos) / 1_000_000_000);
+          }
         } else {
           result = 'reject';
           reason = 'stationary_cloud_jitter';
+        }
+      } else if (cloudType === 'TRANSPORT_RISK_CLOUD') {
+        result = 'accept';
+        reason = 'transport_suspected_kept';
+        resetMovingCloudAfterAccept = true;
+        if (previousTrustedTrackPoint) {
+          distanceDeltaMeters = distanceMeters(previousTrustedTrackPoint.lat,
+            previousTrustedTrackPoint.lng, cloud.centerLatitude, cloud.centerLongitude);
+          movingTimeDeltaSeconds = Math.max(0,
+            (rawPoint.elapsedRealtimeNanos - previousTrustedTrackPoint.elapsedRealtimeNanos) / 1_000_000_000);
         }
       } else if (stable) {
         result = 'accept';
@@ -445,6 +486,10 @@ function createTrackTrustEngine(config) {
       } else {
         result = 'weak';
         reason = 'moving_cloud_unstable';
+      }
+
+      if (cloudType === 'RECOVERY_CLOUD') {
+        recoveryPreviousRawPoint = rawPoint;
       }
 
       return {
@@ -467,7 +512,7 @@ function createTrackTrustEngine(config) {
   };
 }
 
-function chooseCloudType(rawPoint, epoch, previousTrustedTrackPoint, transportMode, config) {
+function chooseCloudType(rawPoint, epoch, previousTrustedTrackPoint, config) {
   if (!previousTrustedTrackPoint) {
     return rawPoint.accuracy > config.weakCloudAccuracyMeters ? 'WEAK_CLOUD' : 'START_CLOUD';
   }
@@ -482,14 +527,58 @@ function chooseCloudType(rawPoint, epoch, previousTrustedTrackPoint, transportMo
   }
   if (deltaSeconds > 0) {
     const speed = distance / deltaSeconds;
-    if (speed > config.impossibleSpeedMetersPerSecond) return 'WEAK_CLOUD';
-    if (speed >= config.transportSpeedMetersPerSecond && distance >= config.transportMinDistanceMeters) {
-      return 'TRANSPORT_CLOUD';
+    if (isTransportRisk(rawPoint, speed, distance, config)) {
+      return 'TRANSPORT_RISK_CLOUD';
     }
+    if (speed > config.impossibleSpeedMetersPerSecond) return 'WEAK_CLOUD';
   }
-  if (transportMode) return 'RECOVERY_CLOUD';
   if (distance < stationaryThreshold(rawPoint, config)) return 'STATIONARY_CLOUD';
   return 'MOVING_CLOUD';
+}
+
+function isTransportRisk(rawPoint, derivedSpeedMetersPerSecond, distance, config) {
+  if (derivedSpeedMetersPerSecond < config.transportSpeedMetersPerSecond
+      && (!rawPoint.hasSpeed || rawPoint.speed < config.transportSpeedMetersPerSecond)) {
+    return false;
+  }
+  if (distance >= config.transportMinDistanceMeters) return true;
+  return rawPoint.hasSpeed
+    && rawPoint.speed >= config.transportSpeedMetersPerSecond
+    && distance >= stationaryThreshold(rawPoint, config);
+}
+
+function canRescueContinuityPoint(rawPoint, previousTrustedTrackPoint, intakeReason, config) {
+  return intakeReason === 'accuracy_too_large'
+    && isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint, config);
+}
+
+function isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint, config) {
+  if (!previousTrustedTrackPoint) return false;
+  if (!Number.isFinite(rawPoint.accuracy)
+      || rawPoint.accuracy > config.continuityRescueMaxAccuracyMeters) {
+    return false;
+  }
+  const elapsedDelta = rawPoint.elapsedRealtimeNanos - previousTrustedTrackPoint.elapsedRealtimeNanos;
+  if (elapsedDelta <= 0 || elapsedDelta > config.gapSeconds * 1_000_000_000) return false;
+  const distance = distanceMeters(previousTrustedTrackPoint.lat, previousTrustedTrackPoint.lng,
+    rawPoint.lat, rawPoint.lng);
+  const speed = distance / (elapsedDelta / 1_000_000_000);
+  return speed <= config.continuityRescueMaxSpeedMetersPerSecond
+    || (rawPoint.hasSpeed && rawPoint.speed <= config.continuityRescueMaxSpeedMetersPerSecond);
+}
+
+function isRecoveryContinuityRescuePoint(rawPoint, previousRawPoint, config) {
+  if (!previousRawPoint) return false;
+  if (!Number.isFinite(rawPoint.accuracy)
+      || rawPoint.accuracy > config.continuityRescueMaxAccuracyMeters) {
+    return false;
+  }
+  const elapsedDelta = rawPoint.elapsedRealtimeNanos - previousRawPoint.elapsedRealtimeNanos;
+  if (elapsedDelta <= 0 || elapsedDelta > config.gapSeconds * 1_000_000_000) return false;
+  const distance = distanceMeters(previousRawPoint.lat, previousRawPoint.lng, rawPoint.lat, rawPoint.lng);
+  const speed = distance / (elapsedDelta / 1_000_000_000);
+  return speed <= config.continuityRescueMaxSpeedMetersPerSecond
+    || (rawPoint.hasSpeed && rawPoint.speed <= config.continuityRescueMaxSpeedMetersPerSecond);
 }
 
 function recoveryFastPathAllowed(rawPoint, previousTrustedTrackPoint, config) {

@@ -46,6 +46,7 @@ https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}
 - 选中文件后展示 Web 清洗结果、raw、GNSS、pressure、motion 摘要。
 - 兼容旧 `diagnostic.jsonl` 时，可额外展示 Android recorded decision 作为对照。
 - 点击地图点后展示 raw 证据或 Web 清洗点详情。
+- 疑似交通工具只标记为 `transport_suspected_kept`，不作为清洗剔除条件。
 
 ## 测试
 

@@ -36,6 +36,11 @@ const DECISION_REASON_EXPLANATIONS = {
     meaning: '速度和位移更像交通工具移动，当前点不进入徒步可信距离。',
     evidence: '重点看推算速度、系统 reported speed、持续时间，以及 GNSS 质量是否并不差。'
   },
+  transport_suspected_kept: {
+    title: '交通工具风险保留',
+    meaning: '速度和位移触发交通工具风险，但该风险只作为解释标签，仍保留进目标轨迹，避免误删正常轨迹。',
+    evidence: '重点看该段是否可能是快走、跑动、下坡、乘车或其他非徒步移动。'
+  },
   recovery_cloud_pending: {
     title: '恢复点云等待稳定',
     meaning: 'GAP、transport 或静止边界后第一个恢复样本还不足以建立新连续性。',
