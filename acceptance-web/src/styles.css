@@ -54,6 +54,7 @@ input {
 }
 
 .identity p,
+.import-status,
 .import-text,
 .empty-note {
   margin: 4px 0 0;
@@ -107,6 +108,12 @@ button:hover,
   display: none;
 }
 
+.file-button.disabled,
+button:disabled {
+  cursor: progress;
+  opacity: 0.58;
+}
+
 .toggle {
   gap: 6px;
   color: var(--muted);
@@ -116,10 +123,42 @@ button:hover,
   accent-color: var(--accent);
 }
 
+.import-status {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
 .import-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.import-spinner {
+  display: none;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border: 2px solid rgba(149, 167, 173, 0.32);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+}
+
+.import-status.loading .import-spinner {
+  display: inline-block;
+  animation: spin 0.82s linear infinite;
+}
+
+.import-status.loading .import-text {
+  color: var(--ink);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .layout {
@@ -200,6 +239,10 @@ button:hover,
   background: var(--accent);
 }
 
+.line.cleaned {
+  background: #ef4444;
+}
+
 .dot {
   width: 10px;
   height: 10px;
@@ -246,6 +289,35 @@ button:hover,
 
 .dataset-table {
   min-width: 0;
+}
+
+.config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  padding: 12px;
+}
+
+.config-grid label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.config-grid input {
+  width: 100%;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 9px;
+  background: #0b171a;
+  color: var(--ink);
+}
+
+.config-grid button {
+  width: 100%;
 }
 
 .dataset-head,
@@ -350,6 +422,27 @@ button:hover,
   font-size: 12px;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.algorithm-block {
+  gap: 9px;
+}
+
+.algorithm-section {
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid rgba(203, 213, 225, 0.10);
+  padding-top: 8px;
+}
+
+.algorithm-section:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.algorithm-section b {
+  color: #ffffff;
+  font-size: 12px;
 }
 
 .maplibregl-popup-content {

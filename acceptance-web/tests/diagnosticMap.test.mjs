@@ -12,9 +12,12 @@ import {
 
 test('diagnostic path detection accepts exported diagnostic jsonl', () => {
   assert.equal(isDiagnosticJsonlPath('diagnostic.jsonl'), true);
+  assert.equal(isDiagnosticJsonlPath('diagnostic.jsonl.json'), true);
   assert.equal(isDiagnosticJsonlPath('device-a/session-1/diagnostic.jsonl'), true);
+  assert.equal(isDiagnosticJsonlPath('device-a/session-1/diagnostic.jsonl.json'), true);
   assert.equal(isDiagnosticJsonlPath('device-a/session.json'), false);
   assert.equal(isDiagnosticCandidatePath('one.jsonl'), true);
+  assert.equal(isDiagnosticCandidatePath('one.jsonl.json'), true);
   assert.equal(isDiagnosticCandidatePath('session.json'), false);
 });
 

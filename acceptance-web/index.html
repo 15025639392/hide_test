@@ -30,9 +30,13 @@
           <button id="clearButton" type="button">清空</button>
           <label class="toggle"><input id="showRaw" type="checkbox" checked /> raw</label>
           <label class="toggle"><input id="showTrusted" type="checkbox" checked /> 可信</label>
+          <label class="toggle"><input id="showCleaned" type="checkbox" /> 清洗轨迹</label>
           <label class="toggle"><input id="showPoints" type="checkbox" checked /> 点</label>
         </section>
-        <div id="importText" class="import-text">等待导入 diagnostic.jsonl</div>
+        <div id="importStatus" class="import-status" aria-live="polite">
+          <span id="importSpinner" class="import-spinner" aria-hidden="true"></span>
+          <span id="importText" class="import-text">等待导入 diagnostic.jsonl</span>
+        </div>
       </header>
 
       <section class="layout">
@@ -74,6 +78,7 @@
           <div class="map-legend">
             <span><i class="line raw"></i>raw 轨迹</span>
             <span><i class="line trusted"></i>可信轨迹</span>
+            <span><i class="line cleaned"></i>算法清洗轨迹</span>
             <span><i class="dot trusted"></i>anchor/accept</span>
             <span><i class="dot weak"></i>weak</span>
             <span><i class="dot reject"></i>reject/intake</span>
@@ -82,6 +87,23 @@
         </section>
 
         <aside class="right-panel" aria-label="点详情面板">
+          <section class="panel">
+            <div class="panel-title">
+              <h2>清洗参数</h2>
+              <span id="configStateText">默认</span>
+            </div>
+            <div class="config-grid">
+              <label>accuracy 上限<input id="maxIntakeAccuracyMeters" type="number" min="1" step="1" /></label>
+              <label>弱点云 accuracy<input id="weakCloudAccuracyMeters" type="number" min="1" step="1" /></label>
+              <label>GAP 秒数<input id="gapSeconds" type="number" min="1" step="1" /></label>
+              <label>静止基础距离<input id="stationaryDistanceMeters" type="number" min="0.1" step="0.1" /></label>
+              <label>交通工具速度<input id="transportSpeedMetersPerSecond" type="number" min="0.1" step="0.1" /></label>
+              <label>交通工具位移<input id="transportMinDistanceMeters" type="number" min="1" step="1" /></label>
+              <button id="applyConfigButton" type="button">应用参数</button>
+              <button id="resetConfigButton" type="button">恢复默认</button>
+            </div>
+          </section>
+
           <section class="panel details-panel">
             <div class="panel-title">
               <h2>点详情</h2>

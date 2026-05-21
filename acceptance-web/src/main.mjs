@@ -5,8 +5,57 @@ import {
   isDiagnosticJsonlPath,
   parseDiagnosticJsonl
 } from './diagnosticMap.mjs';
+import {
+  DEFAULT_TARGET_PRODUCT_CONFIG,
+  buildTargetTrackProduct,
+  normalizeTargetProductConfig
+} from './targetProduct.mjs';
 
 const COLORS = ['#2dd4bf', '#fb7185', '#facc15', '#60a5fa', '#c084fc', '#34d399', '#f97316', '#e879f9'];
+const CLEANING_ALGORITHM_SECTIONS = [
+  {
+    title: '数据入口',
+    rows: [
+      '输入只使用 diagnostic.jsonl；Android 仍只是数据产出端',
+      '先复原 raw_location、sampling_policy、gnss_snapshot、motion_summary',
+      '所有连续性、GAP、速度计算使用 elapsedRealtimeNanos'
+    ]
+  },
+  {
+    title: 'Intake 硬门槛',
+    rows: [
+      'provider 必须是 gps，mock、network、fused 不进清洗轨迹',
+      'accuracy 必须有效且 <= 80m',
+      '拒绝 duplicate、out-of-order、早于记录开始、采样 epoch 不匹配的点'
+    ]
+  },
+  {
+    title: '点云与权重',
+    rows: [
+      '轨迹点坐标来自点云 weighted center，不直接取 raw 坐标',
+      'weight = accuracy * GNSS * motion * temporal * spatial',
+      'temporal 使用 20s 衰减；GNSS 由 usedInFixTotal 和 top4AvgCn0 评分'
+    ]
+  },
+  {
+    title: '关键阈值',
+    rows: [
+      'GAP > 120s 进入 RECOVERY_CLOUD，恢复点 delta=0',
+      'accuracy > 30m 进入 WEAK_CLOUD，不进入清洗轨迹',
+      '静止阈值 = max(5m, accuracy * 1.5)',
+      '速度 > 12m/s 视为异常弱点；速度 >= 3.5m/s 且位移 >= 20m 视为疑似交通工具'
+    ]
+  },
+  {
+    title: '为什么这样配',
+    rows: [
+      '80m 是 raw 进入复算的宽门槛，用于保留弱 GPS 诊断证据',
+      '30m 是可信点云分界，避免弱信号直接污染目标轨迹',
+      '120s GAP 避免把长时间无定位两端直线计入徒步距离',
+      '交通工具阈值只拦截明显超出徒步范围的移动，减少误伤慢速徒步'
+    ]
+  }
+];
 
 const state = {
   datasets: [],
@@ -14,7 +63,8 @@ const state = {
   selectedPoint: null,
   map: null,
   mapLoaded: false,
-  popup: null
+  popup: null,
+  cleaningConfig: normalizeTargetProductConfig()
 };
 
 const elements = {
@@ -24,7 +74,21 @@ const elements = {
   clearButton: document.querySelector('#clearButton'),
   showRaw: document.querySelector('#showRaw'),
   showTrusted: document.querySelector('#showTrusted'),
+  showCleaned: document.querySelector('#showCleaned'),
   showPoints: document.querySelector('#showPoints'),
+  configStateText: document.querySelector('#configStateText'),
+  applyConfigButton: document.querySelector('#applyConfigButton'),
+  resetConfigButton: document.querySelector('#resetConfigButton'),
+  configInputs: {
+    maxIntakeAccuracyMeters: document.querySelector('#maxIntakeAccuracyMeters'),
+    weakCloudAccuracyMeters: document.querySelector('#weakCloudAccuracyMeters'),
+    gapSeconds: document.querySelector('#gapSeconds'),
+    stationaryDistanceMeters: document.querySelector('#stationaryDistanceMeters'),
+    transportSpeedMetersPerSecond: document.querySelector('#transportSpeedMetersPerSecond'),
+    transportMinDistanceMeters: document.querySelector('#transportMinDistanceMeters')
+  },
+  importStatus: document.querySelector('#importStatus'),
+  importSpinner: document.querySelector('#importSpinner'),
   importText: document.querySelector('#importText'),
   datasetCountText: document.querySelector('#datasetCountText'),
   datasetRows: document.querySelector('#datasetRows'),
@@ -43,14 +107,19 @@ elements.fileInput.addEventListener('change', async (event) => {
 });
 elements.clearButton.addEventListener('click', clearAll);
 elements.fitBoundsButton.addEventListener('click', fitAllBounds);
-for (const input of [elements.showRaw, elements.showTrusted, elements.showPoints]) {
+elements.applyConfigButton.addEventListener('click', applyCleaningConfig);
+elements.resetConfigButton.addEventListener('click', resetCleaningConfig);
+for (const input of [elements.showRaw, elements.showTrusted, elements.showCleaned, elements.showPoints]) {
   input.addEventListener('change', renderMap);
 }
 
 initMap();
+renderConfigInputs();
 render();
 
 async function importFiles(files, fromDirectory) {
+  setLoading(true, '正在识别 diagnostic.jsonl...');
+  await nextFrame();
   const diagnosticFiles = files
     .filter((file) => {
       const path = file.webkitRelativePath || file.name;
@@ -59,27 +128,43 @@ async function importFiles(files, fromDirectory) {
     .sort((left, right) =>
       (left.webkitRelativePath || left.name).localeCompare(right.webkitRelativePath || right.name));
   const datasets = [];
-  for (const file of diagnosticFiles) {
-    datasets.push(await readDiagnosticFile(file, datasets.length));
+  const errors = [];
+  try {
+    for (const file of diagnosticFiles) {
+      const filePath = file.webkitRelativePath || file.name;
+      setLoading(true, `正在解析 ${datasets.length + 1}/${diagnosticFiles.length}: ${filePath}`);
+      await nextFrame();
+      try {
+        datasets.push(await readDiagnosticFile(file, datasets.length));
+      } catch (error) {
+        errors.push(`${filePath}: ${error.message}`);
+      }
+    }
+    state.datasets = datasets;
+    state.selectedDatasetId = datasets[0]?.id || null;
+    state.selectedPoint = null;
+    setImportText(errors.length
+      ? `找到 ${diagnosticFiles.length} 个 diagnostic.jsonl，已导入 ${datasets.length} 个，失败 ${errors.length} 个：${errors[0]}`
+      : `找到 ${diagnosticFiles.length} 个 diagnostic.jsonl，已导入 ${datasets.length} 个`);
+    render();
+    fitAllBounds();
+  } finally {
+    setLoading(false);
   }
-  state.datasets = datasets;
-  state.selectedDatasetId = datasets[0]?.id || null;
-  state.selectedPoint = null;
-  elements.importText.textContent = `找到 ${diagnosticFiles.length} 个 diagnostic.jsonl，已导入 ${datasets.length} 个`;
-  render();
-  fitAllBounds();
 }
 
 async function readDiagnosticFile(file, index) {
   const filePath = file.webkitRelativePath || file.name;
   const text = await file.text();
   const model = parseDiagnosticJsonl(text, filePath);
+  const targetProduct = buildTargetTrackProduct(model, { config: state.cleaningConfig });
   return {
     id: `dataset-${index + 1}`,
     fileName: file.name,
     filePath,
     color: COLORS[index % COLORS.length],
     model,
+    targetProduct,
     targetOutput: buildTargetOutput(model),
     visible: true
   };
@@ -91,10 +176,80 @@ function clearAll() {
   state.selectedPoint = null;
   elements.folderInput.value = '';
   elements.fileInput.value = '';
-  elements.importText.textContent = '等待导入 diagnostic.jsonl';
+  setImportText('等待导入 diagnostic.jsonl');
   if (state.popup) state.popup.remove();
   render();
   renderMap();
+}
+
+function applyCleaningConfig() {
+  state.cleaningConfig = normalizeTargetProductConfig(readConfigInputs());
+  recomputeTargetProducts();
+  renderConfigInputs();
+  setImportText(state.datasets.length
+    ? `已应用自定义清洗参数，重新计算 ${state.datasets.length} 个文件`
+    : '已应用自定义清洗参数，等待导入 diagnostic.jsonl');
+  render();
+}
+
+function resetCleaningConfig() {
+  state.cleaningConfig = normalizeTargetProductConfig(DEFAULT_TARGET_PRODUCT_CONFIG);
+  recomputeTargetProducts();
+  renderConfigInputs();
+  setImportText(state.datasets.length
+    ? `已恢复默认清洗参数，重新计算 ${state.datasets.length} 个文件`
+    : '已恢复默认清洗参数，等待导入 diagnostic.jsonl');
+  render();
+}
+
+function readConfigInputs() {
+  return Object.fromEntries(Object.entries(elements.configInputs)
+    .map(([key, input]) => [key, Number(input.value)]));
+}
+
+function renderConfigInputs() {
+  for (const [key, input] of Object.entries(elements.configInputs)) {
+    input.value = state.cleaningConfig[key];
+  }
+  elements.configStateText.textContent = isDefaultCleaningConfig() ? '默认' : '自定义';
+}
+
+function isDefaultCleaningConfig() {
+  return Object.entries(DEFAULT_TARGET_PRODUCT_CONFIG)
+    .every(([key, value]) => state.cleaningConfig[key] === value);
+}
+
+function recomputeTargetProducts() {
+  for (const dataset of state.datasets) {
+    dataset.targetProduct = buildTargetTrackProduct(dataset.model, { config: state.cleaningConfig });
+  }
+}
+
+function setImportText(text) {
+  elements.importText.textContent = text;
+}
+
+function setLoading(loading, text = null) {
+  elements.importStatus.classList.toggle('loading', loading);
+  elements.importStatus.setAttribute('aria-busy', loading ? 'true' : 'false');
+  for (const element of [
+    elements.folderInput,
+    elements.fileInput,
+    elements.fitBoundsButton,
+    elements.clearButton
+  ]) {
+    element.disabled = loading;
+  }
+  for (const label of document.querySelectorAll('.file-button')) {
+    label.classList.toggle('disabled', loading);
+  }
+  if (text !== null) {
+    setImportText(text);
+  }
+}
+
+function nextFrame() {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
 function render() {
@@ -131,16 +286,16 @@ function renderDatasets() {
 }
 
 function datasetRowMarkup(dataset) {
-  const output = dataset.targetOutput;
+  const product = dataset.targetProduct;
   return `
     <button class="dataset-row ${dataset.id === state.selectedDatasetId ? 'selected' : ''}" type="button" data-dataset-id="${dataset.id}">
       <span class="file-cell"><i style="background:${dataset.color}"></i><b>${escapeHtml(dataset.fileName)}</b></span>
       <span>${escapeHtml(dataset.model.deviceLabel || '-')}</span>
-      <span>${output.trackPointCount}</span>
-      <span>${formatMeters(output.totalDistanceMeters)}</span>
-      <span>${formatDuration(output.movingTimeSeconds)}</span>
-      <span>${formatPace(output.paceSecondsPerKm)}</span>
-      <span>${formatAscent(output.selectedTotalAscentMeters)}</span>
+      <span>${product.stats.trustedPointCount}</span>
+      <span>${formatMeters(product.stats.totalDistanceMeters)}</span>
+      <span>${formatDuration(product.stats.movingTimeSeconds)}</span>
+      <span>${formatPace(paceSecondsPerKm(product.stats.totalDistanceMeters, product.stats.movingTimeSeconds))}</span>
+      <span>${formatAscent(dataset.targetOutput.selectedTotalAscentMeters)}</span>
       <input data-visible-id="${dataset.id}" type="checkbox" ${dataset.visible ? 'checked' : ''} aria-label="显示 ${escapeHtml(dataset.fileName)}" />
     </button>
   `;
@@ -154,7 +309,21 @@ function renderSelectedSummary() {
     return;
   }
   const { summaries, findings } = dataset.targetOutput;
+  const product = dataset.targetProduct;
   elements.sampleSummary.innerHTML = `
+    ${summaryBlock('target product', [
+      `参数状态 ${product.usesDefaultConfig ? '默认' : '自定义'}`,
+      `目标可信点 ${product.stats.trustedPointCount}`,
+      `目标里程 ${formatMeters(product.stats.totalDistanceMeters)}`,
+      `目标运动耗时 ${formatDuration(product.stats.movingTimeSeconds)}`,
+      `segment ${product.stats.segmentCount} / GAP ${product.stats.gapCount}`,
+      `weak ${product.stats.weakPointCount} / reject ${product.stats.rejectedPointCount} / intake ${product.stats.intakeRejectedPointCount}`,
+      `Android 对齐 ${product.alignment.matchedDecisionCount}/${product.alignment.comparedDecisionCount}`,
+      product.alignment.mismatches.length
+        ? `差异 ${product.alignment.mismatches.length}`
+        : '差异 0'
+    ])}
+    ${algorithmBlock()}
     ${summaryBlock('raw_location', [
       `数量 ${summaries.raw.count}`,
       `时间范围 ${formatNanoRange(summaries.raw.timeStartNanos, summaries.raw.timeEndNanos)}`,
@@ -185,6 +354,7 @@ function renderSelectedSummary() {
       `still ${summaries.motion.stillCount} (${formatPercent(summaries.motion.stillRatio)})`,
       `stationary/recovery 相关 ${summaries.motion.stationaryEvidenceCount}`
     ])}
+    ${product.findings.length ? summaryBlock('target findings', product.findings) : ''}
     ${findings.length ? summaryBlock('findings', findings) : ''}
   `;
 }
@@ -194,6 +364,26 @@ function summaryBlock(title, rows) {
     <section class="summary-block">
       <h3>${escapeHtml(title)}</h3>
       ${rows.map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
+    </section>
+  `;
+}
+
+function algorithmBlock() {
+  const config = state.cleaningConfig;
+  return `
+    <section class="summary-block algorithm-block">
+      <h3>清洗算法实现</h3>
+      <div class="algorithm-section">
+        <b>当前参数</b>
+        <span>accuracy 上限 ${formatPlainNumber(config.maxIntakeAccuracyMeters)}m；弱点云 ${formatPlainNumber(config.weakCloudAccuracyMeters)}m；GAP ${formatPlainNumber(config.gapSeconds)}s</span>
+        <span>静止基础距离 ${formatPlainNumber(config.stationaryDistanceMeters)}m；交通工具速度 ${formatPlainNumber(config.transportSpeedMetersPerSecond)}m/s；交通工具位移 ${formatPlainNumber(config.transportMinDistanceMeters)}m</span>
+      </div>
+      ${CLEANING_ALGORITHM_SECTIONS.map((section) => `
+        <div class="algorithm-section">
+          <b>${escapeHtml(section.title)}</b>
+          ${section.rows.map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
+        </div>
+      `).join('')}
     </section>
   `;
 }
@@ -297,6 +487,7 @@ function initMap() {
 function addMapLayers() {
   state.map.addSource('raw-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('trusted-lines', { type: 'geojson', data: emptyFeatureCollection() });
+  state.map.addSource('cleaned-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('points', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addLayer({
     id: 'raw-lines',
@@ -316,6 +507,16 @@ function addMapLayers() {
     paint: {
       'line-color': ['get', 'color'],
       'line-width': 5,
+      'line-opacity': 0.95
+    }
+  });
+  state.map.addLayer({
+    id: 'cleaned-lines',
+    type: 'line',
+    source: 'cleaned-lines',
+    paint: {
+      'line-color': '#ef4444',
+      'line-width': 4,
       'line-opacity': 0.95
     }
   });
@@ -364,6 +565,7 @@ function renderMap() {
   const visible = state.datasets.filter((dataset) => dataset.visible);
   state.map.getSource('raw-lines').setData(elements.showRaw.checked ? rawFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('trusted-lines').setData(elements.showTrusted.checked ? trustedFeatureCollection(visible) : emptyFeatureCollection());
+  state.map.getSource('cleaned-lines').setData(elements.showCleaned.checked ? cleanedFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('points').setData(elements.showPoints.checked ? pointFeatureCollection(visible) : emptyFeatureCollection());
 }
 
@@ -383,6 +585,15 @@ function trustedFeatureCollection(datasets) {
       dataset.model.segments
         .filter((segment) => segment.points.length > 1)
         .map((segment) => lineFeature(dataset, segment.points, 'trusted', segment.segmentId)))
+  };
+}
+
+function cleanedFeatureCollection(datasets) {
+  return {
+    type: 'FeatureCollection',
+    features: datasets
+      .filter((dataset) => dataset.targetProduct.track.length > 1)
+      .map((dataset) => lineFeature(dataset, dataset.targetProduct.track, 'cleaned'))
   };
 }
 
@@ -484,6 +695,12 @@ function formatPace(value) {
   return `${minutes}'${seconds}"/km`;
 }
 
+function paceSecondsPerKm(distanceMeters, movingTimeSeconds) {
+  return distanceMeters > 0 && movingTimeSeconds > 0
+    ? movingTimeSeconds / (distanceMeters / 1000)
+    : null;
+}
+
 function formatSpeed(value) {
   return Number.isFinite(value) ? `${value.toFixed(2)} m/s` : '-';
 }
@@ -494,6 +711,11 @@ function formatCn0(value) {
 
 function formatOneDecimal(value) {
   return Number.isFinite(value) ? value.toFixed(1) : '-';
+}
+
+function formatPlainNumber(value) {
+  if (!Number.isFinite(value)) return '-';
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 function formatPercent(value) {

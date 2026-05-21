@@ -99,11 +99,11 @@ const DECISION_REASON_EXPLANATIONS = {
 };
 
 export function isDiagnosticJsonlPath(path) {
-  return /(^|\/)diagnostic\.jsonl$/i.test(String(path || ''));
+  return /(^|\/)diagnostic\.jsonl(?:\.json)?$/i.test(String(path || ''));
 }
 
 export function isDiagnosticCandidatePath(path) {
-  return /\.jsonl$/i.test(String(path || ''));
+  return /\.jsonl(?:\.json)?$/i.test(String(path || ''));
 }
 
 export function parseDiagnosticJsonl(text, filePath = 'diagnostic.jsonl') {
