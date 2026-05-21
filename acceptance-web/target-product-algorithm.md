@@ -436,10 +436,11 @@ TRANSPORT_RISK_CLOUD:
 
 STATIONARY_CLOUD:
   stable 且近期 still-motion 支持 -> anchor / stationary_anchor
-  连续性合理且无近期静止 motion 支持 -> accept / continuity_rescue_stationary_jitter
+  连续性合理但无近期静止 motion 支持 -> reject / stationary_continuity_jitter
   否则 -> reject / stationary_cloud_jitter
 
 RECOVERY_CLOUD:
+  连续高速/疑似交通工具恢复 -> accept / recovery_transport_suspected_kept
   stable -> accept / gap_recovery
   连续性合理 -> accept / continuity_rescue_gap_recovery
   否则 -> weak / recovery_cloud_pending
@@ -522,10 +523,57 @@ transport_suspected_kept:
   movingTimeDeltaSeconds = elapsed(currentRaw, previousTrustedTrackPoint)
   进入目标成品，但保留疑似交通工具风险 reason
 
+recovery_transport_suspected_kept:
+  coordinateSource = raw
+  startsNewSegment = true
+  distanceDeltaMeters = 0
+  movingTimeDeltaSeconds = 0
+  说明：长 GAP 后恢复段出现连续高速移动时，作为新的成品轨迹 segment 保留，不累计 GAP 两端直线
+
 stationary_anchor:
   coordinateSource = cloud_center
   distanceDeltaMeters = 0
   movingTimeDeltaSeconds = 0
+
+stationary_continuity_jitter:
+  不进入目标成品轨迹
+  保留在 excluded.rejected
+  说明：静止点云附近即使位置连续性合理，只要缺少近期 still-motion 支持，也不能把它串进成品轨迹线
+
+stationary_anchor_redundant:
+  不进入目标成品轨迹
+  保留在 excluded.rejected
+  说明：同一静止簇只保留一个 anchor，后续静止 anchor 作为重复静止证据排除
+
+stationary_gap_recovery_jitter:
+  不进入目标成品轨迹
+  保留在 excluded.rejected
+  说明：长时间静止排除点造成的时间 GAP，如果恢复点仍在同一静止 anchor 附近，不开启新的成品 segment
+
+isolated_stationary_movement:
+  不进入目标成品轨迹
+  保留在 excluded.rejected
+  说明：孤立 moving_good_fix 随后立即落入同一静止簇时，视为静止区域误动点
+
+motion_supported_low_speed:
+  coordinateSource = raw
+  进入目标成品轨迹
+  说明：静止阈值附近如果有近期 active motion，且低速位移连续合理，保留为真实低速移动
+
+stationary_low_speed_tail:
+  不进入目标成品轨迹
+  保留在 excluded.rejected
+  说明：低速移动点如果紧贴后续静止 anchor，视为进入静止簇前的尾部抖动，不串进成品线
+
+continuity_rescue_low_accuracy:
+  coordinateSource = raw
+  进入目标成品轨迹
+  说明：只救回轻微弱精度、仍有参与定位卫星且位移达到最小门槛的连续点；精度过弱或 used-in-fix 过低时保持 weak
+
+stationary_low_accuracy_tail:
+  不进入目标成品轨迹
+  保留在 excluded.rejected
+  说明：低精度救回点如果紧贴后续静止 anchor，视为进入静止簇前的弱精度尾巴，不串进成品线
 
 gap_recovery:
   coordinateSource = raw

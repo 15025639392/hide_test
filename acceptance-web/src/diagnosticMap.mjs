@@ -31,10 +31,20 @@ const DECISION_REASON_EXPLANATIONS = {
     meaning: '距上一可信点间隔过长，恢复点开启或延续 segment，但当前恢复 delta 不回填距离。',
     evidence: '重点看间隔秒数、no_location_timeout、sampling_policy、GAP 前后 GNSS snapshot。'
   },
+  continuity_rescue_gap_recovery: {
+    title: 'GAP 后连续性救援',
+    meaning: '长 GAP 后点云还未完全稳定，但与恢复期上一 raw 点连续性合理，因此保留为恢复段轨迹点。',
+    evidence: '重点看恢复期相邻 raw 点距离、时间差、推算速度、accuracy 和 GAP 前后 segment 边界。'
+  },
   transport_suspected_kept: {
     title: '交通工具风险保留',
     meaning: '速度和位移触发交通工具风险，但该风险只作为解释标签，仍保留进目标轨迹，避免误删正常轨迹。',
-    evidence: '重点看该段是否可能是快走、跑动、下坡、乘车或其他非徒步移动。'
+    evidence: '重点看该段是否可能是快走、跑动、下坡、乘车或其他移动方式。'
+  },
+  recovery_transport_suspected_kept: {
+    title: 'GAP 后交通风险保留',
+    meaning: '长 GAP 后出现连续高速或大位移恢复样本，作为新的成品轨迹段保留；首个恢复点不回填 GAP 距离。',
+    evidence: '重点看恢复期相邻 raw 点速度、位移、accuracy，以及 startsNewSegment 和 distanceDelta 是否为 0。'
   },
   recovery_cloud_pending: {
     title: '恢复点云等待稳定',
@@ -50,6 +60,51 @@ const DECISION_REASON_EXPLANATIONS = {
     title: '静止点云漂移',
     meaning: '点位接近静止区域，但没有足够 still-motion 支持成为 anchor；不累计距离，也不单独触发 PAUSED。',
     evidence: '重点看点云半径、accuracy、device_motion_window 和距上一可信 TrackPoint 的距离，慢速移动也可能落在这里。'
+  },
+  stationary_continuity_jitter: {
+    title: '静止连续漂移',
+    meaning: '该点与上一可信点连续性看似合理，但处于静止点云范围且缺少真实移动支撑，因此按静止漂移剔除。',
+    evidence: '重点看距上一可信点距离、时间差、推算速度、stationaryThreshold 和近期 motion 是否仍然静止。'
+  },
+  stationary_anchor_redundant: {
+    title: '重复静止 anchor',
+    meaning: '当前静止 anchor 与已有静止 anchor 太近，只会重复表达同一停留位置，因此不进入成品轨迹。',
+    evidence: '重点看两个 anchor 间距离是否小于静止阈值，以及 cloud center 是否代表同一簇。'
+  },
+  stationary_gap_recovery_jitter: {
+    title: '静止 GAP 恢复漂移',
+    meaning: 'GAP 后恢复点仍贴近已有静止 anchor，说明更像静止漂移而非真实移动，不开启新路线线段。',
+    evidence: '重点看 GAP 后恢复点与 active stationary anchor 的距离、accuracy 和 sampling_policy 状态。'
+  },
+  stationary_session_anchor: {
+    title: '整段静止压缩',
+    meaning: '整段 motion 几乎全静止且静止 anchor 占主导，Web 将成品轨迹压缩为一个稳定中心点。',
+    evidence: '重点看 stationarySessionStillRatio、stationarySessionAnchorRatio，以及气压垂直运动是否阻止压缩。'
+  },
+  isolated_stationary_movement: {
+    title: '孤立静止移动点',
+    meaning: '一个移动好点后立即回到近距离静止 anchor，更像短促 GPS 漂移或停留边界抖动，因此剔除。',
+    evidence: '重点看该点与下一 stationary_anchor 的距离，以及前后是否存在持续移动证据。'
+  },
+  motion_supported_low_speed: {
+    title: '运动支持低速点',
+    meaning: 'GPS 位移较小但近期 motion 显示设备在动，作为低速真实移动保留进成品轨迹。',
+    evidence: '重点看 device_motion_window、raw 位移、时间差、速度区间和是否随后形成连续移动。'
+  },
+  stationary_low_speed_tail: {
+    title: '静止低速尾巴',
+    meaning: '低速移动点紧贴后续静止 anchor，说明更像进入静止前的尾部抖动，回收为 reject。',
+    evidence: '重点看该点到后续 stationary_anchor 的距离，以及后续是否持续保持静止。'
+  },
+  continuity_rescue_low_accuracy: {
+    title: '低精度连续性救援',
+    meaning: '弱精度点满足窄化后的 GNSS 和连续性条件，作为低精度但可信的连续移动保留。',
+    evidence: '重点看 accuracy 是否 <= 35m、usedInFixTotal 是否 >= 5、位移是否 >= 2.5m，以及速度是否合理。'
+  },
+  stationary_low_accuracy_tail: {
+    title: '静止低精度尾巴',
+    meaning: '低精度救援点紧贴后续静止 anchor，说明更像静止尾部漂移，撤回为 reject。',
+    evidence: '重点看救援点到后续 stationary_anchor 的距离、accuracy、usedInFixTotal 和后续静止证据。'
   },
   moving_cloud_unstable: {
     title: '移动点云未稳定',
@@ -143,13 +198,12 @@ export function buildTargetOutput(model, targetProduct = null) {
     ? movingTimeSeconds / (totalDistanceMeters / 1000)
     : null;
   const ascent = ascentEvidence(model.events);
-  const explainedRawCount = targetProduct
-    ? targetProduct.stats.trustedPointCount
-      + targetProduct.stats.weakPointCount
-      + targetProduct.stats.rejectedPointCount
-      + targetProduct.stats.intakeRejectedPointCount
-    : model.points.filter((point) => point.decision).length;
-  const unexplainedRawCount = Math.max(0, model.points.length - explainedRawCount);
+  const explainedRawPointIds = targetProduct
+    ? explainedRawPointIdsFromTargetProduct(targetProduct)
+    : null;
+  const unexplainedRawCount = targetProduct
+    ? model.points.filter((point) => !explainedRawPointIds.has(point.rawPointId)).length
+    : model.points.filter((point) => !point.decision).length;
   const findings = [];
   if (model.parseErrors.length > 0) {
     findings.push(`解析错误 ${model.parseErrors.length} 行`);
@@ -848,6 +902,9 @@ function rawSummary(points, targetProduct = null) {
   const elapsedValues = points
     .map((point) => point.elapsedRealtimeNanos)
     .filter((value) => Number.isFinite(value));
+  const targetProductExplainedRawPointIds = targetProduct
+    ? explainedRawPointIdsFromTargetProduct(targetProduct)
+    : null;
   return {
     count: points.length,
     timeStartNanos: elapsedValues.length ? Math.min(...elapsedValues) : null,
@@ -855,12 +912,30 @@ function rawSummary(points, targetProduct = null) {
     minAccuracyMeters: accuracies.length ? Math.min(...accuracies) : null,
     maxAccuracyMeters: accuracies.length ? Math.max(...accuracies) : null,
     unexplainedCount: targetProduct
-      ? Math.max(0, points.length - targetProduct.stats.trustedPointCount
-        - targetProduct.stats.weakPointCount
-        - targetProduct.stats.rejectedPointCount
-        - targetProduct.stats.intakeRejectedPointCount)
+      ? points.filter((point) => !targetProductExplainedRawPointIds.has(point.rawPointId)).length
       : points.filter((point) => !point.decision).length
   };
+}
+
+function explainedRawPointIdsFromTargetProduct(targetProduct) {
+  const ids = new Set();
+  for (const point of targetProduct.track || []) {
+    addRawPointId(ids, point.sourceRawPointId);
+    for (const rawPointId of point.contributingRawPointIds || []) {
+      addRawPointId(ids, rawPointId);
+    }
+  }
+  for (const bucket of ['weak', 'rejected', 'intakeRejected']) {
+    for (const point of targetProduct.excluded?.[bucket] || []) {
+      addRawPointId(ids, point.rawPointId);
+    }
+  }
+  return ids;
+}
+
+function addRawPointId(ids, rawPointId) {
+  const normalized = Number(rawPointId);
+  if (Number.isFinite(normalized)) ids.add(normalized);
 }
 
 function decisionSummary(model, targetProduct = null) {

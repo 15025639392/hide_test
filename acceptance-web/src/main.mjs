@@ -33,7 +33,7 @@ const CLEANING_ALGORITHM_SECTIONS = [
   {
     title: '点云与权重',
     rows: [
-      '轨迹点坐标来自点云 weighted center，不直接取 raw 坐标',
+      '静止 anchor 使用点云 weighted center；真实移动、GAP 恢复、交通风险和连续性救援使用 raw 坐标',
       'weight = accuracy * GNSS * motion * temporal * spatial',
       'temporal 使用 20s 衰减；GNSS 由 usedInFixTotal 和 top4AvgCn0 评分'
     ]
@@ -53,8 +53,9 @@ const CLEANING_ALGORITHM_SECTIONS = [
     rows: [
       '80m 是 raw 进入复算的宽门槛，用于保留弱 GPS 诊断证据',
       '30m 是可信点云分界，避免弱信号直接污染目标轨迹',
-      '120s GAP 避免把长时间无定位两端直线计入徒步距离',
-      '交通工具风险只做解释标签，不作为删除条件，避免把快走、跑动、下坡或正常轨迹误删',
+      '120s GAP 避免把长时间无定位两端直线计入成品距离',
+      '交通工具风险只做解释标签，不作为删除条件，成品轨迹保留真实移动但标记风险',
+      '低速点必须有近期运动证据才能进入轨迹，低精度点必须有 GNSS usedInFix 和位移下限才能被救援',
       '整段 motion 几乎全静止且 stationary_anchor 占主导时，Web 成品轨迹压缩为一个稳定中心点'
     ]
   }
@@ -369,7 +370,8 @@ function cleanedPointDetailsMarkup(dataset, point) {
 }
 
 function pointDetailsMarkup(dataset, point) {
-  const decision = point.decision || {};
+  const recomputedDecision = rawPointDecision(dataset, point);
+  const decision = recomputedDecision || point.decision || {};
   const context = point.diagnosticContext || {};
   const snapshot = point.gnss;
   return `
@@ -398,7 +400,18 @@ function pointDetailsMarkup(dataset, point) {
       `distanceDelta ${formatMeters(decision.distanceDeltaMeters)}`,
       `movingTimeDelta ${formatDuration(decision.movingTimeDeltaSeconds)}`
     ])}
-    ${point.insights?.length ? detailBlock('解释', point.insights.map((item) => item.text)) : ''}
+    ${!recomputedDecision && point.insights?.length
+      ? detailBlock('解释', point.insights.map((item) => item.text))
+      : ''}
+    ${decision.result ? detailBlock('Web 复算解释', [
+      `result ${decision.result}`,
+      `reason ${decision.reason || '-'}`,
+      `source ${decision.source || 'targetProduct'}`,
+      `segmentId ${valueOrDash(decision.segmentId)}`,
+      `cloudType ${decision.cloudType || '-'}`,
+      `distanceDelta ${formatMeters(decision.distanceDeltaMeters)}`,
+      `movingTimeDelta ${formatDuration(decision.movingTimeDeltaSeconds)}`
+    ]) : ''}
   `;
 }
 
@@ -593,18 +606,23 @@ function cleanedFeatureCollection(datasets) {
 function pointFeatureCollection(datasets) {
   return {
     type: 'FeatureCollection',
-    features: datasets.flatMap((dataset) => dataset.model.points.map((point) => ({
-      type: 'Feature',
-      properties: {
-        datasetId: dataset.id,
-        rawPointId: point.rawPointId,
-        kind: point.kind,
-        color: dataset.color,
-        selected: state.selectedPoint?.dataset.id === dataset.id
-          && state.selectedPoint?.point.rawPointId === point.rawPointId
-      },
-      geometry: { type: 'Point', coordinates: lngLat(point) }
-    })))
+    features: datasets.flatMap((dataset) => dataset.model.points.map((point) => {
+      const decision = rawPointDecision(dataset, point);
+      return {
+        type: 'Feature',
+        properties: {
+          datasetId: dataset.id,
+          rawPointId: point.rawPointId,
+          kind: decision?.kind || point.kind,
+          result: decision?.result || point.decision?.result || '',
+          reason: decision?.reason || point.decision?.reason || '',
+          color: dataset.color,
+          selected: state.selectedPoint?.dataset.id === dataset.id
+            && state.selectedPoint?.point.rawPointId === point.rawPointId
+        },
+        geometry: { type: 'Point', coordinates: lngLat(point) }
+      };
+    }))
   };
 }
 
@@ -641,12 +659,64 @@ function selectPoint(datasetId, rawPointId, showPopup = false) {
   state.selectedDatasetId = dataset.id;
   state.selectedPoint = { dataset, point, cleaned: false };
   if (showPopup && state.popup) {
+    const decision = rawPointDecision(dataset, point) || point.decision || {};
     state.popup
       .setLngLat(lngLat(point))
-      .setHTML(`<strong>${escapeHtml(dataset.fileName)}</strong><br/>Raw#${point.rawPointId} ${escapeHtml(point.decision?.result || 'raw')}<br/>${escapeHtml(point.decision?.reason || '-')}`)
+      .setHTML(`<strong>${escapeHtml(dataset.fileName)}</strong><br/>Raw#${point.rawPointId} ${escapeHtml(decision.result || 'raw')}<br/>${escapeHtml(decision.reason || '-')}`)
       .addTo(state.map);
   }
   render();
+}
+
+function rawPointDecision(dataset, point) {
+  if (!dataset?.targetProduct || !point) return null;
+  const rawPointId = point.rawPointId;
+  const trusted = dataset.targetProduct.track
+    .find((item) => item.sourceRawPointId === rawPointId);
+  if (trusted) {
+    return {
+      ...trusted,
+      kind: trusted.result,
+      source: 'targetProduct.track'
+    };
+  }
+  const contributingTrusted = dataset.targetProduct.track
+    .find((item) => (item.contributingRawPointIds || []).includes(rawPointId));
+  const weak = dataset.targetProduct.excluded.weak
+    .find((item) => item.rawPointId === rawPointId);
+  if (weak) {
+    return {
+      ...weak,
+      kind: 'weak',
+      source: 'targetProduct.excluded.weak'
+    };
+  }
+  const rejected = dataset.targetProduct.excluded.rejected
+    .find((item) => item.rawPointId === rawPointId);
+  if (rejected) {
+    return {
+      ...rejected,
+      kind: 'reject',
+      source: 'targetProduct.excluded.rejected'
+    };
+  }
+  const intakeRejected = dataset.targetProduct.excluded.intakeRejected
+    .find((item) => item.rawPointId === rawPointId);
+  if (intakeRejected) {
+    return {
+      ...intakeRejected,
+      kind: 'intake_rejected',
+      source: 'targetProduct.excluded.intakeRejected'
+    };
+  }
+  if (contributingTrusted) {
+    return {
+      ...contributingTrusted,
+      kind: contributingTrusted.result,
+      source: 'targetProduct.track.contributingRawPointIds'
+    };
+  }
+  return null;
 }
 
 function selectCleanedPoint(datasetId, trackPointId, showPopup = false) {

@@ -3,6 +3,12 @@ const START_TOLERANCE_NANOS = 1_000_000_000;
 const FIRST_FIX_GOOD_ACCURACY_METERS = 20;
 const MOTION_WINDOW_NANOS = 5_000_000_000;
 const EARTH_RADIUS_METERS = 6_371_000;
+const MOTION_SUPPORTED_MIN_SPEED_METERS_PER_SECOND = 0.8;
+const MOTION_SUPPORTED_MAX_SPEED_METERS_PER_SECOND = 3.5;
+const MOTION_SUPPORTED_MIN_DISTANCE_METERS = 2.5;
+const LOW_ACCURACY_RESCUE_MAX_ACCURACY_METERS = 35;
+const LOW_ACCURACY_RESCUE_MIN_USED_IN_FIX = 5;
+const LOW_ACCURACY_RESCUE_MIN_DISTANCE_METERS = 2.5;
 
 export const DEFAULT_TARGET_PRODUCT_CONFIG = Object.freeze({
   maxIntakeAccuracyMeters: 80,
@@ -42,6 +48,7 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
   product.config = config;
   product.usesDefaultConfig = isDefaultConfig(config);
   let previousTrustedTrackPoint = null;
+  let activeStationaryAnchor = null;
   let segmentId = 1;
   let trackPointId = 0;
   let decisionId = 0;
@@ -64,12 +71,18 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
     decisionId++;
 
     if (decision.result === 'anchor' || decision.result === 'accept') {
-      if (decision.reason === 'transport_suspected_kept') {
-        product.stats.transportCount++;
+      if (isRedundantStationaryAnchor(rawPoint, decision, activeStationaryAnchor, config)) {
+        product.excluded.rejected.push(excludedPoint(rawPoint, 'reject',
+          'stationary_anchor_redundant', epoch, decision));
+        continue;
+      }
+      if (isStationaryGapRecovery(rawPoint, decision, activeStationaryAnchor, config)) {
+        product.excluded.rejected.push(excludedPoint(rawPoint, 'reject',
+          'stationary_gap_recovery_jitter', epoch, decision));
+        continue;
       }
       if (decision.startsNewSegment && previousTrustedTrackPoint) {
         segmentId++;
-        product.stats.gapCount++;
       }
       const targetPoint = {
         trackPointId: ++trackPointId,
@@ -98,6 +111,9 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
       product.stats.totalDistanceMeters += decision.distanceDeltaMeters;
       product.stats.movingTimeSeconds += decision.movingTimeDeltaSeconds;
       previousTrustedTrackPoint = targetPoint;
+      activeStationaryAnchor = decision.reason === 'stationary_anchor'
+        ? targetPoint
+        : null;
     } else if (decision.result === 'weak') {
       product.excluded.weak.push(excludedPoint(rawPoint, decision.result, decision.reason,
         epoch, decision));
@@ -108,16 +124,119 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
   }
 
   product.stats.rawPointCount = rawPointCount;
+  recomputeProductStats(product);
+  pruneIsolatedStationaryMovement(product, config);
+  pruneStationaryLowSpeedTail(product, config);
+  collapseStationarySessionIfNeeded(product, evidence);
+  product.findings = buildFindings(product, evidence);
+  return product;
+}
+
+function isRedundantStationaryAnchor(rawPoint, decision, activeStationaryAnchor, config) {
+  if (decision.reason !== 'stationary_anchor' || !activeStationaryAnchor) {
+    return false;
+  }
+  const distance = distanceMeters(activeStationaryAnchor.lat, activeStationaryAnchor.lng,
+    decision.cloudCenterLatitude, decision.cloudCenterLongitude);
+  return distance <= stationaryThreshold(rawPoint, config);
+}
+
+function isStationaryGapRecovery(rawPoint, decision, activeStationaryAnchor, config) {
+  if (decision.reason !== 'gap_recovery' || !activeStationaryAnchor) {
+    return false;
+  }
+  const distance = distanceMeters(activeStationaryAnchor.lat, activeStationaryAnchor.lng,
+    decision.cloudCenterLatitude, decision.cloudCenterLongitude);
+  return distance <= stationaryThreshold(rawPoint, config);
+}
+
+function pruneIsolatedStationaryMovement(product, config) {
+  const prunedTrack = [];
+  for (let index = 0; index < product.track.length; index++) {
+    const point = product.track[index];
+    const next = product.track[index + 1];
+    if (point.reason === 'moving_good_fix'
+        && next?.reason === 'stationary_anchor'
+        && distanceMeters(point.lat, point.lng, next.lat, next.lng)
+          <= Math.max(config.stationaryDistanceMeters, 10)) {
+      product.excluded.rejected.push(trackPointAsRejected(point,
+        'isolated_stationary_movement'));
+      continue;
+    }
+    prunedTrack.push(point);
+  }
+  product.track = prunedTrack;
+  recomputeProductStats(product);
+}
+
+function pruneStationaryLowSpeedTail(product, config) {
+  const removeIndexes = new Map();
+  const tailDistanceMeters = Math.max(config.stationaryDistanceMeters, 10);
+  for (let index = 0; index < product.track.length; index++) {
+    const anchor = product.track[index];
+    if (anchor.reason !== 'stationary_anchor') continue;
+    for (let cursor = index - 1; cursor >= 0; cursor--) {
+      const point = product.track[cursor];
+      const reason = stationaryTailRejectReason(point);
+      if (!reason) break;
+      if (distanceMeters(point.lat, point.lng, anchor.lat, anchor.lng) > tailDistanceMeters) break;
+      removeIndexes.set(cursor, reason);
+    }
+  }
+  if (removeIndexes.size === 0) return;
+  product.track = product.track.filter((point, index) => {
+    if (!removeIndexes.has(index)) return true;
+    product.excluded.rejected.push(trackPointAsRejected(point, removeIndexes.get(index)));
+    return false;
+  });
+  recomputeProductStats(product);
+}
+
+function stationaryTailRejectReason(point) {
+  if (point.reason === 'motion_supported_low_speed') return 'stationary_low_speed_tail';
+  if (point.reason === 'continuity_rescue_low_accuracy') return 'stationary_low_accuracy_tail';
+  return '';
+}
+
+function isTransportRiskReason(reason) {
+  return reason === 'transport_suspected_kept'
+    || reason === 'recovery_transport_suspected_kept';
+}
+
+function trackPointAsRejected(point, reason) {
+  return {
+    rawPointId: point.sourceRawPointId,
+    lat: point.lat,
+    lng: point.lng,
+    elapsedRealtimeNanos: point.elapsedRealtimeNanos,
+    result: 'reject',
+    reason,
+    samplingEpochId: null,
+    cloudType: point.cloudType || '',
+    cloudId: point.cloudId ?? null,
+    cloudSampleCount: point.cloudSampleCount ?? 0,
+    cloudWeightedRadiusMeters: point.cloudWeightedRadiusMeters ?? null
+  };
+}
+
+function recomputeProductStats(product) {
+  product.stats.totalDistanceMeters = sumTrackField(product.track, 'distanceDeltaMeters');
+  product.stats.movingTimeSeconds = sumTrackField(product.track, 'movingTimeDeltaSeconds');
   product.stats.trustedPointCount = product.track.length;
   product.stats.weakPointCount = product.excluded.weak.length;
   product.stats.rejectedPointCount = product.excluded.rejected.length;
   product.stats.intakeRejectedPointCount = product.excluded.intakeRejected.length;
-  product.stats.segmentCount = product.track.length === 0
+  const segmentCount = product.track.length === 0
     ? 0
     : new Set(product.track.map((point) => point.segmentId)).size;
-  collapseStationarySessionIfNeeded(product, evidence);
-  product.findings = buildFindings(product, evidence);
-  return product;
+  product.stats.segmentCount = segmentCount;
+  product.stats.gapCount = Math.max(0, segmentCount - 1);
+  product.stats.transportCount = product.track.filter((point) =>
+    isTransportRiskReason(point.reason)).length;
+}
+
+function sumTrackField(track, field) {
+  return track.reduce((sum, point) => sum + (Number.isFinite(point[field]) ? point[field] : 0), 0);
 }
 
 export function normalizeTargetProductConfig(config = {}) {
@@ -152,7 +271,10 @@ function collapseStationarySessionIfNeeded(product, evidence) {
     return;
   }
   const stillRatio = stillMotionRatio(evidence.motionSummaries);
-  const stationaryAnchorCount = product.track.filter((point) => point.reason === 'stationary_anchor').length;
+  const stationaryAnchorCount = product.track.filter((point) =>
+    point.reason === 'stationary_anchor'
+    || point.reason === 'first_fix_good'
+    || point.reason === 'first_fix_relaxed').length;
   const stationaryAnchorRatio = stationaryAnchorCount / product.track.length;
   if (stillRatio < product.config.stationarySessionStillRatio
       || stationaryAnchorRatio < product.config.stationarySessionAnchorRatio) {
@@ -185,6 +307,7 @@ function collapseStationarySessionIfNeeded(product, evidence) {
   product.stats.movingTimeSeconds = 0;
   product.stats.segmentCount = 1;
   product.stats.gapCount = 0;
+  product.stats.transportCount = 0;
   product.stats.trustedPointCount = 1;
   product.stationarySessionCollapsed = true;
 }
@@ -488,7 +611,13 @@ function createTrackTrustEngine(config) {
         reason = rawPoint.accuracy <= FIRST_FIX_GOOD_ACCURACY_METERS
           ? 'first_fix_good' : 'first_fix_relaxed';
       } else if (cloudType === 'RECOVERY_CLOUD') {
-        if (stable) {
+        if (isRecoveryTransportRescuePoint(rawPoint, recoveryPreviousRawPoint, config)) {
+          result = 'accept';
+          reason = 'recovery_transport_suspected_kept';
+          startsNewSegment = previousTrustedTrackPoint !== null
+            && recoveryPreviousRawPoint !== null
+            && previousTrustedTrackPoint.elapsedRealtimeNanos < recoveryPreviousRawPoint.elapsedRealtimeNanos;
+        } else if (stable) {
           result = 'accept';
           reason = 'gap_recovery';
           startsNewSegment = previousTrustedTrackPoint !== null;
@@ -501,7 +630,7 @@ function createTrackTrustEngine(config) {
           reason = 'recovery_cloud_pending';
         }
       } else if (cloudType === 'WEAK_CLOUD') {
-        if (isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint, config)) {
+        if (isLowAccuracyRescuePoint(rawPoint, previousTrustedTrackPoint, snapshot, config)) {
           result = 'accept';
           reason = 'continuity_rescue_low_accuracy';
           resetMovingCloudAfterAccept = true;
@@ -519,17 +648,16 @@ function createTrackTrustEngine(config) {
         if (stable && hasRecentStillMotion(rawPoint.elapsedRealtimeNanos, motionSummaries)) {
           result = 'anchor';
           reason = 'stationary_anchor';
+        } else if (hasRecentActiveMotion(rawPoint.elapsedRealtimeNanos, motionSummaries)
+            && isMotionSupportedLowSpeedPoint(rawPoint, previousTrustedTrackPoint, config)) {
+          result = 'accept';
+          reason = 'motion_supported_low_speed';
+          resetMovingCloudAfterAccept = true;
         } else if (!hasRecentStillMotion(rawPoint.elapsedRealtimeNanos, motionSummaries)
             && isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint, config)) {
-          result = 'accept';
-          reason = 'continuity_rescue_stationary_jitter';
+          result = 'reject';
+          reason = 'stationary_continuity_jitter';
           resetMovingCloudAfterAccept = true;
-          if (previousTrustedTrackPoint) {
-            distanceDeltaMeters = distanceMeters(previousTrustedTrackPoint.lat,
-              previousTrustedTrackPoint.lng, cloud.centerLatitude, cloud.centerLongitude);
-            movingTimeDeltaSeconds = Math.max(0,
-              (rawPoint.elapsedRealtimeNanos - previousTrustedTrackPoint.elapsedRealtimeNanos) / 1_000_000_000);
-          }
         } else {
           result = 'reject';
           reason = 'stationary_cloud_jitter';
@@ -565,6 +693,7 @@ function createTrackTrustEngine(config) {
       const targetCoordinate = targetCoordinateForDecision(rawPoint, cloud, reason);
       if ((result === 'accept' || result === 'anchor')
           && previousTrustedTrackPoint
+          && !startsNewSegment
           && shouldAccumulateMovement(reason)) {
         distanceDeltaMeters = distanceMeters(previousTrustedTrackPoint.lat,
           previousTrustedTrackPoint.lng, targetCoordinate.lat, targetCoordinate.lng);
@@ -648,6 +777,19 @@ function isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint, config) {
     || (rawPoint.hasSpeed && rawPoint.speed <= config.continuityRescueMaxSpeedMetersPerSecond);
 }
 
+function isLowAccuracyRescuePoint(rawPoint, previousTrustedTrackPoint, snapshot, config) {
+  if (!isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint, config)) return false;
+  if (!Number.isFinite(rawPoint.accuracy)
+      || rawPoint.accuracy > LOW_ACCURACY_RESCUE_MAX_ACCURACY_METERS) {
+    return false;
+  }
+  const usedInFixTotal = numberField(snapshot, 'usedInFixTotal') ?? 0;
+  if (usedInFixTotal < LOW_ACCURACY_RESCUE_MIN_USED_IN_FIX) return false;
+  const distance = distanceMeters(previousTrustedTrackPoint.lat, previousTrustedTrackPoint.lng,
+    rawPoint.lat, rawPoint.lng);
+  return distance >= LOW_ACCURACY_RESCUE_MIN_DISTANCE_METERS;
+}
+
 function isRecoveryContinuityRescuePoint(rawPoint, previousRawPoint, config) {
   if (!previousRawPoint) return false;
   if (!Number.isFinite(rawPoint.accuracy)
@@ -662,6 +804,19 @@ function isRecoveryContinuityRescuePoint(rawPoint, previousRawPoint, config) {
     || (rawPoint.hasSpeed && rawPoint.speed <= config.continuityRescueMaxSpeedMetersPerSecond);
 }
 
+function isRecoveryTransportRescuePoint(rawPoint, previousRawPoint, config) {
+  if (!previousRawPoint) return false;
+  if (!Number.isFinite(rawPoint.accuracy)
+      || rawPoint.accuracy > config.maxIntakeAccuracyMeters) {
+    return false;
+  }
+  const elapsedDelta = rawPoint.elapsedRealtimeNanos - previousRawPoint.elapsedRealtimeNanos;
+  if (elapsedDelta <= 0 || elapsedDelta > config.gapSeconds * 1_000_000_000) return false;
+  const distance = distanceMeters(previousRawPoint.lat, previousRawPoint.lng, rawPoint.lat, rawPoint.lng);
+  const speed = distance / (elapsedDelta / 1_000_000_000);
+  return isTransportRisk(rawPoint, speed, distance, config);
+}
+
 function targetCoordinateForDecision(rawPoint, cloud, reason) {
   if (usesRawCoordinate(reason)) {
     return { lat: rawPoint.lat, lng: rawPoint.lng, source: 'raw' };
@@ -672,6 +827,8 @@ function targetCoordinateForDecision(rawPoint, cloud, reason) {
 function usesRawCoordinate(reason) {
   return reason === 'moving_good_fix'
     || reason === 'transport_suspected_kept'
+    || reason === 'recovery_transport_suspected_kept'
+    || reason === 'motion_supported_low_speed'
     || reason === 'gap_recovery'
     || reason?.startsWith('continuity_rescue_');
 }
@@ -679,8 +836,9 @@ function usesRawCoordinate(reason) {
 function shouldAccumulateMovement(reason) {
   return reason === 'moving_good_fix'
     || reason === 'transport_suspected_kept'
+    || reason === 'recovery_transport_suspected_kept'
     || reason === 'continuity_rescue_low_accuracy'
-    || reason === 'continuity_rescue_stationary_jitter';
+    || reason === 'motion_supported_low_speed';
 }
 
 function recoveryFastPathAllowed(rawPoint, previousTrustedTrackPoint, config) {
@@ -875,6 +1033,43 @@ function hasRecentStillMotion(elapsedRealtimeNanos, motionSummaries) {
     if (summary.deviceStill === true || summary.isDeviceStill === true) still++;
   }
   return total > 0 && still / total >= 0.75;
+}
+
+function hasRecentActiveMotion(elapsedRealtimeNanos, motionSummaries) {
+  if (!Array.isArray(motionSummaries)) return false;
+  const cutoff = elapsedRealtimeNanos - MOTION_WINDOW_NANOS;
+  let total = 0;
+  let active = 0;
+  for (const summary of motionSummaries) {
+    const first = numberField(summary, 'firstElapsedRealtimeNanos');
+    const last = numberField(summary, 'lastElapsedRealtimeNanos');
+    if (first === null || last === null || last < cutoff || first > elapsedRealtimeNanos) continue;
+    total++;
+    const accel = numberField(summary, 'dynamicAccelRmsMps2') ?? 0;
+    const gyro = numberField(summary, 'gyroscopeRmsRadps') ?? 0;
+    const stepDelta = numberField(summary, 'stepDelta') ?? 0;
+    const stepDetectorCount = numberField(summary, 'stepDetectorCount') ?? 0;
+    if (accel >= 0.35 || gyro >= 0.12 || stepDelta > 0 || stepDetectorCount > 0) {
+      active++;
+    }
+  }
+  return total > 0 && active / total >= 0.5;
+}
+
+function isMotionSupportedLowSpeedPoint(rawPoint, previousTrustedTrackPoint, config) {
+  if (!previousTrustedTrackPoint) return false;
+  if (!Number.isFinite(rawPoint.accuracy)
+      || rawPoint.accuracy > config.weakCloudAccuracyMeters) {
+    return false;
+  }
+  const elapsedDelta = rawPoint.elapsedRealtimeNanos - previousTrustedTrackPoint.elapsedRealtimeNanos;
+  if (elapsedDelta <= 0 || elapsedDelta > config.gapSeconds * 1_000_000_000) return false;
+  const distance = distanceMeters(previousTrustedTrackPoint.lat, previousTrustedTrackPoint.lng,
+    rawPoint.lat, rawPoint.lng);
+  const speed = distance / (elapsedDelta / 1_000_000_000);
+  return distance >= MOTION_SUPPORTED_MIN_DISTANCE_METERS
+    && speed >= MOTION_SUPPORTED_MIN_SPEED_METERS_PER_SECOND
+    && speed <= MOTION_SUPPORTED_MAX_SPEED_METERS_PER_SECOND;
 }
 
 function excludedPoint(rawPoint, result, reason, epoch, decision = null) {

@@ -59,9 +59,47 @@ test('buildTargetOutput uses recomputed target product instead of recorded decis
   assert.ok(!output.findings.some((finding) => finding.includes('未解释 raw_location')));
 });
 
+test('buildTargetOutput treats collapsed stationary contributing raw points as explained', () => {
+  const model = parseEvidenceJsonl([
+    '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":8,"top4AvgCn0":35}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":1000000000,"endElapsedRealtimeNanos":2000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":3000000000,"endElapsedRealtimeNanos":4000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":5000000000,"endElapsedRealtimeNanos":6000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":7000000000,"endElapsedRealtimeNanos":8000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":9000000000,"endElapsedRealtimeNanos":10000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"device_motion_window","startElapsedRealtimeNanos":11000000000,"endElapsedRealtimeNanos":12000000000,"linearAccelerationRmsMps2":0.03,"gyroscopeRmsRadps":0.01,"stepCounterDelta":0,"stepDetectorCount":0}',
+    '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":5,"elapsedRealtimeNanos":1000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.00001,"lng":120,"accuracy":5,"elapsedRealtimeNanos":3000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":3,"provider":"gps","lat":30.000011,"lng":120,"accuracy":5,"elapsedRealtimeNanos":5000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":4,"provider":"gps","lat":30.000012,"lng":120,"accuracy":5,"elapsedRealtimeNanos":7000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":5,"provider":"gps","lat":30.000013,"lng":120,"accuracy":5,"elapsedRealtimeNanos":9000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":6,"provider":"gps","lat":30.000014,"lng":120,"accuracy":5,"elapsedRealtimeNanos":11000000000,"sourceGnssSnapshotId":1}'
+  ].join('\n'));
+  const product = buildTargetTrackProduct(model);
+  const output = buildTargetOutput(model, product);
+
+  assert.equal(product.stationarySessionCollapsed, true);
+  assert.deepEqual(product.track[0].contributingRawPointIds, [1, 3]);
+  assert.equal(output.summaries.raw.unexplainedCount, 0);
+  assert.ok(!output.findings.some((finding) => finding.includes('未解释 raw_location')));
+});
+
 test('explainDecisionReason returns Chinese reason guidance with fallback', () => {
   const known = explainDecisionReason('accept', 'moving_good_fix');
   assert.equal(known.title, '移动好点');
+  for (const reason of [
+    'recovery_transport_suspected_kept',
+    'stationary_continuity_jitter',
+    'stationary_anchor_redundant',
+    'motion_supported_low_speed',
+    'continuity_rescue_low_accuracy',
+    'stationary_low_accuracy_tail'
+  ]) {
+    const explanation = explainDecisionReason('accept', reason);
+    assert.ok(!explanation.meaning.includes('还没有这个算法原因'));
+  }
   const unknown = explainDecisionReason('accept', 'custom_reason');
   assert.ok(unknown.meaning.includes('还没有这个算法原因'));
 });
