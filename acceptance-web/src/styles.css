@@ -449,6 +449,36 @@ button:disabled {
   font-size: 12px;
 }
 
+.algorithm-source {
+  border-top: 1px solid rgba(203, 213, 225, 0.10);
+  padding-top: 8px;
+}
+
+.algorithm-source summary {
+  cursor: pointer;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.algorithm-source pre {
+  overflow: auto;
+  max-height: 460px;
+  margin: 8px 0 0;
+  border: 1px solid rgba(203, 213, 225, 0.16);
+  border-radius: 6px;
+  padding: 10px;
+  background: #061012;
+}
+
+.algorithm-source code {
+  color: #dbeafe;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre;
+}
+
 .maplibregl-popup-content {
   border: 1px solid var(--line);
   border-radius: 7px;

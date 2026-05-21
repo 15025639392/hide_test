@@ -16,7 +16,8 @@ const CLEANING_ALGORITHM_SECTIONS = [
   {
     title: '数据入口',
     rows: [
-      '输入只使用 diagnostic.jsonl；Android 仍只是数据产出端',
+      '推荐输入 evidence.jsonl；diagnostic.jsonl 只作为旧日志兼容输入',
+      'Android 只作为纯证据产出端，Web 负责重新 intake、判点和生成清洗轨迹',
       '先复原 raw_location、sampling_policy、gnss_snapshot、motion_summary',
       '所有连续性、GAP、速度计算使用 elapsedRealtimeNanos'
     ]
@@ -65,6 +66,7 @@ const state = {
   map: null,
   mapLoaded: false,
   popup: null,
+  algorithmSourceText: '正在读取 acceptance-web/src/targetProduct.mjs...',
   cleaningConfig: normalizeTargetProductConfig()
 };
 
@@ -80,6 +82,7 @@ const elements = {
   configStateText: document.querySelector('#configStateText'),
   applyConfigButton: document.querySelector('#applyConfigButton'),
   resetConfigButton: document.querySelector('#resetConfigButton'),
+  cleaningAlgorithm: document.querySelector('#cleaningAlgorithm'),
   configInputs: {
     maxIntakeAccuracyMeters: document.querySelector('#maxIntakeAccuracyMeters'),
     weakCloudAccuracyMeters: document.querySelector('#weakCloudAccuracyMeters'),
@@ -117,9 +120,21 @@ for (const input of [elements.showRaw, elements.showTrusted, elements.showCleane
 initMap();
 renderConfigInputs();
 render();
+loadAlgorithmSource();
+
+async function loadAlgorithmSource() {
+  try {
+    const response = await fetch('./src/targetProduct.mjs', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    state.algorithmSourceText = await response.text();
+  } catch (error) {
+    state.algorithmSourceText = `无法读取 targetProduct.mjs: ${error.message}`;
+  }
+  renderCleaningAlgorithm();
+}
 
 async function importFiles(files, fromDirectory) {
-  setLoading(true, '正在识别 diagnostic.jsonl...');
+  setLoading(true, '正在识别 evidence.jsonl / diagnostic.jsonl...');
   await nextFrame();
   const diagnosticFiles = files
     .filter((file) => {
@@ -145,8 +160,8 @@ async function importFiles(files, fromDirectory) {
     state.selectedDatasetId = datasets[0]?.id || null;
     state.selectedPoint = null;
     setImportText(errors.length
-      ? `找到 ${diagnosticFiles.length} 个 diagnostic.jsonl，已导入 ${datasets.length} 个，失败 ${errors.length} 个：${errors[0]}`
-      : `找到 ${diagnosticFiles.length} 个 diagnostic.jsonl，已导入 ${datasets.length} 个`);
+      ? `找到 ${diagnosticFiles.length} 个 evidence/diagnostic 文件，已导入 ${datasets.length} 个，失败 ${errors.length} 个：${errors[0]}`
+      : `找到 ${diagnosticFiles.length} 个 evidence/diagnostic 文件，已导入 ${datasets.length} 个`);
     render();
     fitAllBounds();
   } finally {
@@ -177,7 +192,7 @@ function clearAll() {
   state.selectedPoint = null;
   elements.folderInput.value = '';
   elements.fileInput.value = '';
-  setImportText('等待导入 diagnostic.jsonl');
+  setImportText('等待导入 evidence.jsonl');
   if (state.popup) state.popup.remove();
   render();
   renderMap();
@@ -189,7 +204,7 @@ function applyCleaningConfig() {
   renderConfigInputs();
   setImportText(state.datasets.length
     ? `已应用自定义清洗参数，重新计算 ${state.datasets.length} 个文件`
-    : '已应用自定义清洗参数，等待导入 diagnostic.jsonl');
+    : '已应用自定义清洗参数，等待导入 evidence.jsonl');
   render();
 }
 
@@ -199,7 +214,7 @@ function resetCleaningConfig() {
   renderConfigInputs();
   setImportText(state.datasets.length
     ? `已恢复默认清洗参数，重新计算 ${state.datasets.length} 个文件`
-    : '已恢复默认清洗参数，等待导入 diagnostic.jsonl');
+    : '已恢复默认清洗参数，等待导入 evidence.jsonl');
   render();
 }
 
@@ -213,6 +228,7 @@ function renderConfigInputs() {
     input.value = state.cleaningConfig[key];
   }
   elements.configStateText.textContent = isDefaultCleaningConfig() ? '默认' : '自定义';
+  renderCleaningAlgorithm();
 }
 
 function isDefaultCleaningConfig() {
@@ -257,13 +273,14 @@ function render() {
   renderDatasets();
   renderSelectedSummary();
   renderPointDetails();
+  renderCleaningAlgorithm();
   renderMap();
 }
 
 function renderDatasets() {
   elements.datasetCountText.textContent = `${state.datasets.length} 个`;
   if (state.datasets.length === 0) {
-    elements.datasetRows.innerHTML = '<p class="empty-note">导入一个或多个 diagnostic.jsonl</p>';
+    elements.datasetRows.innerHTML = '<p class="empty-note">导入一个或多个 evidence.jsonl</p>';
     return;
   }
   elements.datasetRows.innerHTML = state.datasets.map((dataset) => datasetRowMarkup(dataset)).join('');
@@ -306,7 +323,7 @@ function renderSelectedSummary() {
   const dataset = selectedDataset();
   elements.selectedFileText.textContent = dataset ? dataset.fileName : '-';
   if (!dataset) {
-    elements.sampleSummary.innerHTML = '<p class="empty-note">选择文件后查看 raw、decision、GNSS、pressure、motion 摘要</p>';
+    elements.sampleSummary.innerHTML = '<p class="empty-note">选择文件后查看 Web 清洗结果、raw、GNSS、pressure、motion 摘要</p>';
     return;
   }
   const { summaries, findings } = dataset.targetOutput;
@@ -320,19 +337,18 @@ function renderSelectedSummary() {
       `segment ${product.stats.segmentCount} / GAP ${product.stats.gapCount}`,
       `weak ${product.stats.weakPointCount} / reject ${product.stats.rejectedPointCount} / intake ${product.stats.intakeRejectedPointCount}`,
       `静止压缩 ${product.stationarySessionCollapsed ? '已触发，清洗轨迹为单点' : '未触发'}`,
-      `Android 对齐 ${product.alignment.matchedDecisionCount}/${product.alignment.comparedDecisionCount}`,
+      `旧 Android 对照 ${product.alignment.matchedDecisionCount}/${product.alignment.comparedDecisionCount}`,
       product.alignment.mismatches.length
         ? `差异 ${product.alignment.mismatches.length}`
         : '差异 0'
     ])}
-    ${algorithmBlock()}
     ${summaryBlock('raw_location', [
       `数量 ${summaries.raw.count}`,
       `时间范围 ${formatNanoRange(summaries.raw.timeStartNanos, summaries.raw.timeEndNanos)}`,
       `精度 ${formatMeters(summaries.raw.minAccuracyMeters)} - ${formatMeters(summaries.raw.maxAccuracyMeters)}`,
       `未解释 ${summaries.raw.unexplainedCount}`
     ])}
-    ${summaryBlock('decision', [
+    ${summaryBlock('recorded decision（兼容旧日志）', [
       `数量 ${summaries.decision.decisionCount}`,
       `anchor ${summaries.decision.anchorCount} / accept ${summaries.decision.acceptCount}`,
       `weak ${summaries.decision.weakCount} / reject ${summaries.decision.rejectCount}`,
@@ -370,6 +386,10 @@ function summaryBlock(title, rows) {
   `;
 }
 
+function renderCleaningAlgorithm() {
+  elements.cleaningAlgorithm.innerHTML = algorithmBlock();
+}
+
 function algorithmBlock() {
   const config = state.cleaningConfig;
   return `
@@ -386,6 +406,10 @@ function algorithmBlock() {
           ${section.rows.map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
         </div>
       `).join('')}
+      <details class="algorithm-source">
+        <summary>可直接运行的清洗算法模块：acceptance-web/src/targetProduct.mjs</summary>
+        <pre><code>${escapeHtml(state.algorithmSourceText)}</code></pre>
+      </details>
     </section>
   `;
 }
@@ -396,7 +420,7 @@ function renderPointDetails() {
     ? `${selection.dataset.fileName} #${selection.cleaned ? selection.point.trackPointId : selection.point.rawPointId}`
     : '-';
   if (!selection) {
-    elements.pointDetails.innerHTML = '<p class="empty-note">点击地图上的点查看 raw、decision/intake、GNSS 和上一可信点关系</p>';
+    elements.pointDetails.innerHTML = '<p class="empty-note">点击地图点查看 raw 证据或 Web 清洗点详情</p>';
     return;
   }
   elements.pointDetails.innerHTML = selection.cleaned
@@ -448,7 +472,7 @@ function pointDetailsMarkup(dataset, point) {
       `speed ${formatSpeed(point.speed)}`,
       `elapsedRealtime ${formatNanos(point.elapsedRealtimeNanos)}`
     ])}
-    ${detailBlock('decision / intake', [
+    ${detailBlock('recorded decision / intake（旧日志对照）', [
       `result ${decision.result || 'raw'}`,
       `reason ${decision.reason || '-'}`,
       `trustGrade ${decision.trustGrade || '-'}`,
@@ -456,7 +480,7 @@ function pointDetailsMarkup(dataset, point) {
       `cloudId ${valueOrDash(decision.cloudId)}`,
       `trackPointId ${valueOrDash(decision.trackPointId)}`,
       `segmentId ${valueOrDash(decision.segmentId)}`,
-      decision.intakeRejected ? '不进入点云 / decision / TrackPoint' : ''
+      decision.intakeRejected ? 'Android recorded intake 拒绝，仅用于旧日志对照' : ''
     ].filter(Boolean))}
     ${detailBlock('GNSS 证据', [
       `snapshotId ${valueOrDash(decision.sourceGnssSnapshotId ?? point.sourceGnssSnapshotId)}`,

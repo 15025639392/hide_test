@@ -1,15 +1,15 @@
-# diagnostic.jsonl 到目标成品轨迹算法
+# evidence.jsonl 到目标成品轨迹算法
 
-本文定义 Web 端从 `diagnostic.jsonl` 离线生成目标成品轨迹的算法口径。
+本文定义 Web 端从 Android 纯证据 `evidence.jsonl` 离线生成目标成品轨迹的算法口径；`diagnostic.jsonl` 仅作为旧日志兼容输入。
 
 Android 在这一阶段只作为数据产出端：负责真实设备采集、生成
-`diagnostic.jsonl`、`session.json`、`track.gpx` 等证据文件。
+`evidence.jsonl`、`session.json` 等证据文件。
 
 Web 工具的定位不是替代 Android 采集链路，也不是反向参与 Android 实时轨迹计算，
-而是把 Android 已导出的诊断证据复算成一份可核验、可对齐、可解释的目标成品：
+而是把 Android 已导出的纯证据复算成一份可核验、可对齐、可解释的目标成品：
 
 ```text
-diagnostic.jsonl
+evidence.jsonl
   -> evidence stream
   -> intake rebuild
   -> sampling timeline rebuild
@@ -25,7 +25,7 @@ stage2-track-trust-v3-sampling-cloud
 
 ## 目标
 
-输入一个或多个 `diagnostic.jsonl`，Web 端应能生成：
+输入一个或多个 `evidence.jsonl`，Web 端应能生成：
 
 - 目标可信轨迹：只包含 `anchor` 和 `accept`。
 - 目标统计：距离、运动时间、segment、GAP、交通工具混入、点数。
@@ -40,7 +40,7 @@ stage2-track-trust-v3-sampling-cloud
 - 不在 Web 中调用 Android `LocationManager`、`GnssStatus`、传感器或权限 API。
 - 不把本文算法接入 Android 实时记录、实时地图或前台服务判点链路。
 - 不要求 Android 为了 Web 目标成品算法调整实时 TrackPoint、GPX 或 session 生成逻辑。
-- 不修改、不修复、不回写 `diagnostic.jsonl`。
+- 不修改、不修复、不回写 Android 原始证据日志。
 - 不把 `NETWORK_PROVIDER`、`FUSED_PROVIDER` 或 mock 点纳入可信轨迹。
 - 不用 `timeMillis` 替代 `elapsedRealtimeNanos` 做连续性、GAP 或速度判断。
 - 不把弱信号修复结果直接写入可信轨迹。
@@ -52,11 +52,11 @@ stage2-track-trust-v3-sampling-cloud
 ```text
 Android:
   真实采集端和证据产出端
-  继续按现有实时策略生成 raw_location、decision、TrackPoint、session 和 GPX
+  产出 raw_location、sampling_policy、gnss_snapshot、motion_summary 等纯证据事件
 
 Web:
   离线分析端和目标成品复算端
-  读取 diagnostic.jsonl
+  读取 evidence.jsonl；兼容读取旧 diagnostic.jsonl
   生成 TargetTrackProduct
   可选地与 Android recorded decision 做对齐 diff
 ```
@@ -67,13 +67,13 @@ Web:
 
 Web 清洗算法不能依赖 Android 已记录的 `decision` 或 `location_intake_rejected`
 作为输入真相。它们只能是兼容旧诊断日志时的对照材料。长期口径应让
-`diagnostic.jsonl` 尽量保持纯证据属性：采样请求、原始定位、卫星质量、
+`evidence.jsonl` 保持纯证据属性：采样请求、原始定位、卫星质量、
 运动摘要和运行时事件由 Android 产出；最终判点、清洗轨迹和目标统计由 Web
 算法自己承担。
 
 ## 输入事件
 
-Web 端以 `diagnostic.jsonl` 为主输入。第一阶段需要识别这些事件：
+Web 端以 `evidence.jsonl` 为推荐输入，并兼容旧 `diagnostic.jsonl`。需要识别这些事件：
 
 ```text
 session_metadata
@@ -101,7 +101,7 @@ motion_summary
 
 `decision` 和 `location_intake_rejected` 不是 Web 清洗算法的必要输入。
 如果旧日志里存在这些 Android 已记录结果，Web 只能把它们用于对齐 diff 和解释展示；
-如果未来纯证据版 `diagnostic.jsonl` 不再写入这些事件，Web 清洗算法仍应能生成
+纯证据版 `evidence.jsonl` 不写入这些事件，Web 清洗算法仍应能生成
 `TargetTrackProduct`。
 
 ## 输出对象
@@ -117,7 +117,7 @@ TargetTrackProduct
 ```json
 {
   "strategyVersion": "stage2-track-trust-v3-sampling-cloud",
-  "sourceFilePath": "diagnostic.jsonl",
+  "sourceFilePath": "evidence.jsonl",
   "track": [],
   "excluded": {
     "weak": [],
@@ -187,7 +187,7 @@ TargetTrackProduct
 
 ### 1. 解析 JSONL
 
-逐行解析 `diagnostic.jsonl`：
+逐行解析 `evidence.jsonl` 或兼容旧 `diagnostic.jsonl`：
 
 - 空行忽略。
 - JSON 解析失败保留为 `parseErrors`。
@@ -509,7 +509,7 @@ GAP 两端直线不能计入 totalDistanceMeters
 
 ## Android 对齐 diff
 
-Web 复算完成后，如果 `diagnostic.jsonl` 中存在 Android recorded decision，
+Web 复算完成后，如果兼容旧 `diagnostic.jsonl` 时存在 Android recorded decision，
 可以做可选对齐 diff。这个 diff 只用于比较 Android 实时策略和 Web 离线清洗结果，
 不能反向成为 Web 清洗依据。
 
@@ -583,16 +583,16 @@ cloud radius             可选半径圈
 
 第一阶段通过标准：
 
-- 同一个 `diagnostic.jsonl` 能稳定生成 `TargetTrackProduct`。
+- 同一个 `evidence.jsonl` 能稳定生成 `TargetTrackProduct`。
 - 目标轨迹只包含 `anchor` 和 `accept`。
 - `gap_recovery` 进入目标轨迹，但 delta 为 0。
 - `transport_suspected` 不进入目标轨迹，不累计徒步距离。
-- Web 复算统计与 Android 已记录统计在可解释误差内。
+- Web 复算统计稳定可解释，旧 diagnostic 对照差异只作为参考。
 - 无法复原的字段进入 `findings`，不静默吞掉。
 
 第二阶段通过标准：
 
-- Web 复算 decision 与 Android decision 可逐点 diff。
+- 兼容旧 diagnostic 时，Web 复算 decision 可与 Android recorded decision 做可选 diff。
 - replay fixture 的 Web 复算结果与 Android replay 结果一致。
 - 真实多设备样本能用同一目标成品结构做对比。
 - 目标成品结构可作为后续 SDK 契约草案的一部分。
@@ -605,10 +605,10 @@ cloud radius             可选半径圈
 1. 新增纯算法模块 targetProduct.mjs
 2. 新增 TrackCloudWindow JS 复刻及单元测试
 3. 新增 SamplingIntake JS 复刻及单元测试
-4. 新增 diagnostic -> TargetTrackProduct 集成测试
-5. 接入现有地图，但默认先显示 Android recorded 结果
-6. 增加 Web recomputed / Android recorded 切换
+4. 新增 evidence -> TargetTrackProduct 集成测试
+5. 接入现有地图，默认显示 Web 清洗目标结果
+6. 兼容旧日志时增加 Android recorded 对照视图
 7. 增加 diff 面板
 ```
 
-实现前不要调整 Android 阈值、decision reason、segment 逻辑、距离累计或诊断 schema。
+实现前不要调整 Android 实时策略阈值、decision reason、segment 逻辑、距离累计或既有诊断 schema。

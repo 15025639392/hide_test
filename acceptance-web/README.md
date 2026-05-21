@@ -1,12 +1,13 @@
 # Diagnostic 目标函数预览 Web
 
-这是一个本地 PC 人工核验工具，用于导入多个 `diagnostic.jsonl`，在全屏地图上叠加预览：
+这是一个本地 PC 人工核验工具，用于导入 Android 产出的 `evidence.jsonl`
+或兼容旧格式的 `diagnostic.jsonl`，在全屏地图上叠加预览：
 
 ```text
 采样样本数据 -> 合理的轨迹 / 累计爬升 / 里程 / 配速 / 运动耗时
 ```
 
-第一版只做预览和人工核验，不修复、不编辑、不回写 `diagnostic.jsonl`。
+第一版只做预览和人工核验，不修复、不编辑、不回写 Android 原始日志。
 
 ## 运行
 
@@ -42,8 +43,9 @@ https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}
 - raw 轨迹使用细虚线，可信轨迹使用粗实线。
 - 点类型区分 `anchor / accept / weak / reject / intake_rejected / raw`。
 - 文件列表展示：文件名、设备、轨迹点数、里程、运动耗时、配速、累计爬升。
-- 选中文件后展示 raw、decision、GNSS、pressure、motion 摘要。
-- 点击地图点后展示 raw 字段、decision/intake 结果、GNSS 证据和上一可信点关系。
+- 选中文件后展示 Web 清洗结果、raw、GNSS、pressure、motion 摘要。
+- 兼容旧 `diagnostic.jsonl` 时，可额外展示 Android recorded decision 作为对照。
+- 点击地图点后展示 raw 证据或 Web 清洗点详情。
 
 ## 测试
 

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>目标函数 Diagnostic 预览</title>
+    <title>目标轨迹 Evidence 预览</title>
     <link
       rel="stylesheet"
       href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
@@ -14,8 +14,8 @@
     <main class="workspace">
       <header class="topbar">
         <section class="identity" aria-label="页面标题">
-          <h1>目标函数 Diagnostic 预览</h1>
-          <p>多个 diagnostic.jsonl -> 轨迹 / 累计爬升 / 里程 / 配速 / 运动耗时</p>
+          <h1>目标轨迹 Evidence 预览</h1>
+          <p>evidence.jsonl -> Web 清洗轨迹 / 里程 / 运动耗时</p>
         </section>
         <section class="toolbar" aria-label="导入和地图操作">
           <label class="file-button">
@@ -23,7 +23,7 @@
             <input id="folderInput" type="file" webkitdirectory directory multiple />
           </label>
           <label class="file-button secondary">
-            选择多个 diagnostic.jsonl
+            选择多个 evidence.jsonl
             <input id="fileInput" type="file" multiple />
           </label>
           <button id="fitBoundsButton" type="button">适配地图</button>
@@ -35,7 +35,7 @@
         </section>
         <div id="importStatus" class="import-status" aria-live="polite">
           <span id="importSpinner" class="import-spinner" aria-hidden="true"></span>
-          <span id="importText" class="import-text">等待导入 diagnostic.jsonl</span>
+          <span id="importText" class="import-text">等待导入 evidence.jsonl</span>
         </div>
       </header>
 
@@ -57,7 +57,7 @@
                 <span>累计爬升</span>
               </div>
               <div id="datasetRows" class="dataset-rows">
-                <p class="empty-note">导入一个或多个 diagnostic.jsonl</p>
+                <p class="empty-note">导入一个或多个 evidence.jsonl</p>
               </div>
             </div>
           </section>
@@ -68,7 +68,7 @@
               <span id="selectedFileText">-</span>
             </div>
             <div id="sampleSummary" class="summary-list">
-              <p class="empty-note">选择文件后查看 raw、decision、GNSS、pressure、motion 摘要</p>
+              <p class="empty-note">选择文件后查看 Web 清洗结果、raw、GNSS、pressure、motion 摘要</p>
             </div>
           </section>
         </aside>
@@ -103,6 +103,7 @@
               <button id="applyConfigButton" type="button">应用参数</button>
               <button id="resetConfigButton" type="button">恢复默认</button>
             </div>
+            <div id="cleaningAlgorithm" class="summary-list algorithm-list"></div>
           </section>
 
           <section class="panel details-panel">
@@ -111,7 +112,7 @@
               <span id="selectedPointText">-</span>
             </div>
             <div id="pointDetails" class="point-details">
-              <p class="empty-note">点击地图上的点查看 raw、decision/intake、GNSS 和上一可信点关系</p>
+              <p class="empty-note">点击地图点查看 raw 证据或 Web 清洗点详情</p>
             </div>
           </section>
         </aside>
