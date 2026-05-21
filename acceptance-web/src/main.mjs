@@ -19,41 +19,60 @@ const CLEANING_ALGORITHM_SECTIONS = [
       '输入 evidence.jsonl',
       'Android 只作为纯证据产出端，Web 负责重新 intake、判点和生成清洗轨迹',
       '先复原 raw_location、sampling_policy、gnss_snapshot、device_motion_window、barometer_window',
-      '所有连续性、GAP、速度计算使用 elapsedRealtimeNanos'
+      '所有连续性、GAP、速度计算使用 elapsedRealtimeNanos，不用 timeMillis 代替'
     ]
   },
   {
     title: 'Intake 硬门槛',
-    rows: [
+    rows: (config) => [
       'provider 必须是 gps，mock、network、fused 不进清洗轨迹',
-      'accuracy 必须有效且 <= 80m',
-      '拒绝 duplicate、out-of-order、早于记录开始、采样 epoch 不匹配的点'
+      `accuracy 必须有效且 <= ${formatPlainNumber(config.maxIntakeAccuracyMeters)}m`,
+      '拒绝 duplicate、out-of-order、早于记录开始、采样 epoch 不匹配的点',
+      'intake_rejected 只保留为诊断证据，不进入点云、decision 或成品轨迹'
     ]
   },
   {
     title: '点云与权重',
-    rows: [
+    rows: (config) => [
       '静止 anchor 使用点云 weighted center；真实移动、GAP 恢复、交通风险和连续性救援使用 raw 坐标',
-      'weight = accuracy * GNSS * motion * temporal * spatial',
-      'temporal 使用 20s 衰减；GNSS 由 usedInFixTotal 和 top4AvgCn0 评分'
+      'weight = accuracy 反向权重 * GNSS * motion * temporal * spatial',
+      `temporal 使用 ${formatPlainNumber(config.cloudTemporalDecaySeconds)}s 衰减；GNSS 由 usedInFixTotal 和 top4AvgCn0 评分`
     ]
   },
   {
     title: '关键阈值',
-    rows: [
-      'GAP > 120s 进入 RECOVERY_CLOUD，恢复点 delta=0',
-      'accuracy > 30m 进入 WEAK_CLOUD，不进入清洗轨迹',
-      '静止阈值 = max(5m, accuracy * 1.5)',
-      '速度 > 12m/s 视为异常弱点',
-      '速度 >= 3.5m/s 且位移 >= 20m 标记为交通工具风险并保留'
+    rows: (config) => [
+      `GAP > ${formatPlainNumber(config.gapSeconds)}s 进入 RECOVERY_CLOUD，恢复点 delta=0`,
+      `accuracy > ${formatPlainNumber(config.weakCloudAccuracyMeters)}m 默认进入 WEAK_CLOUD，除非满足连续性或低精度救援规则`,
+      `静止阈值 = max(${formatPlainNumber(config.stationaryDistanceMeters)}m, accuracy * ${formatPlainNumber(config.stationaryAccuracyMultiplier)})`,
+      `速度 > ${formatPlainNumber(config.impossibleSpeedMetersPerSecond)}m/s 视为异常弱点`,
+      `速度 >= ${formatPlainNumber(config.transportSpeedMetersPerSecond)}m/s 且位移 >= ${formatPlainNumber(config.transportMinDistanceMeters)}m 标记为交通工具风险并保留`
+    ]
+  },
+  {
+    title: '低质量运动段',
+    rows: (config) => [
+      '孤立 moving_good_fix 如果被低质量 GNSS 静止抖动包围，不直接按普通好点解释',
+      `候选区间只允许已通过 intake 且 accuracy <= ${formatPlainNumber(config.weakCloudAccuracyMeters)}m 的 GPS raw 点参与`,
+      '持续时间 >= 60s、active-motion 覆盖 >= 0.7、合理采样步距 >= 25m、移动步数 >= 8、bbox 展开 >= 25m 时，抽稀为 motion_supported_low_quality',
+      '该规则不跨 raw 采样 GAP，不接受交通工具风险，不凭单点 motion 恢复'
+    ]
+  },
+  {
+    title: '气压边界',
+    rows: (config) => [
+      `气压阻止静止整段压缩当前${config.barometerCleaningEnabled ? '开启' : '关闭'}`,
+      `开启后，仅当有效气压窗口 >= ${formatPlainNumber(config.barometerVerticalMotionMinWindowCount)} 且高度范围 >= ${formatPlainNumber(config.barometerVerticalMotionMinRangeMeters)}m 时，阻止 stationary_session_anchor 压缩`,
+      '气压不直接删点，不改变 intake、GAP、交通工具识别或点云稳定性',
+      '累计爬升仍不是由这个清洗开关直接计算'
     ]
   },
   {
     title: '为什么这样配',
-    rows: [
-      '80m 是 raw 进入复算的宽门槛，用于保留弱 GPS 诊断证据',
-      '30m 是可信点云分界，避免弱信号直接污染目标轨迹',
-      '120s GAP 避免把长时间无定位两端直线计入成品距离',
+    rows: (config) => [
+      `${formatPlainNumber(config.maxIntakeAccuracyMeters)}m 是 raw 进入复算的宽门槛，用于保留弱 GPS 诊断证据`,
+      `${formatPlainNumber(config.weakCloudAccuracyMeters)}m 是可信点云分界，避免弱信号直接污染目标轨迹`,
+      `${formatPlainNumber(config.gapSeconds)}s GAP 避免把长时间无定位两端直线计入成品距离`,
       '交通工具风险只做解释标签，不作为删除条件，成品轨迹保留真实移动但标记风险',
       '低速点必须有近期运动证据才能进入轨迹，低精度点必须有 GNSS usedInFix 和位移下限才能被救援',
       '整段 motion 几乎全静止且 stationary_anchor 占主导时，Web 成品轨迹压缩为一个稳定中心点'
@@ -86,6 +105,9 @@ const elements = {
   applyConfigButton: document.querySelector('#applyConfigButton'),
   resetConfigButton: document.querySelector('#resetConfigButton'),
   cleaningAlgorithm: document.querySelector('#cleaningAlgorithm'),
+  algorithmDialog: document.querySelector('#algorithmDialog'),
+  algorithmDialogContent: document.querySelector('#algorithmDialogContent'),
+  closeAlgorithmDialogButton: document.querySelector('#closeAlgorithmDialogButton'),
   configInputs: {
     maxIntakeAccuracyMeters: document.querySelector('#maxIntakeAccuracyMeters'),
     weakCloudAccuracyMeters: document.querySelector('#weakCloudAccuracyMeters'),
@@ -111,6 +133,14 @@ elements.clearButton.addEventListener('click', clearAll);
 elements.fitBoundsButton.addEventListener('click', fitAllBounds);
 elements.applyConfigButton.addEventListener('click', applyCleaningConfig);
 elements.resetConfigButton.addEventListener('click', resetCleaningConfig);
+elements.closeAlgorithmDialogButton.addEventListener('click', closeAlgorithmDialog);
+elements.algorithmDialog.addEventListener('click', (event) => {
+  if (event.target === elements.algorithmDialog) closeAlgorithmDialog();
+});
+elements.algorithmDialog.addEventListener('cancel', (event) => {
+  event.preventDefault();
+  closeAlgorithmDialog();
+});
 for (const input of [
   elements.showRaw,
   elements.showTrusted,
@@ -135,6 +165,7 @@ async function loadAlgorithmSource() {
     state.algorithmSourceText = `无法读取 targetProduct.mjs: ${error.message}`;
   }
   renderCleaningAlgorithm();
+  renderAlgorithmDialog();
 }
 
 async function importFiles(files, fromDirectory) {
@@ -281,6 +312,7 @@ function nextFrame() {
 function render() {
   renderPointDetails();
   renderCleaningAlgorithm();
+  renderAlgorithmDialog();
   renderMap();
 }
 
@@ -301,24 +333,56 @@ function algorithmBlock() {
   const config = state.cleaningConfig;
   return `
     <section class="summary-block algorithm-block">
-      <h3>清洗算法实现</h3>
+      <h3>清洗规则</h3>
       <div class="algorithm-section">
         <b>当前参数</b>
         <span>弱点云 ${formatPlainNumber(config.weakCloudAccuracyMeters)}m；GAP ${formatPlainNumber(config.gapSeconds)}s；静止基础距离 ${formatPlainNumber(config.stationaryDistanceMeters)}m</span>
         <span>accuracy 上限 ${formatPlainNumber(config.maxIntakeAccuracyMeters)}m；气压阻止静止整段压缩 ${config.barometerCleaningEnabled ? '开启' : '关闭'}</span>
       </div>
-      ${CLEANING_ALGORITHM_SECTIONS.map((section) => `
-        <div class="algorithm-section">
-          <b>${escapeHtml(section.title)}</b>
-          ${section.rows.map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
-        </div>
-      `).join('')}
+      <button id="openAlgorithmDialogButton" class="secondary-button" type="button">查看完整规则说明</button>
+    </section>
+  `;
+}
+
+function renderAlgorithmDialog() {
+  elements.algorithmDialogContent.innerHTML = fullAlgorithmMarkup();
+  const button = document.querySelector('#openAlgorithmDialogButton');
+  if (button) button.addEventListener('click', openAlgorithmDialog);
+}
+
+function fullAlgorithmMarkup() {
+  const config = state.cleaningConfig;
+  return `
+    <section class="summary-block algorithm-block">
+      <div class="algorithm-section">
+        <b>当前参数</b>
+        <span>弱点云 ${formatPlainNumber(config.weakCloudAccuracyMeters)}m；GAP ${formatPlainNumber(config.gapSeconds)}s；静止基础距离 ${formatPlainNumber(config.stationaryDistanceMeters)}m</span>
+        <span>accuracy 上限 ${formatPlainNumber(config.maxIntakeAccuracyMeters)}m；气压阻止静止整段压缩 ${config.barometerCleaningEnabled ? '开启' : '关闭'}</span>
+      </div>
+      ${CLEANING_ALGORITHM_SECTIONS.map((section) => {
+    const rows = typeof section.rows === 'function' ? section.rows(config) : section.rows;
+    return `
+          <div class="algorithm-section">
+            <b>${escapeHtml(section.title)}</b>
+            ${rows.map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
+          </div>
+        `;
+  }).join('')}
       <details class="algorithm-source">
         <summary>可直接运行的清洗算法模块：acceptance-web/src/targetProduct.mjs</summary>
         <pre><code>${escapeHtml(state.algorithmSourceText)}</code></pre>
       </details>
     </section>
   `;
+}
+
+function openAlgorithmDialog() {
+  renderAlgorithmDialog();
+  if (!elements.algorithmDialog.open) elements.algorithmDialog.showModal();
+}
+
+function closeAlgorithmDialog() {
+  if (elements.algorithmDialog.open) elements.algorithmDialog.close();
 }
 
 function renderPointDetails() {

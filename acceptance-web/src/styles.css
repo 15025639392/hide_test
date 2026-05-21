@@ -362,6 +362,10 @@ button:disabled {
   width: 100%;
 }
 
+.secondary-button {
+  width: 100%;
+}
+
 .summary-list,
 .point-details {
   display: grid;
@@ -444,6 +448,55 @@ button:disabled {
   font-size: 11px;
   line-height: 1.45;
   white-space: pre;
+}
+
+.algorithm-dialog {
+  width: min(920px, calc(100vw - 32px));
+  max-height: min(760px, calc(100vh - 32px));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0;
+  background: var(--panel-strong);
+  color: var(--ink);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.52);
+}
+
+.algorithm-dialog::backdrop {
+  background: rgba(2, 8, 10, 0.72);
+}
+
+.algorithm-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  padding: 14px 16px;
+  background: #0b171a;
+}
+
+.algorithm-dialog-header h2 {
+  margin: 0;
+  color: #ffffff;
+  font-size: 15px;
+}
+
+.icon-button {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.algorithm-dialog-content {
+  overflow: auto;
+  max-height: calc(min(760px, 100vh - 32px) - 61px);
+  padding: 14px;
+}
+
+.algorithm-dialog-content .summary-block {
+  padding: 0;
 }
 
 .maplibregl-popup-content {
