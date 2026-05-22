@@ -34,7 +34,10 @@ export const DEFAULT_TARGET_PRODUCT_CONFIG = Object.freeze({
   stationarySessionAnchorRatio: 0.8,
   barometerCleaningEnabled: false,
   barometerVerticalMotionMinRangeMeters: 3,
-  barometerVerticalMotionMinWindowCount: 5
+  barometerVerticalMotionMinWindowCount: 5,
+  gnssAscentMaxVerticalAccuracyMeters: 20,
+  gnssAscentMinGainMeters: 1,
+  gnssAscentMaxStepGainMeters: 30
 });
 
 const DEFAULT_CLOUD_RULES = {
@@ -138,6 +141,7 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
   pruneStationaryLowSpeedTail(product, config);
   recoverStationaryExitMovement(product, evidence, config);
   collapseStationarySessionIfNeeded(product, evidence);
+  recomputeAscentStats(product, evidence);
   product.findings = buildFindings(product, evidence);
   return product;
 }
@@ -652,6 +656,92 @@ function recomputeProductStats(product) {
     isTransportRiskReason(point.reason)).length;
 }
 
+function recomputeAscentStats(product, evidence) {
+  const gnss = computeGnssAscent(product.track, evidence.rawPoints, product.config);
+  product.stats.gnssTotalAscentMeters = gnss.totalAscentMeters;
+  product.stats.gnssAscentSampleCount = gnss.sampleCount;
+  product.stats.gnssAscentRejectedSampleCount = gnss.rejectedSampleCount;
+  product.stats.gnssAscentUsableSampleCount = gnss.usableSampleCount;
+  product.stats.gnssAscentMinVerticalAccuracyMeters = gnss.minVerticalAccuracyMeters;
+  product.stats.gnssAscentMaxVerticalAccuracyMeters = gnss.maxVerticalAccuracyMeters;
+  product.stats.gnssAscentAvgVerticalAccuracyMeters = gnss.avgVerticalAccuracyMeters;
+  product.stats.barometerTotalAscentMeters = -1;
+  product.stats.barometerAscentSampleCount = 0;
+  product.stats.barometerAscentRejectedSampleCount = 0;
+  product.stats.selectedTotalAscentMeters = gnss.totalAscentMeters >= 0
+    ? gnss.totalAscentMeters
+    : -1;
+  product.stats.selectedAscentSource = gnss.totalAscentMeters >= 0 ? 'GNSS' : 'NONE';
+}
+
+function computeGnssAscent(track, rawPoints, config) {
+  const rawById = new Map(rawPoints.map((point) => [point.rawPointId, point]));
+  const samples = [];
+  let rejectedSampleCount = 0;
+  for (const point of track) {
+    if (isTransportRiskReason(point.reason)) {
+      rejectedSampleCount++;
+      continue;
+    }
+    const rawPoint = rawById.get(point.sourceRawPointId);
+    if (!rawPoint || !Number.isFinite(rawPoint.altitude)) {
+      rejectedSampleCount++;
+      continue;
+    }
+    if (!Number.isFinite(rawPoint.verticalAccuracy)
+        || rawPoint.verticalAccuracy > config.gnssAscentMaxVerticalAccuracyMeters) {
+      rejectedSampleCount++;
+      continue;
+    }
+    samples.push({
+      altitude: rawPoint.altitude,
+      verticalAccuracy: rawPoint.verticalAccuracy,
+      elapsedRealtimeNanos: point.elapsedRealtimeNanos,
+      segmentId: point.segmentId
+    });
+  }
+  samples.sort((a, b) => a.elapsedRealtimeNanos - b.elapsedRealtimeNanos);
+  if (samples.length < 2) {
+    return emptyGnssAscent(samples.length, rejectedSampleCount);
+  }
+  let totalAscentMeters = 0;
+  for (let index = 1; index < samples.length; index++) {
+    const previous = samples[index - 1];
+    const current = samples[index];
+    if (previous.segmentId !== current.segmentId) continue;
+    const gain = current.altitude - previous.altitude;
+    if (gain < config.gnssAscentMinGainMeters) continue;
+    if (gain > config.gnssAscentMaxStepGainMeters) {
+      rejectedSampleCount++;
+      continue;
+    }
+    totalAscentMeters += gain;
+  }
+  const verticalAccuracies = samples.map((sample) => sample.verticalAccuracy);
+  return {
+    totalAscentMeters,
+    sampleCount: samples.length,
+    usableSampleCount: samples.length,
+    rejectedSampleCount,
+    minVerticalAccuracyMeters: Math.min(...verticalAccuracies),
+    maxVerticalAccuracyMeters: Math.max(...verticalAccuracies),
+    avgVerticalAccuracyMeters: verticalAccuracies.reduce((sum, value) => sum + value, 0)
+      / verticalAccuracies.length
+  };
+}
+
+function emptyGnssAscent(sampleCount, rejectedSampleCount) {
+  return {
+    totalAscentMeters: -1,
+    sampleCount,
+    usableSampleCount: sampleCount,
+    rejectedSampleCount,
+    minVerticalAccuracyMeters: null,
+    maxVerticalAccuracyMeters: null,
+    avgVerticalAccuracyMeters: null
+  };
+}
+
 function sumTrackField(track, field) {
   return track.reduce((sum, point) => sum + (Number.isFinite(point[field]) ? point[field] : 0), 0);
 }
@@ -691,7 +781,10 @@ function normalizeConfig(config = {}) {
     stationarySessionAnchorRatio: positiveNumber(merged.stationarySessionAnchorRatio, DEFAULT_TARGET_PRODUCT_CONFIG.stationarySessionAnchorRatio),
     barometerCleaningEnabled: merged.barometerCleaningEnabled === true,
     barometerVerticalMotionMinRangeMeters: positiveNumber(merged.barometerVerticalMotionMinRangeMeters, DEFAULT_TARGET_PRODUCT_CONFIG.barometerVerticalMotionMinRangeMeters),
-    barometerVerticalMotionMinWindowCount: positiveNumber(merged.barometerVerticalMotionMinWindowCount, DEFAULT_TARGET_PRODUCT_CONFIG.barometerVerticalMotionMinWindowCount)
+    barometerVerticalMotionMinWindowCount: positiveNumber(merged.barometerVerticalMotionMinWindowCount, DEFAULT_TARGET_PRODUCT_CONFIG.barometerVerticalMotionMinWindowCount),
+    gnssAscentMaxVerticalAccuracyMeters: positiveNumber(merged.gnssAscentMaxVerticalAccuracyMeters, DEFAULT_TARGET_PRODUCT_CONFIG.gnssAscentMaxVerticalAccuracyMeters),
+    gnssAscentMinGainMeters: positiveNumber(merged.gnssAscentMinGainMeters, DEFAULT_TARGET_PRODUCT_CONFIG.gnssAscentMinGainMeters),
+    gnssAscentMaxStepGainMeters: positiveNumber(merged.gnssAscentMaxStepGainMeters, DEFAULT_TARGET_PRODUCT_CONFIG.gnssAscentMaxStepGainMeters)
   };
 }
 
@@ -904,6 +997,8 @@ function normalizeRawPoint(event) {
     lat: numberField(event, 'lat'),
     lng: numberField(event, 'lng'),
     accuracy: numberField(event, 'accuracy'),
+    altitude: numberField(event, 'altitude'),
+    verticalAccuracy: numberField(event, 'verticalAccuracy'),
     speed: numberField(event, 'speed'),
     hasSpeed: event.hasSpeed === true || numberField(event, 'speed') !== null,
     timeMillis: numberField(event, 'timeMillis'),
@@ -1604,7 +1699,19 @@ function emptyProduct(strategyVersion, sourceFilePath, recordStartElapsedRealtim
       trustedPointCount: 0,
       weakPointCount: 0,
       rejectedPointCount: 0,
-      intakeRejectedPointCount: 0
+      intakeRejectedPointCount: 0,
+      gnssTotalAscentMeters: -1,
+      gnssAscentSampleCount: 0,
+      gnssAscentRejectedSampleCount: 0,
+      gnssAscentUsableSampleCount: 0,
+      gnssAscentMinVerticalAccuracyMeters: null,
+      gnssAscentMaxVerticalAccuracyMeters: null,
+      gnssAscentAvgVerticalAccuracyMeters: null,
+      barometerTotalAscentMeters: -1,
+      barometerAscentSampleCount: 0,
+      barometerAscentRejectedSampleCount: 0,
+      selectedTotalAscentMeters: -1,
+      selectedAscentSource: 'NONE'
     },
     findings: []
   };

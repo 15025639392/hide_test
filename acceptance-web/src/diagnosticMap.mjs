@@ -207,7 +207,7 @@ export function buildTargetOutput(model, targetProduct = null) {
   const paceSecondsPerKm = totalDistanceMeters > 0 && movingTimeSeconds > 0
     ? movingTimeSeconds / (totalDistanceMeters / 1000)
     : null;
-  const ascent = ascentEvidence(model.events);
+  const ascent = mergedAscentEvidence(model.events, targetProduct);
   const explainedRawPointIds = targetProduct
     ? explainedRawPointIdsFromTargetProduct(targetProduct)
     : null;
@@ -236,6 +236,7 @@ export function buildTargetOutput(model, targetProduct = null) {
     movingTimeSeconds,
     paceSecondsPerKm,
     selectedTotalAscentMeters: ascent.selectedTotalAscentMeters,
+    selectedAscentSource: ascent.selectedAscentSource,
     summaries: {
       raw: rawSummary(model.points, targetProduct),
       decision: decisionSummary(model, targetProduct),
@@ -1063,6 +1064,36 @@ function ascentEvidence(events) {
     selectedAscentSource,
     barometerTotalAscentMeters,
     gnssTotalAscentMeters
+  };
+}
+
+function mergedAscentEvidence(events, targetProduct) {
+  const recorded = ascentEvidence(events);
+  if (!targetProduct) return recorded;
+  const recomputed = ascentEvidenceFromTargetProduct(targetProduct);
+  return {
+    selectedTotalAscentMeters: recorded.selectedTotalAscentMeters
+      ?? recomputed.selectedTotalAscentMeters,
+    selectedAscentSource: recorded.selectedTotalAscentMeters !== null
+      ? recorded.selectedAscentSource
+      : recomputed.selectedAscentSource,
+    barometerTotalAscentMeters: recorded.barometerTotalAscentMeters
+      ?? recomputed.barometerTotalAscentMeters,
+    gnssTotalAscentMeters: recorded.gnssTotalAscentMeters
+      ?? recomputed.gnssTotalAscentMeters
+  };
+}
+
+function ascentEvidenceFromTargetProduct(targetProduct) {
+  const stats = targetProduct?.stats || {};
+  const selected = numericField(stats, 'selectedTotalAscentMeters');
+  const barometer = numericField(stats, 'barometerTotalAscentMeters');
+  const gnss = numericField(stats, 'gnssTotalAscentMeters');
+  return {
+    selectedTotalAscentMeters: selected !== null && selected >= 0 ? selected : null,
+    selectedAscentSource: String(stats.selectedAscentSource || ''),
+    barometerTotalAscentMeters: barometer !== null && barometer >= 0 ? barometer : null,
+    gnssTotalAscentMeters: gnss !== null && gnss >= 0 ? gnss : null
   };
 }
 

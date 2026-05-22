@@ -60,6 +60,28 @@ test('buildTargetOutput uses recomputed target product instead of recorded decis
   assert.ok(!output.findings.some((finding) => finding.includes('未解释 raw_location')));
 });
 
+test('buildTargetOutput preserves recorded ascent summary when target product has GNSS fallback', () => {
+  const model = parseEvidenceJsonl([
+    '{"event":"session_metadata","sessionId":"S1","createdElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"ascent_summary","selectedTotalAscentMeters":42,"selectedAscentSource":"BAROMETER","barometerTotalAscentMeters":42}',
+    '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":8,"top4AvgCn0":35}',
+    '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":29,"lng":106,"accuracy":8,"altitude":100,"verticalAccuracy":4,"speed":2,"elapsedRealtimeNanos":1000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":29.00012,"lng":106,"accuracy":8,"altitude":110,"verticalAccuracy":4,"speed":2,"elapsedRealtimeNanos":4000000000,"sourceGnssSnapshotId":1}'
+  ].join('\n'));
+  const product = buildTargetTrackProduct(model, {
+    config: { collapseStationarySession: false }
+  });
+  const output = buildTargetOutput(model, product);
+
+  assert.equal(product.stats.selectedAscentSource, 'GNSS');
+  assert.equal(output.selectedTotalAscentMeters, 42);
+  assert.equal(output.selectedAscentSource, 'BAROMETER');
+  assert.equal(output.summaries.pressure.selectedAscentSource, 'BAROMETER');
+  assert.equal(output.summaries.pressure.barometerTotalAscentMeters, 42);
+  assert.equal(output.summaries.pressure.gnssTotalAscentMeters, 10);
+});
+
 test('buildTargetOutput treats collapsed stationary contributing raw points as explained', () => {
   const model = parseEvidenceJsonl([
     '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',

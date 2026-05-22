@@ -364,13 +364,25 @@ function algorithmBlock() {
 function targetProductSummaryRows(dataset) {
   if (!dataset) return ['导入 evidence.jsonl 后显示里程、运动里程、疑似交通里程和运动耗时'];
   const stats = dataset.targetProduct.stats;
+  const ascent = displayAscent(dataset);
   return [
     `文件 ${dataset.fileName}`,
     `里程 ${formatMeters(stats.routeDistanceMeters)}`,
     `运动里程 ${formatMeters(stats.totalDistanceMeters)}`,
     `疑似交通里程 ${formatMeters(stats.suspectedDistanceMeters)}`,
+    `累计爬升 ${formatAscent(ascent.totalMeters)}（${ascent.source}）`,
     `运动耗时 ${formatDuration(stats.movingTimeSeconds)}`
   ];
+}
+
+function displayAscent(dataset) {
+  return {
+    totalMeters: dataset.targetOutput?.selectedTotalAscentMeters
+      ?? dataset.targetProduct.stats.selectedTotalAscentMeters,
+    source: dataset.targetOutput?.selectedAscentSource
+      || dataset.targetProduct.stats.selectedAscentSource
+      || 'NONE'
+  };
 }
 
 function renderAlgorithmDialog() {
@@ -429,6 +441,7 @@ function renderPointDetails() {
 }
 
 function cleanedPointDetailsMarkup(dataset, point) {
+  const ascent = displayAscent(dataset);
   return `
     ${detailBlock('清洗点', [
       `trackPointId ${point.trackPointId}`,
@@ -456,7 +469,8 @@ function cleanedPointDetailsMarkup(dataset, point) {
       `目标总点数 ${dataset.targetProduct.stats.trustedPointCount}`,
       `里程 ${formatMeters(dataset.targetProduct.stats.routeDistanceMeters)}`,
       `运动里程 ${formatMeters(dataset.targetProduct.stats.totalDistanceMeters)}`,
-      `疑似交通里程 ${formatMeters(dataset.targetProduct.stats.suspectedDistanceMeters)}`
+      `疑似交通里程 ${formatMeters(dataset.targetProduct.stats.suspectedDistanceMeters)}`,
+      `累计爬升 ${formatAscent(ascent.totalMeters)}（${ascent.source}）`
     ])}
   `;
 }
@@ -875,7 +889,7 @@ function formatMeters(value) {
 }
 
 function formatAscent(value) {
-  return Number.isFinite(value) ? `${value.toFixed(1)}m` : '证据不足';
+  return Number.isFinite(value) && value >= 0 ? `${value.toFixed(1)}m` : '证据不足';
 }
 
 function formatPace(value) {

@@ -47,6 +47,46 @@ test('buildTargetTrackProduct uses record end minus record start as moving time'
   assert.equal(product.stats.recordEndElapsedRealtimeNanos, 9000000000);
 });
 
+test('buildTargetTrackProduct computes GNSS fallback ascent from trusted raw altitude', () => {
+  const model = parseEvidenceJsonl([
+    '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":8,"top4AvgCn0":32}',
+    '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":5,"altitude":100,"verticalAccuracy":4,"elapsedRealtimeNanos":1000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.0001,"lng":120,"accuracy":5,"altitude":103.5,"verticalAccuracy":4,"elapsedRealtimeNanos":4000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":3,"provider":"gps","lat":30.0002,"lng":120,"accuracy":5,"altitude":102,"verticalAccuracy":4,"elapsedRealtimeNanos":7000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":4,"provider":"gps","lat":30.0003,"lng":120,"accuracy":5,"altitude":106,"verticalAccuracy":4,"elapsedRealtimeNanos":10000000000,"sourceGnssSnapshotId":1}'
+  ].join('\n'));
+
+  const product = buildTargetTrackProduct(model, {
+    config: { collapseStationarySession: false }
+  });
+
+  assert.equal(product.stats.selectedAscentSource, 'GNSS');
+  assert.equal(product.stats.gnssAscentSampleCount, 4);
+  assert.equal(product.stats.gnssTotalAscentMeters, 7.5);
+  assert.equal(product.stats.selectedTotalAscentMeters, 7.5);
+});
+
+test('buildTargetTrackProduct excludes poor vertical accuracy from GNSS ascent', () => {
+  const model = parseEvidenceJsonl([
+    '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"gnss_snapshot","snapshotId":1,"usedInFixTotal":8,"top4AvgCn0":32}',
+    '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":5,"altitude":100,"verticalAccuracy":4,"elapsedRealtimeNanos":1000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.0001,"lng":120,"accuracy":5,"altitude":140,"verticalAccuracy":60,"elapsedRealtimeNanos":4000000000,"sourceGnssSnapshotId":1}',
+    '{"event":"raw_location","rawPointId":3,"provider":"gps","lat":30.0002,"lng":120,"accuracy":5,"altitude":104,"verticalAccuracy":4,"elapsedRealtimeNanos":7000000000,"sourceGnssSnapshotId":1}'
+  ].join('\n'));
+
+  const product = buildTargetTrackProduct(model, {
+    config: { collapseStationarySession: false }
+  });
+
+  assert.equal(product.stats.gnssAscentSampleCount, 2);
+  assert.equal(product.stats.gnssAscentRejectedSampleCount, 1);
+  assert.equal(product.stats.gnssTotalAscentMeters, 4);
+});
+
 test('buildTargetTrackProduct builds from pure evidence without Android decisions', () => {
   const model = parseEvidenceJsonl([
     '{"event":"session_metadata","sessionId":"S1","strategyVersion":"stage2-track-trust-v3-sampling-cloud","recordStartElapsedRealtimeNanos":1000000000}',
