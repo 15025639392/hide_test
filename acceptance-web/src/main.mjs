@@ -53,7 +53,7 @@ const CLEANING_ALGORITHM_SECTIONS = [
   {
     title: '统计口径',
     rows: [
-      '里程 = 清洗后的线路连线总长度，包含跨 segment 拉直线',
+      '里程 = 清洗后的同 segment 运动线路连线总长度，只累计当前点 distanceDeltaMeters > 0 的边',
       '运动里程 = 成品轨迹中 anchor / accept 点的 distanceDeltaMeters 求和',
       '疑似交通里程 = 成品轨迹中交通工具风险点的 distanceDeltaMeters 求和',
       '运动耗时 = 记录终止 elapsedRealtimeNanos - 记录起始 elapsedRealtimeNanos',
