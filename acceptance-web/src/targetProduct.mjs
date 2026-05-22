@@ -136,6 +136,7 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
   rebuildLowQualityMotionSegments(product, evidence, config, engineEligibleRawPointIds);
   pruneIsolatedStationaryMovement(product, config);
   pruneStationaryLowSpeedTail(product, config);
+  recoverStationaryExitMovement(product, evidence, config);
   collapseStationarySessionIfNeeded(product, evidence);
   product.findings = buildFindings(product, evidence);
   return product;
@@ -442,6 +443,7 @@ function pruneIsolatedStationaryMovement(product, config) {
     prunedTrack.push(point);
   }
   product.track = prunedTrack;
+  renumberTrackPoints(product);
   recomputeProductStats(product);
 }
 
@@ -451,11 +453,21 @@ function pruneStationaryLowSpeedTail(product, config) {
   for (let index = 0; index < product.track.length; index++) {
     const anchor = product.track[index];
     if (anchor.reason !== 'stationary_anchor') continue;
+    const tailIndexes = [];
     for (let cursor = index - 1; cursor >= 0; cursor--) {
       const point = product.track[cursor];
       const reason = stationaryTailRejectReason(point);
       if (!reason) break;
       if (distanceMeters(point.lat, point.lng, anchor.lat, anchor.lng) > tailDistanceMeters) break;
+      tailIndexes.push(cursor);
+    }
+    for (const cursor of tailIndexes) {
+      const point = product.track[cursor];
+      const reason = stationaryTailRejectReason(point);
+      if (reason === 'stationary_low_speed_tail'
+          && isProtectedContinuousLowSpeedTail(product.track, tailIndexes, cursor)) {
+        continue;
+      }
       removeIndexes.set(cursor, reason);
     }
   }
@@ -465,6 +477,7 @@ function pruneStationaryLowSpeedTail(product, config) {
     product.excluded.rejected.push(trackPointAsRejected(point, removeIndexes.get(index)));
     return false;
   });
+  renumberTrackPoints(product);
   recomputeProductStats(product);
 }
 
@@ -472,6 +485,129 @@ function stationaryTailRejectReason(point) {
   if (point.reason === 'motion_supported_low_speed') return 'stationary_low_speed_tail';
   if (point.reason === 'continuity_rescue_low_accuracy') return 'stationary_low_accuracy_tail';
   return '';
+}
+
+function isProtectedContinuousLowSpeedTail(track, tailIndexes, index) {
+  const lowSpeedTailIndexes = tailIndexes.filter((cursor) =>
+    track[cursor].reason === 'motion_supported_low_speed');
+  if (!lowSpeedTailIndexes.includes(index)) {
+    return false;
+  }
+  const minIndex = Math.min(...lowSpeedTailIndexes);
+  const maxIndex = Math.max(...lowSpeedTailIndexes);
+  if (maxIndex - minIndex + 1 !== lowSpeedTailIndexes.length) {
+    return false;
+  }
+  let count = 0;
+  let cursor = minIndex - 1;
+  while (cursor >= 0 && track[cursor].reason === 'motion_supported_low_speed') {
+    count++;
+    cursor--;
+  }
+  return count + lowSpeedTailIndexes.length >= 3;
+}
+
+function recoverStationaryExitMovement(product, evidence, config) {
+  const rawById = new Map(evidence.rawPoints.map((rawPoint) => [rawPoint.rawPointId, rawPoint]));
+  const rejected = product.excluded.rejected
+    .filter((point) => point.reason === 'stationary_continuity_jitter')
+    .sort((a, b) => a.elapsedRealtimeNanos - b.elapsedRealtimeNanos);
+  const recoveredRawPointIds = new Set();
+  const rebuiltTrack = [];
+  let changed = false;
+
+  for (let index = 0; index < product.track.length; index++) {
+    const point = product.track[index];
+    rebuiltTrack.push(point);
+    if (point.reason !== 'stationary_anchor') continue;
+    const next = product.track[index + 1];
+    if (!next || next.segmentId !== point.segmentId || !shouldAccumulateMovement(next.reason)) {
+      continue;
+    }
+    const candidates = rejected.filter((candidate) =>
+      candidate.elapsedRealtimeNanos > point.elapsedRealtimeNanos
+      && candidate.elapsedRealtimeNanos < next.elapsedRealtimeNanos
+      && !recoveredRawPointIds.has(candidate.rawPointId));
+    const exitPoints = selectStationaryExitPoints(point, next, candidates,
+      rawById, evidence.motionSummaries, config);
+    let previous = point;
+    for (const exitPoint of exitPoints) {
+      rebuiltTrack.push(recoveredStationaryExitTrackPoint(exitPoint,
+        rawById.get(exitPoint.rawPointId), previous, point, next));
+      recoveredRawPointIds.add(exitPoint.rawPointId);
+      previous = rebuiltTrack.at(-1);
+      changed = true;
+    }
+    if (exitPoints.length > 0) {
+      next.distanceDeltaMeters = distanceMeters(previous.lat, previous.lng, next.lat, next.lng);
+      next.movingTimeDeltaSeconds = Math.max(0,
+        (next.elapsedRealtimeNanos - previous.elapsedRealtimeNanos) / 1_000_000_000);
+    }
+  }
+
+  if (!changed) return;
+  product.track = rebuiltTrack;
+  product.excluded.rejected = product.excluded.rejected
+    .filter((point) => !recoveredRawPointIds.has(point.rawPointId));
+  reconcileTrackSegments(product, config);
+  renumberTrackPoints(product);
+  recomputeProductStats(product);
+}
+
+function selectStationaryExitPoints(anchor, next, candidates, rawById, motionSummaries, config) {
+  const exitPoints = [];
+  let previousDistance = 0;
+  for (const candidate of candidates) {
+    const rawPoint = rawById.get(candidate.rawPointId);
+    if (!rawPoint) continue;
+    const distanceFromAnchor = distanceMeters(anchor.lat, anchor.lng, candidate.lat, candidate.lng);
+    if (distanceFromAnchor < MOTION_SUPPORTED_MIN_DISTANCE_METERS) {
+      continue;
+    }
+    if (distanceFromAnchor + 0.5 < previousDistance) {
+      continue;
+    }
+    if (distanceFromAnchor >= distanceMeters(anchor.lat, anchor.lng, next.lat, next.lng)) {
+      continue;
+    }
+    if (!hasRecentActiveMotion(candidate.elapsedRealtimeNanos, motionSummaries)) {
+      continue;
+    }
+    if (!Number.isFinite(rawPoint.accuracy) || rawPoint.accuracy > config.weakCloudAccuracyMeters) {
+      continue;
+    }
+    exitPoints.push(candidate);
+    previousDistance = distanceFromAnchor;
+  }
+  return exitPoints;
+}
+
+function recoveredStationaryExitTrackPoint(point, rawPoint, previous, anchor, next) {
+  const elapsedDelta = Math.max(0,
+    (point.elapsedRealtimeNanos - previous.elapsedRealtimeNanos) / 1_000_000_000);
+  return {
+    trackPointId: 0,
+    sourceRawPointId: point.rawPointId,
+    recomputedDecisionId: point.rawPointId,
+    segmentId: anchor.segmentId,
+    lat: point.lat,
+    lng: point.lng,
+    elapsedRealtimeNanos: point.elapsedRealtimeNanos,
+    timeMillis: rawPoint?.timeMillis ?? point.timeMillis ?? null,
+    result: 'accept',
+    reason: 'motion_supported_low_speed',
+    distanceDeltaMeters: distanceMeters(previous.lat, previous.lng, point.lat, point.lng),
+    movingTimeDeltaSeconds: elapsedDelta,
+    cloudType: 'STATIONARY_EXIT',
+    cloudId: null,
+    cloudSampleCount: 1,
+    cloudWeightSum: null,
+    cloudWeightedRadiusMeters: distanceMeters(anchor.lat, anchor.lng, next.lat, next.lng),
+    representativeRawPointId: point.rawPointId,
+    contributingRawPointIds: [point.rawPointId],
+    coordinateSource: 'raw',
+    virtualCoordinate: false
+  };
 }
 
 function isTransportRiskReason(reason) {
@@ -525,6 +661,8 @@ function routeDistanceMeters(track) {
   for (let index = 1; index < track.length; index++) {
     const previous = track[index - 1];
     const current = track[index];
+    if (previous.segmentId !== current.segmentId) continue;
+    if (!Number.isFinite(current.distanceDeltaMeters) || current.distanceDeltaMeters <= 0) continue;
     total += distanceMeters(previous.lat, previous.lng, current.lat, current.lng);
   }
   return total;
@@ -567,8 +705,10 @@ function collapseStationarySessionIfNeeded(product, evidence) {
     || point.reason === 'first_fix_good'
     || point.reason === 'first_fix_relaxed').length;
   const stationaryAnchorRatio = stationaryAnchorCount / product.track.length;
-  if (stillRatio < product.config.stationarySessionStillRatio
-      || stationaryAnchorRatio < product.config.stationarySessionAnchorRatio) {
+  const shouldCollapseByMotion = stillRatio >= product.config.stationarySessionStillRatio
+    && stationaryAnchorRatio >= product.config.stationarySessionAnchorRatio;
+  const shouldCollapseByZeroMovement = isZeroMovementStationaryProduct(product);
+  if (!shouldCollapseByMotion && !shouldCollapseByZeroMovement) {
     return;
   }
   if (hasBarometerVerticalMotion(evidence, product.config)) {
@@ -603,6 +743,29 @@ function collapseStationarySessionIfNeeded(product, evidence) {
   product.stats.transportCount = 0;
   product.stats.trustedPointCount = 1;
   product.stationarySessionCollapsed = true;
+}
+
+function isZeroMovementStationaryProduct(product) {
+  if (product.track.length === 0 || product.stats.transportCount > 0) {
+    return false;
+  }
+  if (product.track.some((point) =>
+    Number.isFinite(point.distanceDeltaMeters) && point.distanceDeltaMeters > 0)) {
+    return false;
+  }
+  if (!product.track.some((point) => point.reason === 'stationary_anchor')) {
+    return false;
+  }
+  return product.track.every((point) => isStationaryCollapseReason(point.reason));
+}
+
+function isStationaryCollapseReason(reason) {
+  return reason === 'first_fix_good'
+    || reason === 'first_fix_relaxed'
+    || reason === 'stationary_anchor'
+    || reason === 'gap_recovery'
+    || reason === 'continuity_rescue_gap_recovery'
+    || reason === 'stationary_session_anchor';
 }
 
 function stillMotionRatio(motionSummaries) {

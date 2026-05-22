@@ -144,10 +144,30 @@ TargetTrackProduct
 统计口径：
 
 ```text
-routeDistanceMeters = 里程，清洗后的线路连线总长度，包含跨 segment 拉直线
+routeDistanceMeters = 里程，清洗后的同 segment 运动线路连线总长度；只累计当前点
+distanceDeltaMeters > 0 的边，不包含静止 anchor、GAP 恢复或跨 segment/GAP 拉直线
 totalDistanceMeters = 运动里程，成品轨迹中 anchor / accept 的 distanceDeltaMeters 求和
 suspectedDistanceMeters = 疑似交通里程，成品轨迹中交通工具风险点的 distanceDeltaMeters 求和
 movingTimeSeconds = recordEndElapsedRealtimeNanos - recordStartElapsedRealtimeNanos
+```
+
+整段静止压缩：
+
+```text
+当成品轨迹没有任何正 distanceDeltaMeters、没有交通工具风险、包含 stationary_anchor，
+且可信点原因全部属于首点、静止 anchor 或零 delta GAP 恢复类原因时，可压缩为单个
+stationary_session_anchor。该规则用于处理长时间静止采样中多次 GPS 恢复/漂移造成的
+多 segment 诊断点。
+```
+
+静止边界保护：
+
+```text
+后处理回收 stationary_low_speed_tail 时，不能删除已经形成连续低速移动链的尾部；
+只有孤立或很短的低速点才可被后续 stationary_anchor 回收。对于 stationary_anchor
+之后、下一个可信移动点之前的 stationary_continuity_jitter，如果点位从 anchor
+连续外扩、GNSS 精度仍在 weakCloudAccuracyMeters 内且近期 motion 为 active，
+可恢复为 motion_supported_low_speed，用于表达离开静止区的起步段。
 ```
 
 `recordStartElapsedRealtimeNanos` 优先来自 `session_metadata.recordStartElapsedRealtimeNanos`，
