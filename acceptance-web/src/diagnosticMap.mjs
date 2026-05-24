@@ -1,15 +1,14 @@
+import { createNearestWindowLookup } from './timeWindowIndex.mjs';
+
 const TRUSTED_RESULTS = new Set(['anchor', 'accept']);
 const WEAK_RESULTS = new Set(['weak']);
 const REJECT_RESULTS = new Set(['reject']);
-const LOW_USED_AVG_CN0_DBHZ = 25;
-const LOW_USED_IN_FIX_TOTAL = 5;
-const STALE_RAW_RATIO_REVIEW = 0.2;
 const CALLBACK_DELAY_REVIEW_NANOS = 10_000_000_000;
 const DECISION_REASON_EXPLANATIONS = {
   first_fix_good: {
     title: '首点质量好',
     meaning: '第一颗可信定位点精度达到首点好点阈值，可作为轨迹起始 anchor。',
-    evidence: '重点看 accuracy、归一化定位来源、是否有新鲜质量快照。'
+    evidence: '重点看 accuracy、归一化定位来源、时间戳和采样归因。'
   },
   first_fix_relaxed: {
     title: '首点放宽接受',
@@ -24,12 +23,12 @@ const DECISION_REASON_EXPLANATIONS = {
   weak_signal_stage2: {
     title: '弱点云',
     meaning: '当前合法样本进入 WEAK_CLOUD，只保留为 weak 诊断点，不进入 GPX，也不累计距离。',
-    evidence: '重点看 cloudSampleCount、cloudWeightedRadiusMeters、accuracy、GNSS 质量和 contributingRawPointIds。'
+    evidence: '重点看 cloudSampleCount、cloudWeightedRadiusMeters、accuracy 和 contributingRawPointIds。'
   },
   gap_recovery: {
     title: '长 GAP 后恢复',
     meaning: '距上一可信点间隔过长，恢复点开启或延续 segment，但当前恢复 delta 不回填距离。',
-    evidence: '重点看间隔秒数、no_location_timeout、sampling_policy、GAP 前后 GNSS snapshot。'
+    evidence: '重点看间隔秒数、no_location_timeout、sampling_policy 和 GAP 前后诊断上下文。'
   },
   continuity_rescue_gap_recovery: {
     title: 'GAP 后连续性救援',
@@ -49,7 +48,7 @@ const DECISION_REASON_EXPLANATIONS = {
   recovery_cloud_pending: {
     title: '恢复点云等待稳定',
     meaning: 'GAP、transport 或静止边界后第一个恢复样本还不足以建立新连续性。',
-    evidence: '重点看 RECOVERY_CLOUD 的样本数、半径、GNSS 质量和 samplingEpochId。'
+    evidence: '重点看 RECOVERY_CLOUD 的样本数、半径、accuracy 和 samplingEpochId。'
   },
   stationary_anchor: {
     title: '静止点云 anchor',
@@ -93,7 +92,7 @@ const DECISION_REASON_EXPLANATIONS = {
   },
   motion_supported_low_quality: {
     title: '运动支持低质点',
-    meaning: '低质量 GNSS 段里存在持续 motion 和采样步距证据，Web 将主体结构抽稀成少量成品轨迹点。',
+    meaning: '低质量定位段里存在持续 motion 和采样步距证据，Web 将主体结构抽稀成少量成品轨迹点。',
     evidence: '重点看 contributingRawPointIds、相邻 raw 点距离、device_motion_window active 比例、bbox 展开和是否没有交通工具风险。'
   },
   stationary_low_speed_tail: {
@@ -103,13 +102,13 @@ const DECISION_REASON_EXPLANATIONS = {
   },
   continuity_rescue_low_accuracy: {
     title: '低精度连续性救援',
-    meaning: '弱精度点满足窄化后的 GNSS 和连续性条件，作为低精度但可信的连续移动保留。',
-    evidence: '重点看 accuracy 是否 <= 35m、usedInFixTotal 是否 >= 5、位移是否 >= 2.5m，以及速度是否合理。'
+    meaning: '弱精度点满足窄化后的 Location 连续性条件，作为低精度但可信的连续移动保留。',
+    evidence: '重点看 accuracy 是否 <= 35m、位移是否 >= 2.5m，以及速度是否合理。'
   },
   stationary_low_accuracy_tail: {
     title: '静止低精度尾巴',
     meaning: '低精度救援点紧贴后续静止 anchor，说明更像静止尾部漂移，撤回为 reject。',
-    evidence: '重点看救援点到后续 stationary_anchor 的距离、accuracy、usedInFixTotal 和后续静止证据。'
+    evidence: '重点看救援点到后续 stationary_anchor 的距离、accuracy 和后续静止证据。'
   },
   moving_cloud_unstable: {
     title: '移动点云未稳定',
@@ -124,7 +123,7 @@ const DECISION_REASON_EXPLANATIONS = {
   missing_position_source: {
     title: '缺少定位来源',
     meaning: 'raw_location 缺少 provider/source/sourceKind/trustClass，无法确认它是已归一化的定位证据。',
-    evidence: '重点看多源接入时是否先写入可解释来源，例如 watch_gps、external_gnss、ios_core_location 或等价 sourceKind。'
+    evidence: '重点看多源接入时是否先写入可解释来源，例如 watch_location、external_location、ios_core_location 或等价 sourceKind。'
   },
   missing_fix_elapsed_realtime: {
     title: '缺少 elapsedRealtime',
@@ -168,8 +167,7 @@ export function isEvidenceJsonlPath(path) {
 }
 
 export function isEvidenceCandidatePath(path) {
-  return /(^|\/)(evidence|gnss_evidence_[^/]+)\.jsonl(?:\.json)?$/i
-    .test(String(path || ''));
+  return isEvidenceJsonlPath(path);
 }
 
 export function parseEvidenceJsonl(text, filePath = 'evidence.jsonl') {
@@ -240,9 +238,10 @@ export function buildTargetOutput(model, targetProduct = null) {
     summaries: {
       raw: rawSummary(model.points, targetProduct),
       decision: decisionSummary(model, targetProduct),
-      gnss: gnssSummary(model),
       pressure: pressureSummary(model, ascent),
-      motion: motionSummary(model)
+      motion: motionSummary(model),
+      sessionProfile: targetProduct?.sessionProfile ?? null,
+      adaptiveShadow: targetProduct?.adaptiveShadow ?? null
     },
     findings
   };
@@ -259,14 +258,13 @@ export function explainDecisionReason(result, reason) {
     reason: key,
     title: key || '未记录原因',
     meaning: '当前页面还没有这个算法原因的专门中文解释，请结合 result、上下文和原始字段复核。',
-    evidence: '重点看 raw_location、GNSS snapshot、时间间隔、速度和 session_event。'
+    evidence: '重点看 raw_location、Location 精度、时间间隔、速度和 session_event。'
   };
 }
 
 function buildDiagnosticModel(events, parseErrors, filePath) {
   const metadata = events.find((event) => event.event === 'session_metadata') || {};
   const rawById = new Map();
-  const gnssById = new Map();
   const barometerWindows = [];
   const deviceMotionWindows = [];
   const sessionEvents = [];
@@ -275,8 +273,6 @@ function buildDiagnosticModel(events, parseErrors, filePath) {
   for (const event of events) {
     if (event.event === 'raw_location' && isFiniteNumber(event.lat) && isFiniteNumber(event.lng)) {
       rawById.set(Number(event.rawPointId), normalizeRawPoint(event));
-    } else if (event.event === 'gnss_snapshot') {
-      gnssById.set(Number(event.snapshotId), event);
     } else if (event.event === 'barometer_window') {
       barometerWindows.push(event);
     } else if (event.event === 'device_motion_window') {
@@ -289,12 +285,6 @@ function buildDiagnosticModel(events, parseErrors, filePath) {
   }
 
   const points = Array.from(rawById.values()).sort(comparePointTime);
-  for (const point of points) {
-    const snapshotId = Number(point.sourceGnssSnapshotId);
-    if (gnssById.has(snapshotId)) {
-      point.gnss = gnssById.get(snapshotId);
-    }
-  }
   enrichPoints(points, deviceMotionWindows, barometerWindows);
 
   const trustedPoints = points.filter((point) => TRUSTED_RESULTS.has(point.kind));
@@ -308,7 +298,6 @@ function buildDiagnosticModel(events, parseErrors, filePath) {
     points,
     decisions: [],
     parseErrors,
-    gnssSnapshots: Array.from(gnssById.values()),
     sessionEvents,
     samplingPolicies,
     deviceMotionWindows,
@@ -341,9 +330,6 @@ function buildDiagnosticModel(events, parseErrors, filePath) {
       rejectedCount: rejectedPoints.length,
       weakCount: weakPoints.length,
       undecidedCount: undecidedPoints.length,
-      linkedGnssPointCount: evidence.metrics.linkedGnssPointCount,
-      staleRawCount: evidence.metrics.staleRawCount,
-      gnssSnapshotCount: gnssById.size,
       barometerWindowCount: barometerWindows.length,
       deviceMotionWindowCount: deviceMotionWindows.length,
       sessionEventCount: sessionEvents.length,
@@ -373,10 +359,6 @@ function normalizeRawPoint(event) {
     timeMillis: nullableNumber(event.timeMillis),
     callbackReceivedElapsedRealtimeNanos: nullableNumber(event.callbackReceivedElapsedRealtimeNanos),
     callbackDelayNanos: nullableNumber(event.callbackDelayNanos),
-    sourceGnssSnapshotId: nullableNumber(event.sourceGnssSnapshotId),
-    sourceGnssSnapshotAgeNanos: nullableNumber(event.sourceGnssSnapshotAgeNanos),
-    sourceGnssSnapshotMatchedFromFuture: event.sourceGnssSnapshotMatchedFromFuture === true,
-    gnssQualityStale: event.gnssQualityStale === true,
     kind: 'raw'
   };
 }
@@ -440,9 +422,11 @@ function enrichPoints(points, deviceMotionWindows, barometerWindows) {
   let previousTrustedPoint = null;
   const sortedDeviceMotionWindows = [...deviceMotionWindows].sort(compareEventTime);
   const sortedBarometerWindows = [...barometerWindows].sort(compareEventTime);
+  const deviceMotionLookup = createNearestWindowLookup(sortedDeviceMotionWindows);
+  const barometerLookup = createNearestWindowLookup(sortedBarometerWindows);
   for (const point of points) {
-    point.nearestDeviceMotionWindow = nearestWindow(point, sortedDeviceMotionWindows);
-    point.nearestBarometerWindow = nearestWindow(point, sortedBarometerWindows);
+    point.nearestDeviceMotionWindow = deviceMotionLookup.nearest(point.elapsedRealtimeNanos);
+    point.nearestBarometerWindow = barometerLookup.nearest(point.elapsedRealtimeNanos);
     point.diagnosticContext = buildPointContext(point, previousTrustedPoint);
     point.insights = buildPointInsights(point);
     if (TRUSTED_RESULTS.has(point.kind)) {
@@ -488,13 +472,6 @@ function buildPointInsights(point) {
     });
   }
 
-  if (point.gnssQualityStale) {
-    insights.push({
-      level: 'review',
-      text: '该点关联的 GNSS snapshot 已过期，卫星质量解释存在缺口。'
-    });
-  }
-
   if (point.callbackDelayNanos !== null) {
     const callbackDelaySeconds = point.callbackDelayNanos / 1_000_000_000;
     if (point.callbackDelayNanos >= CALLBACK_DELAY_REVIEW_NANOS) {
@@ -506,37 +483,6 @@ function buildPointInsights(point) {
       insights.push({
         level: 'info',
         text: `Location callback 延迟约 ${formatOneDecimal(callbackDelaySeconds)} 秒，仅用于诊断展示。`
-      });
-    }
-  }
-
-  if (!point.gnss && (point.kind === 'weak' || point.kind === 'reject')) {
-    insights.push({
-      level: 'review',
-      text: `${decision.result} 点缺少可关联 GNSS snapshot，只能用 Location 精度和策略 reason 解释。`
-    });
-  }
-
-  if (point.gnss) {
-    const usedAvgCn0 = numericField(point.gnss, 'usedAvgCn0');
-    const usedInFixTotal = numericField(point.gnss, 'usedInFixTotal');
-    const top4AvgCn0 = numericField(point.gnss, 'top4AvgCn0');
-    if (usedAvgCn0 !== null && usedAvgCn0 > 0 && usedAvgCn0 < LOW_USED_AVG_CN0_DBHZ) {
-      insights.push({
-        level: 'review',
-        text: `usedAvgCn0=${usedAvgCn0.toFixed(1)} dB-Hz 偏低，弱信号可能来自参与定位卫星信噪比不足。`
-      });
-    }
-    if (usedInFixTotal !== null && usedInFixTotal > 0 && usedInFixTotal < LOW_USED_IN_FIX_TOTAL) {
-      insights.push({
-        level: 'review',
-        text: `usedInFixTotal=${usedInFixTotal.toFixed(0)} 偏少，可能存在遮挡或星座几何不足。`
-      });
-    }
-    if (top4AvgCn0 !== null && top4AvgCn0 > 0 && point.kind === 'weak') {
-      insights.push({
-        level: 'info',
-        text: `weak 点关联 top4AvgCn0=${top4AvgCn0.toFixed(1)} dB-Hz，可和 accuracy 一起判断弱信号来源。`
       });
     }
   }
@@ -602,7 +548,6 @@ function buildEvidenceModel({
   points,
   decisions,
   parseErrors,
-  gnssSnapshots,
   sessionEvents,
   samplingPolicies,
   deviceMotionWindows,
@@ -612,12 +557,7 @@ function buildEvidenceModel({
   const rejectedPoints = points.filter((point) => point.kind === 'reject');
   const transportPoints = points.filter((point) => point.decision?.reason?.startsWith('transport_'));
   const gapRecoveryPoints = points.filter((point) => point.decision?.reason === 'gap_recovery');
-  const staleRawCount = points.filter((point) => point.gnssQualityStale).length;
-  const linkedGnssPointCount = points.filter((point) => point.gnss).length;
   const noLocationEvents = sessionEvents.filter((event) => event.eventType === 'no_location_timeout');
-  const explainableGnssSnapshotCount = gnssSnapshots.filter((snapshot) => (
-    numericField(snapshot, 'allAvgCn0') !== null && numericField(snapshot, 'top4AvgCn0') !== null
-  )).length;
   const weakMetrics = metricTotals(weakPoints);
   const rejectMetrics = metricTotals(rejectedPoints);
   const transportMetrics = metricTotals(transportPoints);
@@ -633,7 +573,6 @@ function buildEvidenceModel({
     rejectedPoints,
     transportPoints,
     gapRecoveryPoints,
-    staleRawCount,
     noLocationEvents,
     weakMetrics,
     rejectMetrics,
@@ -644,14 +583,6 @@ function buildEvidenceModel({
     metrics: {
       rawCount: points.length,
       decisionCount: decisions.length,
-      linkedGnssPointCount,
-      staleRawCount,
-      staleRawRatio: points.length === 0 ? 0 : staleRawCount / points.length,
-      gnssSnapshotCount: gnssSnapshots.length,
-      explainableGnssSnapshotCount,
-      weakGnssLinkedCount: weakMetrics.linkedGnssCount,
-      rejectGnssLinkedCount: rejectMetrics.linkedGnssCount,
-      transportGnssLinkedCount: transportMetrics.linkedGnssCount,
       gapRecoveryCount: gapRecoveryPoints.length,
       noLocationTimeoutCount: noLocationEvents.length,
       maxNoLocationTimeoutSeconds,
@@ -674,7 +605,6 @@ function buildFindings({
   rejectedPoints,
   transportPoints,
   gapRecoveryPoints,
-  staleRawCount,
   noLocationEvents,
   weakMetrics,
   rejectMetrics,
@@ -710,43 +640,6 @@ function buildFindings({
       detail: `raw_location=${points.length}，解释事件=${explainedPointCount}，需要确认是否有未决或丢失事件。`
     });
   }
-  if (weakPoints.length > weakMetrics.linkedGnssCount) {
-    findings.push({
-      level: 'review',
-      title: 'weak 点缺少卫星质量证据',
-      detail: `${weakPoints.length - weakMetrics.linkedGnssCount} 个 weak decision 没有关联 GNSS snapshot。`
-    });
-  }
-  if (rejectedPoints.length > rejectMetrics.linkedGnssCount) {
-    findings.push({
-      level: 'review',
-      title: 'reject 点缺少卫星质量证据',
-      detail: `${rejectedPoints.length - rejectMetrics.linkedGnssCount} 个 reject decision 没有关联 GNSS snapshot。`
-    });
-  }
-  if (points.length > 0 && staleRawCount / points.length > STALE_RAW_RATIO_REVIEW) {
-    findings.push({
-      level: 'review',
-      title: 'GNSS snapshot 过期比例偏高',
-      detail: `${staleRawCount}/${points.length} 个 raw_location 使用 stale GNSS 证据。`
-    });
-  }
-  if (weakPoints.length > 0 && weakMetrics.averageUsedAvgCn0 > 0
-      && weakMetrics.averageUsedAvgCn0 < LOW_USED_AVG_CN0_DBHZ) {
-    findings.push({
-      level: 'review',
-      title: 'weak 点伴随低 C/N0',
-      detail: `weak usedAvgCn0 平均 ${formatOneDecimal(weakMetrics.averageUsedAvgCn0)} dB-Hz，弱信号可能来自信噪比不足。`
-    });
-  }
-  if (weakPoints.length > 0 && weakMetrics.averageUsedInFixTotal > 0
-      && weakMetrics.averageUsedInFixTotal < LOW_USED_IN_FIX_TOTAL) {
-    findings.push({
-      level: 'review',
-      title: 'weak 点参与定位卫星偏少',
-      detail: `weak usedInFixTotal 平均 ${formatOneDecimal(weakMetrics.averageUsedInFixTotal)}，可能存在遮挡或星座几何不足。`
-    });
-  }
   if (gapRecoveryPoints.length > 0 || noLocationEvents.length > 0) {
     findings.push({
       level: 'review',
@@ -754,11 +647,11 @@ function buildFindings({
       detail: `gap_recovery=${gapRecoveryPoints.length}，no_location_timeout=${noLocationEvents.length}，需要结合采样和系统后台行为复核。`
     });
   }
-  if (transportPoints.length > 0 && transportMetrics.averageUsedAvgCn0 >= LOW_USED_AVG_CN0_DBHZ) {
+  if (transportPoints.length > 0) {
     findings.push({
       level: 'info',
-      title: '交通工具段不像弱信号问题',
-      detail: `transport usedAvgCn0 平均 ${formatOneDecimal(transportMetrics.averageUsedAvgCn0)} dB-Hz，更可能由速度证据触发。`
+      title: '存在疑似交通工具段',
+      detail: `transport 点数=${transportPoints.length}，需要结合速度、位移和真实路线复核。`
     });
   }
   if (findings.length === 0) {
@@ -774,15 +667,8 @@ function buildFindings({
 function metricTotals(points) {
   const totals = {
     decisionCount: points.length,
-    linkedGnssCount: 0,
     accuracyCount: 0,
-    accuracyTotal: 0,
-    usedInFixTotalSum: 0,
-    usedAvgCn0Sum: 0,
-    top4AvgCn0Sum: 0,
-    allAvgCn0Sum: 0,
-    lowCn0VisibleCountSum: 0,
-    weakUsedCountSum: 0
+    accuracyTotal: 0
   };
 
   for (const point of points) {
@@ -790,28 +676,11 @@ function metricTotals(points) {
       totals.accuracyCount++;
       totals.accuracyTotal += point.accuracy;
     }
-    if (!point.gnss) {
-      continue;
-    }
-    totals.linkedGnssCount++;
-    addMetric(totals, point.gnss, 'usedInFixTotal', 'usedInFixTotalSum');
-    addMetric(totals, point.gnss, 'usedAvgCn0', 'usedAvgCn0Sum');
-    addMetric(totals, point.gnss, 'top4AvgCn0', 'top4AvgCn0Sum');
-    addMetric(totals, point.gnss, 'allAvgCn0', 'allAvgCn0Sum');
-    addMetric(totals, point.gnss, 'lowCn0VisibleCount', 'lowCn0VisibleCountSum');
-    addMetric(totals, point.gnss, 'weakUsedCount', 'weakUsedCountSum');
   }
 
   return {
     decisionCount: totals.decisionCount,
-    linkedGnssCount: totals.linkedGnssCount,
-    averageAccuracyMeters: average(totals.accuracyTotal, totals.accuracyCount),
-    averageUsedInFixTotal: average(totals.usedInFixTotalSum, totals.linkedGnssCount),
-    averageUsedAvgCn0: average(totals.usedAvgCn0Sum, totals.linkedGnssCount),
-    averageTop4AvgCn0: average(totals.top4AvgCn0Sum, totals.linkedGnssCount),
-    averageAllAvgCn0: average(totals.allAvgCn0Sum, totals.linkedGnssCount),
-    averageLowCn0VisibleCount: average(totals.lowCn0VisibleCountSum, totals.linkedGnssCount),
-    averageWeakUsedCount: average(totals.weakUsedCountSum, totals.linkedGnssCount)
+    averageAccuracyMeters: average(totals.accuracyTotal, totals.accuracyCount)
   };
 }
 
@@ -847,30 +716,6 @@ function buildTimelineItems(points, sessionEvents, samplingPolicies) {
   return items.sort((a, b) => a.sortTime - b.sortTime);
 }
 
-function nearestWindow(point, windows) {
-  if (!Number.isFinite(point.elapsedRealtimeNanos) || windows.length === 0) {
-    return null;
-  }
-  let best = null;
-  let bestDistance = Infinity;
-  for (const window of windows) {
-    const start = numericField(window, 'startElapsedRealtimeNanos');
-    const end = numericField(window, 'endElapsedRealtimeNanos');
-    if (start === null || end === null) {
-      continue;
-    }
-    const distance = point.elapsedRealtimeNanos >= start && point.elapsedRealtimeNanos <= end
-      ? 0
-      : Math.min(Math.abs(point.elapsedRealtimeNanos - start),
-        Math.abs(point.elapsedRealtimeNanos - end));
-    if (distance < bestDistance) {
-      best = window;
-      bestDistance = distance;
-    }
-  }
-  return best;
-}
-
 function pointBounds(points) {
   if (points.length === 0) {
     return null;
@@ -886,13 +731,6 @@ function pointBounds(points) {
     minLng: points[0].lng,
     maxLng: points[0].lng
   });
-}
-
-function addMetric(totals, object, field, totalField) {
-  const value = numericField(object, field);
-  if (value !== null) {
-    totals[totalField] += value;
-  }
 }
 
 function average(total, count) {
@@ -1003,19 +841,6 @@ function incrementReason(counts, result, reason) {
   counts.set(key, (counts.get(key) || 0) + 1);
 }
 
-function gnssSummary(model) {
-  const snapshots = model.events.filter((event) => event.event === 'gnss_snapshot');
-  return {
-    snapshotCount: snapshots.length,
-    linkedPointCount: model.summary.linkedGnssPointCount,
-    staleRawCount: model.summary.staleRawCount,
-    staleRawRatio: model.summary.rawCount === 0 ? 0 : model.summary.staleRawCount / model.summary.rawCount,
-    averageUsedInFixTotal: averageMetric(snapshots, 'usedInFixTotal'),
-    averageUsedAvgCn0: averageMetric(snapshots, 'usedAvgCn0'),
-    averageTop4AvgCn0: averageMetric(snapshots, 'top4AvgCn0')
-  };
-}
-
 function pressureSummary(model, ascent) {
   const barometerWindows = model.events.filter((event) => event.event === 'barometer_window');
   return {
@@ -1023,7 +848,7 @@ function pressureSummary(model, ascent) {
     selectedTotalAscentMeters: ascent.selectedTotalAscentMeters,
     selectedAscentSource: ascent.selectedAscentSource,
     barometerTotalAscentMeters: ascent.barometerTotalAscentMeters,
-    gnssTotalAscentMeters: ascent.gnssTotalAscentMeters
+    locationAltitudeTotalAscentMeters: ascent.locationAltitudeTotalAscentMeters
   };
 }
 
@@ -1043,7 +868,7 @@ function ascentEvidence(events) {
   let selectedTotalAscentMeters = null;
   let selectedAscentSource = '';
   let barometerTotalAscentMeters = null;
-  let gnssTotalAscentMeters = null;
+  let locationAltitudeTotalAscentMeters = null;
   for (const event of events) {
     const selected = numericField(event, 'selectedTotalAscentMeters');
     if (selected !== null && selected >= 0) {
@@ -1054,16 +879,16 @@ function ascentEvidence(events) {
     if (barometer !== null && barometer >= 0) {
       barometerTotalAscentMeters = barometer;
     }
-    const gnss = numericField(event, 'gnssTotalAscentMeters');
-    if (gnss !== null && gnss >= 0) {
-      gnssTotalAscentMeters = gnss;
+    const locationAltitude = numericField(event, 'locationAltitudeTotalAscentMeters');
+    if (locationAltitude !== null && locationAltitude >= 0) {
+      locationAltitudeTotalAscentMeters = locationAltitude;
     }
   }
   return {
     selectedTotalAscentMeters,
     selectedAscentSource,
     barometerTotalAscentMeters,
-    gnssTotalAscentMeters
+    locationAltitudeTotalAscentMeters
   };
 }
 
@@ -1079,8 +904,8 @@ function mergedAscentEvidence(events, targetProduct) {
       : recomputed.selectedAscentSource,
     barometerTotalAscentMeters: recorded.barometerTotalAscentMeters
       ?? recomputed.barometerTotalAscentMeters,
-    gnssTotalAscentMeters: recorded.gnssTotalAscentMeters
-      ?? recomputed.gnssTotalAscentMeters
+    locationAltitudeTotalAscentMeters: recorded.locationAltitudeTotalAscentMeters
+      ?? recomputed.locationAltitudeTotalAscentMeters
   };
 }
 
@@ -1088,26 +913,15 @@ function ascentEvidenceFromTargetProduct(targetProduct) {
   const stats = targetProduct?.stats || {};
   const selected = numericField(stats, 'selectedTotalAscentMeters');
   const barometer = numericField(stats, 'barometerTotalAscentMeters');
-  const gnss = numericField(stats, 'gnssTotalAscentMeters');
+  const locationAltitude = numericField(stats, 'locationAltitudeTotalAscentMeters');
   return {
     selectedTotalAscentMeters: selected !== null && selected >= 0 ? selected : null,
     selectedAscentSource: String(stats.selectedAscentSource || ''),
     barometerTotalAscentMeters: barometer !== null && barometer >= 0 ? barometer : null,
-    gnssTotalAscentMeters: gnss !== null && gnss >= 0 ? gnss : null
+    locationAltitudeTotalAscentMeters: locationAltitude !== null && locationAltitude >= 0
+      ? locationAltitude
+      : null
   };
-}
-
-function averageMetric(events, field) {
-  let total = 0;
-  let count = 0;
-  for (const event of events) {
-    const value = numericField(event, field);
-    if (value !== null) {
-      total += value;
-      count++;
-    }
-  }
-  return count === 0 ? 0 : total / count;
 }
 
 function numericField(object, field) {

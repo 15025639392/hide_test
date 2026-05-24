@@ -262,6 +262,24 @@ button:disabled {
   background: #ef4444;
 }
 
+.line.shadow {
+  background: repeating-linear-gradient(90deg, #38bdf8 0 7px, transparent 7px 11px);
+}
+
+.line.low-quality {
+  background: repeating-linear-gradient(90deg, #f97316 0 6px, transparent 6px 10px);
+}
+
+.direction-arrow {
+  display: inline-block;
+  margin-right: 5px;
+  color: #ffffff;
+  font-size: 11px;
+  line-height: 1;
+  text-shadow: 0 0 4px rgba(0, 0, 0, 0.9);
+  vertical-align: middle;
+}
+
 .dot.cleaned {
   background: #ef4444;
 }
@@ -282,6 +300,18 @@ button:disabled {
 
 .dot.raw {
   background: var(--raw);
+}
+
+.dot.shadow-promoted {
+  background: #22c55e;
+}
+
+.dot.shadow-demoted {
+  background: var(--fail);
+}
+
+.dot.shadow-reason {
+  background: #38bdf8;
 }
 
 .panel {
@@ -440,6 +470,37 @@ button:disabled {
 .algorithm-section b {
   color: #ffffff;
   font-size: 12px;
+}
+
+.shadow-diff-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 3px;
+}
+
+.shadow-diff-button {
+  justify-content: flex-start;
+  height: auto;
+  min-height: 34px;
+  border-left-width: 4px;
+  padding: 7px 9px;
+  color: #d5e2e5;
+  font-weight: 760;
+  line-height: 1.25;
+  text-align: left;
+  white-space: normal;
+}
+
+.shadow-diff-button[data-shadow-change-type="promoted_to_trusted"] {
+  border-left-color: #22c55e;
+}
+
+.shadow-diff-button[data-shadow-change-type="demoted_from_trusted"] {
+  border-left-color: var(--fail);
+}
+
+.shadow-diff-button[data-shadow-change-type="reason_changed"] {
+  border-left-color: #38bdf8;
 }
 
 .algorithm-source {

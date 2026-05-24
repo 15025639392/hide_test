@@ -41,7 +41,11 @@
           <div class="map-filter-panel" aria-label="地图筛选条件">
             <label class="toggle"><input id="showRaw" type="checkbox" checked /> raw</label>
             <label class="toggle"><input id="showTrusted" type="checkbox" checked /> 可信</label>
-            <label class="toggle"><input id="showCleaned" type="checkbox" /> 清洗轨迹</label>
+            <label class="toggle"><input id="showCleaned" type="checkbox" checked /> 清洗轨迹</label>
+            <label class="toggle"><input id="showShadow" type="checkbox" checked /> 影子轨迹</label>
+            <label class="toggle"><input id="showDirection" type="checkbox" checked /> 方向</label>
+            <label class="toggle"><input id="showLowQualityCandidates" type="checkbox" checked /> 低质候选</label>
+            <label class="toggle"><input id="showShadowDiffs" type="checkbox" checked /> 分歧</label>
             <label class="toggle"><input id="showCleanedPoints" type="checkbox" checked /> 清洗点</label>
             <label class="toggle"><input id="showPoints" type="checkbox" checked /> 点</label>
           </div>
@@ -49,10 +53,16 @@
             <span><i class="line raw"></i>raw 轨迹</span>
             <span><i class="line trusted"></i>可信轨迹</span>
             <span><i class="line cleaned"></i>算法清洗轨迹</span>
+            <span><i class="line shadow"></i>影子轨迹</span>
+            <span><i class="line low-quality"></i>低质候选</span>
+            <span><i class="direction-arrow">▲</i>方向</span>
             <span><i class="dot cleaned"></i>清洗点</span>
             <span><i class="dot trusted"></i>anchor/accept</span>
             <span><i class="dot weak"></i>weak</span>
             <span><i class="dot reject"></i>reject/intake</span>
+            <span><i class="dot shadow-promoted"></i>可能救回</span>
+            <span><i class="dot shadow-demoted"></i>可能降级</span>
+            <span><i class="dot shadow-reason"></i>原因变化</span>
             <span><i class="dot raw"></i>未解释 raw</span>
           </div>
         </section>
@@ -70,9 +80,10 @@
               <details class="advanced-config">
                 <summary>高级</summary>
                 <div class="advanced-config-grid">
-                  <label>accuracy 上限<input id="maxIntakeAccuracyMeters" type="number" min="1" step="1" /></label>
-                  <label class="config-toggle"><input id="barometerCleaningEnabled" type="checkbox" /> 气压阻止静止整段压缩</label>
-                </div>
+	                  <label>accuracy 上限<input id="maxIntakeAccuracyMeters" type="number" min="1" step="1" /></label>
+	                  <label class="config-toggle"><input id="barometerCleaningEnabled" type="checkbox" /> 气压阻止静止整段压缩</label>
+	                  <label class="config-toggle"><input id="lowQualityMotionRebuildEnabled" type="checkbox" /> 低质量重建进入轨迹</label>
+	                </div>
               </details>
               <button id="applyConfigButton" type="button">应用参数</button>
               <button id="resetConfigButton" type="button">恢复默认</button>

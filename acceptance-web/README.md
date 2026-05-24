@@ -43,7 +43,7 @@ https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}
 - raw 轨迹使用细虚线，可信轨迹使用粗实线。
 - 点类型区分 `anchor / accept / weak / reject / intake_rejected / raw`。
 - 文件列表展示：文件名、设备、轨迹点数、里程、运动耗时、配速、累计爬升。
-- 选中文件后展示 Web 清洗结果、raw、GNSS、pressure、motion 摘要。
+- 选中文件后展示 Web 清洗结果、raw、pressure、motion 摘要。
 - 点击地图点后展示 raw 证据或 Web 清洗点详情。
 - 疑似交通工具只标记为 `transport_suspected_kept`，不作为清洗剔除条件。
 - 静止 anchor 使用点云中心压漂移，移动/连续性救回/GAP 恢复使用 raw 坐标避免轨迹回拉。

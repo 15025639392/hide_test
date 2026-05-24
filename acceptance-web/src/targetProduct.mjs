@@ -1,3 +1,8 @@
+import {
+  createRecentMotionSummaryIndex,
+  recentMotionStats
+} from './timeWindowIndex.mjs';
+
 const START_TOLERANCE_NANOS = 1_000_000_000;
 const FIRST_FIX_GOOD_ACCURACY_METERS = 20;
 const MOTION_WINDOW_NANOS = 5_000_000_000;
@@ -14,8 +19,13 @@ const LOW_QUALITY_SEGMENT_MIN_STEP_METERS = 1.8;
 const LOW_QUALITY_SEGMENT_MAX_STEP_METERS = 10;
 const LOW_QUALITY_SEGMENT_SIMPLIFY_TOLERANCE_METERS = 12;
 const LOW_ACCURACY_RESCUE_MAX_ACCURACY_METERS = 35;
-const LOW_ACCURACY_RESCUE_MIN_USED_IN_FIX = 5;
 const LOW_ACCURACY_RESCUE_MIN_DISTANCE_METERS = 2.5;
+const ADAPTIVE_SHADOW_MAX_DIFFERENCES = 50;
+const ADAPTIVE_SHADOW_DISTANCE_REVIEW_METERS = 30;
+const ADAPTIVE_SHADOW_DISTANCE_REVIEW_RATIO = 0.05;
+const ADAPTIVE_SHADOW_TRUSTED_POINT_REVIEW_MIN_DELTA = 3;
+const ADAPTIVE_SHADOW_TRUSTED_POINT_REVIEW_RATIO = 0.05;
+const ADAPTIVE_SHADOW_CHANGED_REVIEW_RATIO = 0.1;
 
 export const DEFAULT_TARGET_PRODUCT_CONFIG = Object.freeze({
   maxIntakeAccuracyMeters: 80,
@@ -30,14 +40,15 @@ export const DEFAULT_TARGET_PRODUCT_CONFIG = Object.freeze({
   transportMinDistanceMeters: 20,
   cloudTemporalDecaySeconds: 20,
   collapseStationarySession: true,
+  lowQualityMotionRebuildEnabled: false,
   stationarySessionStillRatio: 0.95,
   stationarySessionAnchorRatio: 0.8,
   barometerCleaningEnabled: false,
   barometerVerticalMotionMinRangeMeters: 3,
   barometerVerticalMotionMinWindowCount: 5,
-  gnssAscentMaxVerticalAccuracyMeters: 20,
-  gnssAscentMinGainMeters: 1,
-  gnssAscentMaxStepGainMeters: 30
+  locationAltitudeAscentMaxVerticalAccuracyMeters: 20,
+  locationAltitudeAscentMinGainMeters: 1,
+  locationAltitudeAscentMaxStepGainMeters: 30
 });
 
 const DEFAULT_CLOUD_RULES = {
@@ -58,6 +69,7 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
     evidence.recordStartElapsedRealtimeNanos, evidence.recordEndElapsedRealtimeNanos);
   product.config = config;
   product.usesDefaultConfig = isDefaultConfig(config);
+  product.sessionProfile = buildSessionProfile(evidence, config);
   let previousTrustedTrackPoint = null;
   let activeStationaryAnchor = null;
   let segmentId = 1;
@@ -73,14 +85,12 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
     if (!intake.accepted && !canRescueContinuityPoint(rawPoint,
       previousTrustedTrackPoint, intake.reason, config)) {
       product.excluded.intakeRejected.push(excludedPoint(rawPoint, 'intake_rejected',
-        intake.reason, epoch));
+        intake.reason, epoch, null));
       continue;
     }
 
     engineEligibleRawPointIds.add(rawPoint.rawPointId);
-    const snapshot = findGnssSnapshot(rawPoint, evidence.gnssById);
-    const decision = engine.decide(rawPoint, epoch, snapshot, evidence.motionSummaries,
-      previousTrustedTrackPoint);
+    const decision = engine.decide(rawPoint, epoch, evidence.motionIndex, previousTrustedTrackPoint);
     decisionId++;
 
     if (decision.result === 'anchor' || decision.result === 'accept') {
@@ -142,6 +152,8 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
   recoverStationaryExitMovement(product, evidence, config);
   collapseStationarySessionIfNeeded(product, evidence);
   recomputeAscentStats(product, evidence);
+  product.adaptiveShadow = buildAdaptiveShadow(events, config, product, product.sessionProfile,
+    sourceFilePath, options);
   product.findings = buildFindings(product, evidence);
   return product;
 }
@@ -165,8 +177,29 @@ function isStationaryGapRecovery(rawPoint, decision, activeStationaryAnchor, con
 }
 
 function rebuildLowQualityMotionSegments(product, evidence, config, engineEligibleRawPointIds) {
+  product.lowQualityMotionRebuild = {
+    mode: config.lowQualityMotionRebuildEnabled ? 'track' : 'review_only',
+    candidateCount: 0,
+    candidates: [],
+    rawIntervalCandidateCount: 0,
+    rawIntervalCandidates: [],
+    rawIntervalScan: {
+      scannedIntervalCount: 0,
+      rejectedIntervalCount: 0
+    },
+    scannedMovingGoodFixCount: 0,
+    skipped: {
+      transportBoundary: 0,
+      missingLowQualityBoundary: 0,
+      sourceOutsideInterval: 0,
+      criteriaRejected: 0,
+      structureTooShort: 0
+    },
+    rejectedExamples: []
+  };
   if (!Array.isArray(evidence.rawPoints) || evidence.rawPoints.length === 0) return;
   let changed = false;
+  const candidates = [];
   const rebuiltTrack = product.track.length > 0 ? [product.track[0]] : [];
   const reclassifiedRawPointIds = new Set();
   for (let index = 1; index < product.track.length; index++) {
@@ -176,13 +209,18 @@ function rebuildLowQualityMotionSegments(product, evidence, config, engineEligib
       rebuiltTrack.push(point);
       continue;
     }
+    product.lowQualityMotionRebuild.scannedMovingGoodFixCount++;
     const next = product.track[index + 1] || null;
     if (!previous || isTransportRiskReason(previous.reason) || isTransportRiskReason(point.reason)
         || isTransportRiskReason(next?.reason)) {
+      addLowQualityRejectedExample(product.lowQualityMotionRebuild, point,
+        'transportBoundary', '前后存在疑似交通工具风险');
       rebuiltTrack.push(point);
       continue;
     }
     if (!next || !isLowQualityMotionBoundary(next)) {
+      addLowQualityRejectedExample(product.lowQualityMotionRebuild, point,
+        'missingLowQualityBoundary', '后一个目标点不是 stationary_anchor / gap_recovery / continuity_rescue_gap_recovery');
       rebuiltTrack.push(point);
       continue;
     }
@@ -196,21 +234,32 @@ function rebuildLowQualityMotionSegments(product, evidence, config, engineEligib
       && rawPoint.accuracy <= config.weakCloudAccuracyMeters
       && !nextContributingRawPointIds.has(rawPoint.rawPointId));
     if (!intervalRawPoints.some((rawPoint) => rawPoint.rawPointId === point.sourceRawPointId)) {
+      addLowQualityRejectedExample(product.lowQualityMotionRebuild, point,
+        'sourceOutsideInterval', '候选 moving_good_fix 不在可重建 raw 区间内');
       rebuiltTrack.push(point);
       continue;
     }
-    const summary = summarizeLowQualityMotionInterval(intervalRawPoints, evidence.motionSummaries);
+    const summary = summarizeLowQualityMotionInterval(intervalRawPoints, evidence.motionIndex);
     if (!isLowQualityMotionSegment(summary)) {
+      addLowQualityRejectedExample(product.lowQualityMotionRebuild, point,
+        'criteriaRejected', lowQualitySegmentRejectMessage(summary));
       rebuiltTrack.push(point);
       continue;
     }
     const structureRawPoints = selectLowQualityMotionStructure(intervalRawPoints);
     if (structureRawPoints.length < 2) {
+      addLowQualityRejectedExample(product.lowQualityMotionRebuild, point,
+        'structureTooShort', '抽稀后不足 2 个结构点');
       rebuiltTrack.push(point);
       continue;
     }
     const rebuiltPoints = buildLowQualityMotionTrackPoints(point, previous,
       intervalRawPoints, structureRawPoints, summary);
+    candidates.push(lowQualityMotionCandidate(point, previous, next, summary, rebuiltPoints));
+    if (!config.lowQualityMotionRebuildEnabled) {
+      rebuiltTrack.push(point);
+      continue;
+    }
     for (const rebuiltPoint of rebuiltPoints) {
       rebuiltTrack.push(rebuiltPoint);
     }
@@ -219,12 +268,193 @@ function rebuildLowQualityMotionSegments(product, evidence, config, engineEligib
     }
     changed = true;
   }
+  product.lowQualityMotionRebuild.candidateCount = candidates.length;
+  product.lowQualityMotionRebuild.candidates = candidates;
+  const rawIntervalCandidates = scanLowQualityRawIntervals(product, evidence, config,
+    engineEligibleRawPointIds);
+  product.lowQualityMotionRebuild.rawIntervalCandidateCount = rawIntervalCandidates.length;
+  product.lowQualityMotionRebuild.rawIntervalCandidates = rawIntervalCandidates;
   if (!changed) return;
   product.track = rebuiltTrack;
   removeExcludedRawPoints(product, reclassifiedRawPointIds);
   reconcileTrackSegments(product, config);
   renumberTrackPoints(product);
   recomputeProductStats(product);
+}
+
+function scanLowQualityRawIntervals(product, evidence, config, engineEligibleRawPointIds) {
+  const intervals = [];
+  let current = [];
+  for (const rawPoint of evidence.rawPoints) {
+    if (!isLowQualityRawIntervalPoint(rawPoint, config, engineEligibleRawPointIds)) {
+      pushRawInterval(intervals, current);
+      current = [];
+      continue;
+    }
+    const previous = current.at(-1);
+    if (previous && rawPoint.elapsedRealtimeNanos - previous.elapsedRealtimeNanos > 10_000_000_000) {
+      pushRawInterval(intervals, current);
+      current = [];
+    }
+    current.push(rawPoint);
+  }
+  pushRawInterval(intervals, current);
+
+  const rawStatusById = lowQualityRawStatusById(product);
+  const candidates = [];
+  product.lowQualityMotionRebuild.rawIntervalScan.scannedIntervalCount = intervals.length;
+  for (const interval of intervals) {
+    const summary = summarizeLowQualityMotionInterval(interval, evidence.motionIndex);
+    if (!isLowQualityMotionSegment(summary)) {
+      product.lowQualityMotionRebuild.rawIntervalScan.rejectedIntervalCount++;
+      continue;
+    }
+    const decisionMix = lowQualityIntervalDecisionMix(interval, rawStatusById);
+    if (decisionMix.weakCount + decisionMix.rejectedCount + decisionMix.intakeRejectedCount === 0) {
+      product.lowQualityMotionRebuild.rawIntervalScan.rejectedIntervalCount++;
+      continue;
+    }
+    candidates.push(rawIntervalLowQualityMotionCandidate(interval, summary, decisionMix));
+    if (candidates.length >= 20) break;
+  }
+  return candidates;
+}
+
+function isLowQualityRawIntervalPoint(rawPoint, config, engineEligibleRawPointIds) {
+  return engineEligibleRawPointIds.has(rawPoint.rawPointId)
+    && Number.isFinite(rawPoint.elapsedRealtimeNanos)
+    && validCoordinate(rawPoint.lat, rawPoint.lng)
+    && Number.isFinite(rawPoint.accuracy)
+    && rawPoint.accuracy <= config.weakCloudAccuracyMeters;
+}
+
+function pushRawInterval(intervals, rawPoints) {
+  if (rawPoints.length >= 2) intervals.push(rawPoints);
+}
+
+function lowQualityRawStatusById(product) {
+  const statusById = new Map();
+  for (const point of product.track) {
+    for (const rawPointId of point.contributingRawPointIds || [point.sourceRawPointId]) {
+      statusById.set(rawPointId, 'trusted');
+    }
+  }
+  for (const point of product.excluded.weak) {
+    statusById.set(point.rawPointId, 'weak');
+  }
+  for (const point of product.excluded.rejected) {
+    statusById.set(point.rawPointId, 'rejected');
+  }
+  for (const point of product.excluded.intakeRejected) {
+    statusById.set(point.rawPointId, 'intake_rejected');
+  }
+  return statusById;
+}
+
+function lowQualityIntervalDecisionMix(rawPoints, rawStatusById) {
+  const mix = {
+    rawCount: rawPoints.length,
+    trustedCount: 0,
+    weakCount: 0,
+    rejectedCount: 0,
+    intakeRejectedCount: 0,
+    unexplainedCount: 0
+  };
+  for (const rawPoint of rawPoints) {
+    const status = rawStatusById.get(rawPoint.rawPointId);
+    if (status === 'trusted') mix.trustedCount++;
+    else if (status === 'weak') mix.weakCount++;
+    else if (status === 'rejected') mix.rejectedCount++;
+    else if (status === 'intake_rejected') mix.intakeRejectedCount++;
+    else mix.unexplainedCount++;
+  }
+  return mix;
+}
+
+function rawIntervalLowQualityMotionCandidate(rawPoints, summary, decisionMix) {
+  const structureRawPoints = selectLowQualityMotionStructure(rawPoints);
+  return {
+    kind: 'raw_interval_review',
+    rawPointIds: summary.rawPointIds,
+    structureRawPointIds: structureRawPoints.map((rawPoint) => rawPoint.rawPointId),
+    decisionMix,
+    summary: {
+      sampleCount: summary.sampleCount,
+      durationSeconds: summary.durationSeconds,
+      activeRatio: summary.activeRatio,
+      plausibleDistanceMeters: summary.plausibleDistanceMeters,
+      movingStepCount: summary.movingStepCount,
+      maxAdjacentGapSeconds: summary.maxAdjacentGapSeconds,
+      bboxDiagonalMeters: summary.bboxDiagonalMeters
+    },
+    previewTrack: structureRawPoints.map((rawPoint) => ({
+      sourceRawPointId: rawPoint.rawPointId,
+      lat: rawPoint.lat,
+      lng: rawPoint.lng,
+      elapsedRealtimeNanos: rawPoint.elapsedRealtimeNanos
+    }))
+  };
+}
+
+function addLowQualityRejectedExample(rebuild, point, reason, message) {
+  rebuild.skipped[reason] = (rebuild.skipped[reason] || 0) + 1;
+  if (rebuild.rejectedExamples.length >= 5) return;
+  rebuild.rejectedExamples.push({
+    sourceRawPointId: point.sourceRawPointId,
+    reason,
+    message
+  });
+}
+
+function lowQualitySegmentRejectMessage(summary) {
+  const reasons = [];
+  if (summary.durationSeconds < LOW_QUALITY_SEGMENT_MIN_DURATION_SECONDS) {
+    reasons.push(`时长 ${summary.durationSeconds.toFixed(1)}s < ${LOW_QUALITY_SEGMENT_MIN_DURATION_SECONDS}s`);
+  }
+  if (summary.activeRatio < LOW_QUALITY_SEGMENT_MIN_ACTIVE_RATIO) {
+    reasons.push(`active ${summary.activeRatio.toFixed(2)} < ${LOW_QUALITY_SEGMENT_MIN_ACTIVE_RATIO}`);
+  }
+  if (summary.plausibleDistanceMeters < LOW_QUALITY_SEGMENT_MIN_PLAUSIBLE_DISTANCE_METERS) {
+    reasons.push(`合理步距 ${summary.plausibleDistanceMeters.toFixed(1)}m < ${LOW_QUALITY_SEGMENT_MIN_PLAUSIBLE_DISTANCE_METERS}m`);
+  }
+  if (summary.movingStepCount < LOW_QUALITY_SEGMENT_MIN_MOVING_STEPS) {
+    reasons.push(`移动步数 ${summary.movingStepCount} < ${LOW_QUALITY_SEGMENT_MIN_MOVING_STEPS}`);
+  }
+  if (summary.maxAdjacentGapSeconds > 10) {
+    reasons.push(`相邻间隔 ${summary.maxAdjacentGapSeconds.toFixed(1)}s > 10s`);
+  }
+  if (summary.bboxDiagonalMeters < LOW_QUALITY_SEGMENT_MIN_BBOX_METERS) {
+    reasons.push(`bbox ${summary.bboxDiagonalMeters.toFixed(1)}m < ${LOW_QUALITY_SEGMENT_MIN_BBOX_METERS}m`);
+  }
+  return reasons.length > 0 ? reasons.join('；') : '未满足低质量运动段组合条件';
+}
+
+function lowQualityMotionCandidate(point, previous, next, summary, rebuiltPoints) {
+  return {
+    kind: 'boundary_rebuild',
+    sourceRawPointId: point.sourceRawPointId,
+    previousTrackPointId: previous?.trackPointId ?? null,
+    nextTrackPointId: next?.trackPointId ?? null,
+    rawPointIds: summary.rawPointIds,
+    structureRawPointIds: rebuiltPoints.map((rebuiltPoint) => rebuiltPoint.sourceRawPointId),
+    summary: {
+      sampleCount: summary.sampleCount,
+      durationSeconds: summary.durationSeconds,
+      activeRatio: summary.activeRatio,
+      plausibleDistanceMeters: summary.plausibleDistanceMeters,
+      movingStepCount: summary.movingStepCount,
+      maxAdjacentGapSeconds: summary.maxAdjacentGapSeconds,
+      bboxDiagonalMeters: summary.bboxDiagonalMeters
+    },
+    previewTrack: rebuiltPoints.map((rebuiltPoint) => ({
+      sourceRawPointId: rebuiltPoint.sourceRawPointId,
+      lat: rebuiltPoint.lat,
+      lng: rebuiltPoint.lng,
+      elapsedRealtimeNanos: rebuiltPoint.elapsedRealtimeNanos,
+      distanceDeltaMeters: rebuiltPoint.distanceDeltaMeters,
+      movingTimeDeltaSeconds: rebuiltPoint.movingTimeDeltaSeconds
+    }))
+  };
 }
 
 function summarizeLowQualityMotionInterval(rawPoints, motionSummaries) {
@@ -533,7 +763,7 @@ function recoverStationaryExitMovement(product, evidence, config) {
       && candidate.elapsedRealtimeNanos < next.elapsedRealtimeNanos
       && !recoveredRawPointIds.has(candidate.rawPointId));
     const exitPoints = selectStationaryExitPoints(point, next, candidates,
-      rawById, evidence.motionSummaries, config);
+      rawById, evidence.motionIndex, config);
     let previous = point;
     for (const exitPoint of exitPoints) {
       rebuiltTrack.push(recoveredStationaryExitTrackPoint(exitPoint,
@@ -657,24 +887,580 @@ function recomputeProductStats(product) {
 }
 
 function recomputeAscentStats(product, evidence) {
-  const gnss = computeGnssAscent(product.track, evidence.rawPoints, product.config);
-  product.stats.gnssTotalAscentMeters = gnss.totalAscentMeters;
-  product.stats.gnssAscentSampleCount = gnss.sampleCount;
-  product.stats.gnssAscentRejectedSampleCount = gnss.rejectedSampleCount;
-  product.stats.gnssAscentUsableSampleCount = gnss.usableSampleCount;
-  product.stats.gnssAscentMinVerticalAccuracyMeters = gnss.minVerticalAccuracyMeters;
-  product.stats.gnssAscentMaxVerticalAccuracyMeters = gnss.maxVerticalAccuracyMeters;
-  product.stats.gnssAscentAvgVerticalAccuracyMeters = gnss.avgVerticalAccuracyMeters;
+  const locationAltitude = computeLocationAltitudeAscent(product.track, evidence.rawPoints,
+    product.config);
+  product.stats.locationAltitudeTotalAscentMeters = locationAltitude.totalAscentMeters;
+  product.stats.locationAltitudeAscentSampleCount = locationAltitude.sampleCount;
+  product.stats.locationAltitudeAscentRejectedSampleCount = locationAltitude.rejectedSampleCount;
+  product.stats.locationAltitudeAscentUsableSampleCount = locationAltitude.usableSampleCount;
+  product.stats.locationAltitudeAscentMinVerticalAccuracyMeters =
+    locationAltitude.minVerticalAccuracyMeters;
+  product.stats.locationAltitudeAscentMaxVerticalAccuracyMeters =
+    locationAltitude.maxVerticalAccuracyMeters;
+  product.stats.locationAltitudeAscentAvgVerticalAccuracyMeters =
+    locationAltitude.avgVerticalAccuracyMeters;
   product.stats.barometerTotalAscentMeters = -1;
   product.stats.barometerAscentSampleCount = 0;
   product.stats.barometerAscentRejectedSampleCount = 0;
-  product.stats.selectedTotalAscentMeters = gnss.totalAscentMeters >= 0
-    ? gnss.totalAscentMeters
+  product.stats.selectedTotalAscentMeters = locationAltitude.totalAscentMeters >= 0
+    ? locationAltitude.totalAscentMeters
     : -1;
-  product.stats.selectedAscentSource = gnss.totalAscentMeters >= 0 ? 'GNSS' : 'NONE';
+  product.stats.selectedAscentSource = locationAltitude.totalAscentMeters >= 0
+    ? 'LOCATION_ALTITUDE'
+    : 'NONE';
 }
 
-function computeGnssAscent(track, rawPoints, config) {
+function buildAdaptiveShadow(events, fixedConfig, fixedProduct, sessionProfile, sourceFilePath, options) {
+  if (options.adaptiveShadow === false) return null;
+  const adaptiveConfig = adaptiveShadowConfig(fixedConfig, sessionProfile);
+  const adaptiveProduct = buildTargetTrackProduct(events, {
+    config: adaptiveConfig,
+    sourceFilePath,
+    adaptiveShadow: false
+  });
+  const fixedDecisions = rawDecisionMapFromProduct(fixedProduct);
+  const adaptiveDecisions = rawDecisionMapFromProduct(adaptiveProduct);
+  const rawPointIds = Array.from(new Set([
+    ...fixedDecisions.keys(),
+    ...adaptiveDecisions.keys()
+  ])).sort((a, b) => a - b);
+  const differences = [];
+  let promotedToTrustedCount = 0;
+  let demotedFromTrustedCount = 0;
+  let reasonChangedCount = 0;
+  for (const rawPointId of rawPointIds) {
+    const fixed = fixedDecisions.get(rawPointId) || emptyShadowDecision();
+    const adaptive = adaptiveDecisions.get(rawPointId) || emptyShadowDecision();
+    if (sameShadowDecision(fixed, adaptive)) continue;
+    if (!isTrustedShadowDecision(fixed) && isTrustedShadowDecision(adaptive)) {
+      promotedToTrustedCount++;
+    } else if (isTrustedShadowDecision(fixed) && !isTrustedShadowDecision(adaptive)) {
+      demotedFromTrustedCount++;
+    } else {
+      reasonChangedCount++;
+    }
+    if (differences.length < ADAPTIVE_SHADOW_MAX_DIFFERENCES) {
+      differences.push({
+        rawPointId,
+        fixed: shadowDecisionView(fixed),
+        adaptive: shadowDecisionView(adaptive),
+        changeType: adaptiveShadowChangeType(fixed, adaptive)
+      });
+    }
+  }
+  const impact = adaptiveShadowImpact(fixedProduct, adaptiveProduct);
+  const summary = {
+    rawPointCount: rawPointIds.length,
+    changedCount: promotedToTrustedCount + demotedFromTrustedCount + reasonChangedCount,
+    promotedToTrustedCount,
+    demotedFromTrustedCount,
+    reasonChangedCount,
+    reportedDifferenceCount: differences.length,
+    truncated: differences.length >= ADAPTIVE_SHADOW_MAX_DIFFERENCES
+      && promotedToTrustedCount + demotedFromTrustedCount + reasonChangedCount
+        > ADAPTIVE_SHADOW_MAX_DIFFERENCES
+  };
+  return {
+    version: 1,
+    mode: 'shadow_only',
+    note: '自适应影子只用于对比，不改变当前成品轨迹。',
+    thresholds: {
+      fixed: shadowThresholdsFromConfig(fixedConfig),
+      adaptive: shadowThresholdsFromConfig(adaptiveConfig)
+    },
+    impact,
+    summary,
+    assessment: adaptiveShadowAssessment(summary, impact),
+    track: adaptiveShadowTrackView(adaptiveProduct.track),
+    differences
+  };
+}
+
+function adaptiveShadowTrackView(track) {
+  return (track || []).map((point) => ({
+    trackPointId: point.trackPointId,
+    sourceRawPointId: point.sourceRawPointId,
+    segmentId: point.segmentId,
+    lat: point.lat,
+    lng: point.lng,
+    elapsedRealtimeNanos: point.elapsedRealtimeNanos,
+    result: point.result,
+    reason: point.reason,
+    distanceDeltaMeters: point.distanceDeltaMeters,
+    movingTimeDeltaSeconds: point.movingTimeDeltaSeconds
+  }));
+}
+
+function adaptiveShadowImpact(fixedProduct, adaptiveProduct) {
+  const fixed = shadowStatsView(fixedProduct?.stats);
+  const adaptive = shadowStatsView(adaptiveProduct?.stats);
+  return {
+    fixed,
+    adaptive,
+    delta: shadowStatsDelta(fixed, adaptive)
+  };
+}
+
+function shadowStatsView(stats = {}) {
+  return {
+    routeDistanceMeters: finiteNumberOrNull(stats.routeDistanceMeters),
+    totalDistanceMeters: finiteNumberOrNull(stats.totalDistanceMeters),
+    suspectedDistanceMeters: finiteNumberOrNull(stats.suspectedDistanceMeters),
+    movingTimeSeconds: finiteNumberOrNull(stats.movingTimeSeconds),
+    trustedPointCount: finiteNumberOrNull(stats.trustedPointCount),
+    weakPointCount: finiteNumberOrNull(stats.weakPointCount),
+    rejectedPointCount: finiteNumberOrNull(stats.rejectedPointCount),
+    intakeRejectedPointCount: finiteNumberOrNull(stats.intakeRejectedPointCount),
+    segmentCount: finiteNumberOrNull(stats.segmentCount),
+    gapCount: finiteNumberOrNull(stats.gapCount),
+    transportCount: finiteNumberOrNull(stats.transportCount)
+  };
+}
+
+function shadowStatsDelta(fixed, adaptive) {
+  return Object.fromEntries(Object.keys(fixed).map((key) => [
+    key,
+    Number.isFinite(fixed[key]) && Number.isFinite(adaptive[key])
+      ? adaptive[key] - fixed[key]
+      : null
+  ]));
+}
+
+function finiteNumberOrNull(value) {
+  return Number.isFinite(value) ? value : null;
+}
+
+function adaptiveShadowAssessment(summary, impact) {
+  const changedCount = summary?.changedCount ?? 0;
+  if (changedCount === 0) {
+    return {
+      level: 'same',
+      label: '影子一致',
+      summary: '固定阈值和自适应影子没有发现差异。',
+      reasons: []
+    };
+  }
+
+  const reasons = [];
+  addAdaptiveShadowReason(reasons, summary?.truncated, 'difference_list_truncated', 'review',
+    '分歧数量超过当前展示上限，需要先扩大明细采样再判断。');
+  addAdaptiveShadowReason(reasons, (summary?.demotedFromTrustedCount ?? 0) > 0,
+    'demoted_trusted_points', 'blocked',
+    `影子会降级 ${summary.demotedFromTrustedCount} 个当前可信点，启用前必须逐点核对。`);
+  addAdaptiveShadowReason(reasons, Math.abs(impact?.delta?.gapCount ?? 0) > 0,
+    'gap_count_changed', 'review',
+    `断点数量会变化 ${signedNumberForMessage(impact.delta.gapCount)}，可能改变 segment 和里程解释。`);
+  addAdaptiveShadowReason(reasons, Math.abs(impact?.delta?.transportCount ?? 0) > 0,
+    'transport_count_changed', 'review',
+    `疑似交通点会变化 ${signedNumberForMessage(impact.delta.transportCount)}，需要核对是否误伤徒步。`);
+  addAdaptiveShadowReason(reasons,
+    exceedsAdaptiveShadowDistanceReview(impact?.delta?.routeDistanceMeters,
+      impact?.fixed?.routeDistanceMeters),
+    'route_distance_changed', 'review',
+    `地图连线变化 ${metersForMessage(impact.delta.routeDistanceMeters)}，超过本样本复核线。`);
+  addAdaptiveShadowReason(reasons,
+    exceedsAdaptiveShadowDistanceReview(impact?.delta?.totalDistanceMeters,
+      impact?.fixed?.totalDistanceMeters),
+    'total_distance_changed', 'review',
+    `运动里程变化 ${metersForMessage(impact.delta.totalDistanceMeters)}，超过本样本复核线。`);
+  addAdaptiveShadowReason(reasons,
+    exceedsAdaptiveShadowTrustedPointReview(impact?.delta?.trustedPointCount,
+      impact?.fixed?.trustedPointCount),
+    'trusted_point_count_changed', 'review',
+    `可信点数量变化 ${signedNumberForMessage(impact.delta.trustedPointCount)}，需要确认轨迹形态是否更好。`);
+  addAdaptiveShadowReason(reasons,
+    adaptiveShadowChangedRate(summary) > ADAPTIVE_SHADOW_CHANGED_REVIEW_RATIO,
+    'high_difference_rate', 'review',
+    `判点分歧比例约 ${percentForMessage(adaptiveShadowChangedRate(summary))}，不宜直接启用。`);
+  addAdaptiveShadowReason(reasons, (summary?.promotedToTrustedCount ?? 0) > 0,
+    'promoted_trusted_points', 'observe',
+    `影子可能救回 ${summary.promotedToTrustedCount} 个点，需要看这些点是否真的贴合路线。`);
+  addAdaptiveShadowReason(reasons, (summary?.reasonChangedCount ?? 0) > 0,
+    'reason_changed', 'observe',
+    `有 ${summary.reasonChangedCount} 个点的解释原因变化，适合先作为诊断观察。`);
+
+  const level = adaptiveShadowAssessmentLevel(reasons);
+  return {
+    level,
+    label: adaptiveShadowAssessmentLabel(level),
+    summary: adaptiveShadowAssessmentSummary(level),
+    reasons
+  };
+}
+
+function addAdaptiveShadowReason(reasons, condition, code, severity, message) {
+  if (!condition) return;
+  reasons.push({ code, severity, message });
+}
+
+function adaptiveShadowAssessmentLevel(reasons) {
+  if (reasons.some((reason) => reason.severity === 'blocked')) return 'blocked';
+  if (reasons.some((reason) => reason.severity === 'review')) return 'review';
+  return 'observe';
+}
+
+function adaptiveShadowAssessmentLabel(level) {
+  if (level === 'blocked') return '暂不适合启用';
+  if (level === 'review') return '需要人工复核';
+  if (level === 'observe') return '继续观察';
+  return '影子一致';
+}
+
+function adaptiveShadowAssessmentSummary(level) {
+  if (level === 'blocked') return '影子会降级当前可信轨迹点，当前样本不能作为启用依据。';
+  if (level === 'review') return '影子会改变关键轨迹统计，需要结合真实路线逐段复核。';
+  if (level === 'observe') return '差异主要是救回或原因变化，先扩大真实样本观察。';
+  return '固定阈值和自适应影子没有发现差异。';
+}
+
+function exceedsAdaptiveShadowDistanceReview(delta, fixedValue) {
+  if (!Number.isFinite(delta)) return false;
+  const limit = Math.max(ADAPTIVE_SHADOW_DISTANCE_REVIEW_METERS,
+    Math.abs(fixedValue || 0) * ADAPTIVE_SHADOW_DISTANCE_REVIEW_RATIO);
+  return Math.abs(delta) > limit;
+}
+
+function exceedsAdaptiveShadowTrustedPointReview(delta, fixedValue) {
+  if (!Number.isFinite(delta)) return false;
+  const limit = Math.max(ADAPTIVE_SHADOW_TRUSTED_POINT_REVIEW_MIN_DELTA,
+    Math.ceil(Math.abs(fixedValue || 0) * ADAPTIVE_SHADOW_TRUSTED_POINT_REVIEW_RATIO));
+  return Math.abs(delta) >= limit;
+}
+
+function adaptiveShadowChangedRate(summary) {
+  const rawPointCount = summary?.rawPointCount ?? 0;
+  return rawPointCount > 0 ? (summary?.changedCount ?? 0) / rawPointCount : 0;
+}
+
+function signedNumberForMessage(value) {
+  if (!Number.isFinite(value) || value === 0) return '0';
+  return `${value > 0 ? '+' : ''}${Number.isInteger(value) ? value : value.toFixed(1)}`;
+}
+
+function metersForMessage(value) {
+  if (!Number.isFinite(value)) return '-';
+  return `${value > 0 ? '+' : ''}${value.toFixed(1)}m`;
+}
+
+function percentForMessage(value) {
+  return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '-';
+}
+
+function adaptiveShadowConfig(config, profile) {
+  return normalizeConfig({
+    ...config,
+    weakCloudAccuracyMeters: adaptiveWeakCloudAccuracyMeters(config, profile),
+    gapSeconds: adaptiveGapSeconds(config, profile),
+    stationaryDistanceMeters: adaptiveStationaryDistanceMeters(config, profile),
+    transportSpeedMetersPerSecond: adaptiveTransportSpeedMetersPerSecond(config, profile),
+    transportMinDistanceMeters: adaptiveTransportMinDistanceMeters(config, profile),
+    continuityRescueMaxSpeedMetersPerSecond: adaptiveContinuitySpeedMetersPerSecond(config, profile)
+  });
+}
+
+function adaptiveWeakCloudAccuracyMeters(config, profile) {
+  const candidate = profile?.accuracy?.p75Meters ?? config.weakCloudAccuracyMeters;
+  return clamp(candidate, 20, 50);
+}
+
+function adaptiveGapSeconds(config, profile) {
+  const normalInterval = profile?.sampleInterval?.p50Seconds
+    ?? profile?.sampleInterval?.p75Seconds
+    ?? profile?.sampleInterval?.p90Seconds;
+  if (!Number.isFinite(normalInterval) || normalInterval <= 0) return config.gapSeconds;
+  return clamp(normalInterval * 6, 30, 180);
+}
+
+function adaptiveStationaryDistanceMeters(config, profile) {
+  const candidate = profile?.stationary?.radiusP75Meters ?? config.stationaryDistanceMeters;
+  return clamp(Math.max(config.stationaryDistanceMeters, candidate), 3, 25);
+}
+
+function adaptiveTransportSpeedMetersPerSecond(config, profile) {
+  const walkingHigh = profile?.movement?.plausibleWalkingSpeedP90MetersPerSecond;
+  if (!Number.isFinite(walkingHigh) || walkingHigh <= 0) {
+    return config.transportSpeedMetersPerSecond;
+  }
+  return clamp(walkingHigh * 1.35, 2.5, 5);
+}
+
+function adaptiveTransportMinDistanceMeters(config, profile) {
+  const adjacentHigh = profile?.movement?.adjacentDistanceP90Meters;
+  if (!Number.isFinite(adjacentHigh) || adjacentHigh <= 0) return config.transportMinDistanceMeters;
+  return clamp(Math.max(config.transportMinDistanceMeters, adjacentHigh * 1.5), 15, 60);
+}
+
+function adaptiveContinuitySpeedMetersPerSecond(config, profile) {
+  const walkingHigh = profile?.movement?.plausibleWalkingSpeedP90MetersPerSecond;
+  if (!Number.isFinite(walkingHigh) || walkingHigh <= 0) {
+    return config.continuityRescueMaxSpeedMetersPerSecond;
+  }
+  return clamp(walkingHigh * 1.6, 3, 8);
+}
+
+function shadowThresholdsFromConfig(config) {
+  return {
+    weakCloudAccuracyMeters: config.weakCloudAccuracyMeters,
+    gapSeconds: config.gapSeconds,
+    stationaryDistanceMeters: config.stationaryDistanceMeters,
+    transportSpeedMetersPerSecond: config.transportSpeedMetersPerSecond,
+    transportMinDistanceMeters: config.transportMinDistanceMeters,
+    continuityRescueMaxSpeedMetersPerSecond: config.continuityRescueMaxSpeedMetersPerSecond
+  };
+}
+
+function rawDecisionMapFromProduct(product) {
+  const decisions = new Map();
+  for (const point of product.track || []) {
+    setShadowDecision(decisions, point.sourceRawPointId, {
+      bucket: 'track',
+      result: point.result,
+      reason: point.reason,
+      trackPointId: point.trackPointId
+    });
+    for (const rawPointId of point.contributingRawPointIds || []) {
+      setShadowDecision(decisions, rawPointId, {
+        bucket: 'track_contributing',
+        result: point.result,
+        reason: point.reason,
+        trackPointId: point.trackPointId,
+        representativeRawPointId: point.sourceRawPointId
+      });
+    }
+  }
+  for (const bucket of ['weak', 'rejected', 'intakeRejected']) {
+    for (const point of product.excluded?.[bucket] || []) {
+      setShadowDecision(decisions, point.rawPointId, {
+        bucket,
+        result: point.result,
+        reason: point.reason
+      });
+    }
+  }
+  return decisions;
+}
+
+function setShadowDecision(decisions, rawPointId, decision) {
+  if (!Number.isFinite(rawPointId) || decisions.has(rawPointId)) return;
+  decisions.set(rawPointId, decision);
+}
+
+function emptyShadowDecision() {
+  return { bucket: 'missing', result: 'missing', reason: 'missing' };
+}
+
+function sameShadowDecision(left, right) {
+  return left.bucket === right.bucket
+    && left.result === right.result
+    && left.reason === right.reason;
+}
+
+function shadowDecisionView(decision) {
+  return {
+    bucket: decision.bucket,
+    result: decision.result,
+    reason: decision.reason,
+    trackPointId: decision.trackPointId ?? null,
+    representativeRawPointId: decision.representativeRawPointId ?? null
+  };
+}
+
+function isTrustedShadowDecision(decision) {
+  return decision.bucket === 'track' || decision.bucket === 'track_contributing';
+}
+
+function adaptiveShadowChangeType(fixed, adaptive) {
+  if (!isTrustedShadowDecision(fixed) && isTrustedShadowDecision(adaptive)) {
+    return 'promoted_to_trusted';
+  }
+  if (isTrustedShadowDecision(fixed) && !isTrustedShadowDecision(adaptive)) {
+    return 'demoted_from_trusted';
+  }
+  return 'reason_changed';
+}
+
+function buildSessionProfile(evidence, config) {
+  const rawPoints = evidence.rawPoints || [];
+  const validTimeRawPoints = rawPoints.filter((point) =>
+    Number.isFinite(point.elapsedRealtimeNanos) && point.elapsedRealtimeNanos > 0);
+  const validCoordinateRawPoints = validTimeRawPoints.filter((point) =>
+    validCoordinate(point.lat, point.lng));
+  const intervalsSeconds = [];
+  const adjacentDistancesMeters = [];
+  const adjacentSpeedsMetersPerSecond = [];
+  const plausibleWalkingSpeedsMetersPerSecond = [];
+  let sameTimestampCount = 0;
+  let longGapCount = 0;
+
+  for (let index = 1; index < validTimeRawPoints.length; index++) {
+    const previous = validTimeRawPoints[index - 1];
+    const current = validTimeRawPoints[index];
+    const elapsedDelta = current.elapsedRealtimeNanos - previous.elapsedRealtimeNanos;
+    if (elapsedDelta <= 0) {
+      sameTimestampCount++;
+      continue;
+    }
+    const deltaSeconds = elapsedDelta / 1_000_000_000;
+    intervalsSeconds.push(deltaSeconds);
+    if (deltaSeconds > config.gapSeconds) longGapCount++;
+    if (validCoordinate(previous.lat, previous.lng) && validCoordinate(current.lat, current.lng)) {
+      const distance = distanceMeters(previous.lat, previous.lng, current.lat, current.lng);
+      const speed = distance / deltaSeconds;
+      adjacentDistancesMeters.push(distance);
+      adjacentSpeedsMetersPerSecond.push(speed);
+      if (speed > 0 && speed <= config.continuityRescueMaxSpeedMetersPerSecond) {
+        plausibleWalkingSpeedsMetersPerSecond.push(speed);
+      }
+    }
+  }
+
+  const accuracies = rawPoints
+    .map((point) => point.accuracy)
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const accuracyProfile = {
+    sampleCount: accuracies.length,
+    p50Meters: percentile(accuracies, 0.5),
+    p75Meters: percentile(accuracies, 0.75),
+    p90Meters: percentile(accuracies, 0.9),
+    weakRatio: ratio(accuracies.filter((value) =>
+      value > config.weakCloudAccuracyMeters).length, accuracies.length)
+  };
+
+  return {
+    version: 1,
+    raw: {
+      sampleCount: rawPoints.length,
+      validTimeSampleCount: validTimeRawPoints.length,
+      validCoordinateSampleCount: validCoordinateRawPoints.length,
+      missingElapsedRealtimeCount: rawPoints.length - validTimeRawPoints.length,
+      invalidCoordinateCount: validTimeRawPoints.length - validCoordinateRawPoints.length,
+      duplicateLikeCount: duplicateLikeCount(rawPoints),
+      sameTimestampCount
+    },
+    sampleInterval: {
+      sampleCount: intervalsSeconds.length,
+      p50Seconds: percentile(intervalsSeconds, 0.5),
+      p75Seconds: percentile(intervalsSeconds, 0.75),
+      p90Seconds: percentile(intervalsSeconds, 0.9),
+      maxSeconds: maxOrNull(intervalsSeconds),
+      longGapCount
+    },
+    accuracy: accuracyProfile,
+    movement: {
+      adjacentSampleCount: adjacentSpeedsMetersPerSecond.length,
+      adjacentDistanceP50Meters: percentile(adjacentDistancesMeters, 0.5),
+      adjacentDistanceP90Meters: percentile(adjacentDistancesMeters, 0.9),
+      adjacentSpeedP50MetersPerSecond: percentile(adjacentSpeedsMetersPerSecond, 0.5),
+      adjacentSpeedP75MetersPerSecond: percentile(adjacentSpeedsMetersPerSecond, 0.75),
+      adjacentSpeedP90MetersPerSecond: percentile(adjacentSpeedsMetersPerSecond, 0.9),
+      plausibleWalkingSpeedP90MetersPerSecond: percentile(plausibleWalkingSpeedsMetersPerSecond, 0.9)
+    },
+    stationary: stationaryNoiseProfile(validCoordinateRawPoints, evidence.motionIndex,
+      accuracyProfile.p50Meters, config),
+    motion: motionProfile(evidence.motionSummaries)
+  };
+}
+
+function stationaryNoiseProfile(rawPoints, motionSummaries, medianAccuracyMeters, config) {
+  const stillRawPoints = rawPoints.filter((point) =>
+    hasRecentStillMotion(point.elapsedRealtimeNanos, motionSummaries));
+  const clusterBreakDistanceMeters = Math.max(config.stationaryDistanceMeters,
+    (medianAccuracyMeters ?? config.weakCloudAccuracyMeters) * config.stationaryAccuracyMultiplier * 2);
+  const radiusSamples = [];
+  let cluster = [];
+  for (const rawPoint of stillRawPoints) {
+    const previous = cluster.at(-1);
+    if (previous) {
+      const elapsedDelta = rawPoint.elapsedRealtimeNanos - previous.elapsedRealtimeNanos;
+      const distance = distanceMeters(previous.lat, previous.lng, rawPoint.lat, rawPoint.lng);
+      if (elapsedDelta > config.gapSeconds * 1_000_000_000
+          || distance > clusterBreakDistanceMeters) {
+        appendStationaryClusterRadii(radiusSamples, cluster);
+        cluster = [];
+      }
+    }
+    cluster.push(rawPoint);
+  }
+  appendStationaryClusterRadii(radiusSamples, cluster);
+  return {
+    stillRawPointCount: stillRawPoints.length,
+    radiusSampleCount: radiusSamples.length,
+    radiusP50Meters: percentile(radiusSamples, 0.5),
+    radiusP75Meters: percentile(radiusSamples, 0.75),
+    radiusP90Meters: percentile(radiusSamples, 0.9)
+  };
+}
+
+function appendStationaryClusterRadii(radiusSamples, cluster) {
+  if (!Array.isArray(cluster) || cluster.length < 2) return;
+  const lat = cluster.reduce((sum, point) => sum + point.lat, 0) / cluster.length;
+  const lng = cluster.reduce((sum, point) => sum + point.lng, 0) / cluster.length;
+  for (const point of cluster) {
+    radiusSamples.push(distanceMeters(lat, lng, point.lat, point.lng));
+  }
+}
+
+function motionProfile(motionSummaries) {
+  const summaries = motionSummaries || [];
+  const stillCount = summaries.filter((summary) =>
+    summary.deviceStill === true || summary.isDeviceStill === true).length;
+  const activeCount = summaries.filter(isActiveMotionSummary).length;
+  return {
+    windowCount: summaries.length,
+    stillRatio: ratio(stillCount, summaries.length),
+    activeRatio: ratio(activeCount, summaries.length)
+  };
+}
+
+function isActiveMotionSummary(summary) {
+  const accel = numberField(summary, 'dynamicAccelRmsMps2') ?? 0;
+  const gyro = numberField(summary, 'gyroscopeRmsRadps') ?? 0;
+  const stepDelta = numberField(summary, 'stepDelta') ?? 0;
+  const stepDetectorCount = numberField(summary, 'stepDetectorCount') ?? 0;
+  return accel > 0.25 || gyro > 0.08 || stepDelta > 0 || stepDetectorCount > 0;
+}
+
+function duplicateLikeCount(rawPoints) {
+  const keys = new Set();
+  let count = 0;
+  for (const rawPoint of rawPoints || []) {
+    if (!Number.isFinite(rawPoint.elapsedRealtimeNanos)
+        || !validCoordinate(rawPoint.lat, rawPoint.lng)
+        || !Number.isFinite(rawPoint.accuracy)) {
+      continue;
+    }
+    const key = `${rawPoint.provider}|${rawPoint.elapsedRealtimeNanos}|${rawPoint.lat.toFixed(7)}|${rawPoint.lng.toFixed(7)}|${rawPoint.accuracy.toFixed(2)}`;
+    if (keys.has(key)) {
+      count++;
+    } else {
+      keys.add(key);
+    }
+  }
+  return count;
+}
+
+function percentile(values, fraction) {
+  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (sorted.length === 0) return null;
+  if (sorted.length === 1) return sorted[0];
+  const position = clamp(fraction, 0, 1) * (sorted.length - 1);
+  const lowerIndex = Math.floor(position);
+  const upperIndex = Math.ceil(position);
+  if (lowerIndex === upperIndex) return sorted[lowerIndex];
+  const weight = position - lowerIndex;
+  return sorted[lowerIndex] + (sorted[upperIndex] - sorted[lowerIndex]) * weight;
+}
+
+function maxOrNull(values) {
+  const finiteValues = values.filter(Number.isFinite);
+  return finiteValues.length > 0 ? Math.max(...finiteValues) : null;
+}
+
+function ratio(count, total) {
+  return total > 0 ? count / total : 0;
+}
+
+function computeLocationAltitudeAscent(track, rawPoints, config) {
   const rawById = new Map(rawPoints.map((point) => [point.rawPointId, point]));
   const samples = [];
   let rejectedSampleCount = 0;
@@ -689,7 +1475,7 @@ function computeGnssAscent(track, rawPoints, config) {
       continue;
     }
     if (!Number.isFinite(rawPoint.verticalAccuracy)
-        || rawPoint.verticalAccuracy > config.gnssAscentMaxVerticalAccuracyMeters) {
+        || rawPoint.verticalAccuracy > config.locationAltitudeAscentMaxVerticalAccuracyMeters) {
       rejectedSampleCount++;
       continue;
     }
@@ -702,7 +1488,7 @@ function computeGnssAscent(track, rawPoints, config) {
   }
   samples.sort((a, b) => a.elapsedRealtimeNanos - b.elapsedRealtimeNanos);
   if (samples.length < 2) {
-    return emptyGnssAscent(samples.length, rejectedSampleCount);
+    return emptyLocationAltitudeAscent(samples.length, rejectedSampleCount);
   }
   let totalAscentMeters = 0;
   for (let index = 1; index < samples.length; index++) {
@@ -710,8 +1496,8 @@ function computeGnssAscent(track, rawPoints, config) {
     const current = samples[index];
     if (previous.segmentId !== current.segmentId) continue;
     const gain = current.altitude - previous.altitude;
-    if (gain < config.gnssAscentMinGainMeters) continue;
-    if (gain > config.gnssAscentMaxStepGainMeters) {
+    if (gain < config.locationAltitudeAscentMinGainMeters) continue;
+    if (gain > config.locationAltitudeAscentMaxStepGainMeters) {
       rejectedSampleCount++;
       continue;
     }
@@ -730,7 +1516,7 @@ function computeGnssAscent(track, rawPoints, config) {
   };
 }
 
-function emptyGnssAscent(sampleCount, rejectedSampleCount) {
+function emptyLocationAltitudeAscent(sampleCount, rejectedSampleCount) {
   return {
     totalAscentMeters: -1,
     sampleCount,
@@ -777,14 +1563,21 @@ function normalizeConfig(config = {}) {
     transportMinDistanceMeters: positiveNumber(merged.transportMinDistanceMeters, DEFAULT_TARGET_PRODUCT_CONFIG.transportMinDistanceMeters),
     cloudTemporalDecaySeconds: positiveNumber(merged.cloudTemporalDecaySeconds, DEFAULT_TARGET_PRODUCT_CONFIG.cloudTemporalDecaySeconds),
     collapseStationarySession: merged.collapseStationarySession !== false,
+    lowQualityMotionRebuildEnabled: merged.lowQualityMotionRebuildEnabled === true,
     stationarySessionStillRatio: positiveNumber(merged.stationarySessionStillRatio, DEFAULT_TARGET_PRODUCT_CONFIG.stationarySessionStillRatio),
     stationarySessionAnchorRatio: positiveNumber(merged.stationarySessionAnchorRatio, DEFAULT_TARGET_PRODUCT_CONFIG.stationarySessionAnchorRatio),
     barometerCleaningEnabled: merged.barometerCleaningEnabled === true,
     barometerVerticalMotionMinRangeMeters: positiveNumber(merged.barometerVerticalMotionMinRangeMeters, DEFAULT_TARGET_PRODUCT_CONFIG.barometerVerticalMotionMinRangeMeters),
     barometerVerticalMotionMinWindowCount: positiveNumber(merged.barometerVerticalMotionMinWindowCount, DEFAULT_TARGET_PRODUCT_CONFIG.barometerVerticalMotionMinWindowCount),
-    gnssAscentMaxVerticalAccuracyMeters: positiveNumber(merged.gnssAscentMaxVerticalAccuracyMeters, DEFAULT_TARGET_PRODUCT_CONFIG.gnssAscentMaxVerticalAccuracyMeters),
-    gnssAscentMinGainMeters: positiveNumber(merged.gnssAscentMinGainMeters, DEFAULT_TARGET_PRODUCT_CONFIG.gnssAscentMinGainMeters),
-    gnssAscentMaxStepGainMeters: positiveNumber(merged.gnssAscentMaxStepGainMeters, DEFAULT_TARGET_PRODUCT_CONFIG.gnssAscentMaxStepGainMeters)
+    locationAltitudeAscentMaxVerticalAccuracyMeters: positiveNumber(
+      merged.locationAltitudeAscentMaxVerticalAccuracyMeters,
+      DEFAULT_TARGET_PRODUCT_CONFIG.locationAltitudeAscentMaxVerticalAccuracyMeters),
+    locationAltitudeAscentMinGainMeters: positiveNumber(
+      merged.locationAltitudeAscentMinGainMeters,
+      DEFAULT_TARGET_PRODUCT_CONFIG.locationAltitudeAscentMinGainMeters),
+    locationAltitudeAscentMaxStepGainMeters: positiveNumber(
+      merged.locationAltitudeAscentMaxStepGainMeters,
+      DEFAULT_TARGET_PRODUCT_CONFIG.locationAltitudeAscentMaxStepGainMeters)
   };
 }
 
@@ -936,7 +1729,6 @@ function isDefaultConfig(config) {
 
 function buildEvidence(events) {
   const rawPoints = [];
-  const gnssById = new Map();
   const samplingEpochs = [];
   const motionSummaries = [];
   const barometerWindows = [];
@@ -957,9 +1749,6 @@ function buildEvidence(events) {
         ?? recordEndElapsedRealtimeNanos;
     } else if (event.event === 'raw_location') {
       rawPoints.push(normalizeRawPoint(event));
-    } else if (event.event === 'gnss_snapshot') {
-      const id = numberField(event, 'snapshotId');
-      if (id !== null) gnssById.set(id, event);
     } else if (event.event === 'sampling_policy') {
       samplingEpochs.push(normalizeSamplingEpoch(event, samplingEpochs.length + 1));
     } else if (event.event === 'device_motion_window') {
@@ -979,9 +1768,9 @@ function buildEvidence(events) {
   }
   return {
     rawPoints,
-    gnssById,
     samplingEpochs,
     motionSummaries,
+    motionIndex: createRecentMotionSummaryIndex(motionSummaries, MOTION_WINDOW_NANOS),
     barometerWindows,
     recordStartElapsedRealtimeNanos,
     recordEndElapsedRealtimeNanos,
@@ -1003,7 +1792,6 @@ function normalizeRawPoint(event) {
     hasSpeed: event.hasSpeed === true || numberField(event, 'speed') !== null,
     timeMillis: numberField(event, 'timeMillis'),
     elapsedRealtimeNanos: numberField(event, 'elapsedRealtimeNanos'),
-    sourceGnssSnapshotId: numberField(event, 'sourceGnssSnapshotId'),
     samplingEpochId: numberField(event, 'samplingEpochId'),
     mock: event.mock === true || event.isMock === true
   };
@@ -1140,10 +1928,6 @@ function reject(reason) {
   return { accepted: false, reason };
 }
 
-function findGnssSnapshot(rawPoint, gnssById) {
-  return rawPoint.sourceGnssSnapshotId !== null ? gnssById.get(rawPoint.sourceGnssSnapshotId) || null : null;
-}
-
 function createTrackTrustEngine(config) {
   let nextCloudId = 1;
   let currentCloud = null;
@@ -1152,7 +1936,7 @@ function createTrackTrustEngine(config) {
   let recoveryPreviousRawPoint = null;
 
   return {
-    decide(rawPoint, epoch, snapshot, motionSummaries, previousTrustedTrackPoint) {
+    decide(rawPoint, epoch, motionSummaries, previousTrustedTrackPoint) {
       const cloudType = chooseCloudType(rawPoint, epoch, previousTrustedTrackPoint, config);
       if (cloudType !== currentCloudType
           || currentCloud === null
@@ -1167,7 +1951,7 @@ function createTrackTrustEngine(config) {
         recoveryPreviousRawPoint = null;
       }
 
-      const cloud = currentCloud.add(rawPoint, snapshot, motionSummaries);
+      const cloud = currentCloud.add(rawPoint, motionSummaries);
       const stable = currentCloud.isStable()
         || (cloudType === 'RECOVERY_CLOUD'
           && currentCloud.recoveryFastPath()
@@ -1202,7 +1986,7 @@ function createTrackTrustEngine(config) {
           reason = 'recovery_cloud_pending';
         }
       } else if (cloudType === 'WEAK_CLOUD') {
-        if (isLowAccuracyRescuePoint(rawPoint, previousTrustedTrackPoint, snapshot, config)) {
+        if (isLowAccuracyRescuePoint(rawPoint, previousTrustedTrackPoint, config)) {
           result = 'accept';
           reason = 'continuity_rescue_low_accuracy';
           resetMovingCloudAfterAccept = true;
@@ -1349,14 +2133,12 @@ function isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint, config) {
     || (rawPoint.hasSpeed && rawPoint.speed <= config.continuityRescueMaxSpeedMetersPerSecond);
 }
 
-function isLowAccuracyRescuePoint(rawPoint, previousTrustedTrackPoint, snapshot, config) {
+function isLowAccuracyRescuePoint(rawPoint, previousTrustedTrackPoint, config) {
   if (!isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint, config)) return false;
   if (!Number.isFinite(rawPoint.accuracy)
       || rawPoint.accuracy > LOW_ACCURACY_RESCUE_MAX_ACCURACY_METERS) {
     return false;
   }
-  const usedInFixTotal = numberField(snapshot, 'usedInFixTotal') ?? 0;
-  if (usedInFixTotal < LOW_ACCURACY_RESCUE_MIN_USED_IN_FIX) return false;
   const distance = distanceMeters(previousTrustedTrackPoint.lat, previousTrustedTrackPoint.lng,
     rawPoint.lat, rawPoint.lng);
   return distance >= LOW_ACCURACY_RESCUE_MIN_DISTANCE_METERS;
@@ -1432,11 +2214,10 @@ class TrackCloudWindow {
     this.config = config;
   }
 
-  add(rawPoint, snapshot, motionSummaries) {
+  add(rawPoint, motionSummaries) {
     if (!this.origin) this.origin = rawPoint;
     this.samples.push({
       rawPoint,
-      snapshot,
       recentStillMotion: hasRecentStillMotion(rawPoint.elapsedRealtimeNanos, motionSummaries)
     });
     return this.snapshot();
@@ -1508,19 +2289,17 @@ class TrackCloudWindow {
     if (this.cloudType !== 'RECOVERY_CLOUD' || this.samples.length !== 1) return false;
     const sample = this.samples[0];
     return sample.rawPoint.accuracy <= 10
-      && scoreFromGnss(sample.snapshot) >= 80
       && (!sample.rawPoint.hasSpeed || sample.rawPoint.speed <= 2.5);
   }
 
   baseWeight(sample, latestElapsed) {
     const accuracyWeight = clamp(1 / Math.max(sample.rawPoint.accuracy, 3), 0.01, 0.33);
-    const gnssWeightValue = gnssWeight(sample.snapshot);
     const motionWeightValue = Math.max(0.25,
       scoreFromMotion(this.cloudType, sample.rawPoint, sample.recentStillMotion) / 100);
     const ageSeconds = Math.max(0,
       (latestElapsed - sample.rawPoint.elapsedRealtimeNanos) / 1_000_000_000);
     const temporalWeight = Math.exp(-ageSeconds / this.config.cloudTemporalDecaySeconds);
-    return accuracyWeight * gnssWeightValue * motionWeightValue * temporalWeight;
+    return accuracyWeight * motionWeightValue * temporalWeight;
   }
 
   spatialWeight(distanceMetersValue, accuracyMeters) {
@@ -1566,24 +2345,6 @@ function emptyCloudSnapshot(cloudId, cloudType, samplingEpochId) {
   };
 }
 
-function scoreFromGnss(snapshot) {
-  if (!snapshot) return 25;
-  const used = numberField(snapshot, 'usedInFixTotal') ?? 0;
-  const top4 = numberField(snapshot, 'top4AvgCn0') ?? 0;
-  if (used >= 8 && top4 >= 28) return 100;
-  if (used >= 5 && top4 >= 22) return 70;
-  if (used >= 3) return 40;
-  return 25;
-}
-
-function gnssWeight(snapshot) {
-  const score = scoreFromGnss(snapshot);
-  if (score >= 80) return 1;
-  if (score >= 60) return 0.7;
-  if (score >= 35) return 0.4;
-  return 0.25;
-}
-
 function scoreFromMotion(cloudType, rawPoint, recentStillMotion) {
   const still = recentStillMotion === true;
   if (cloudType === 'STATIONARY_CLOUD') return still ? 100 : 50;
@@ -1594,40 +2355,14 @@ function scoreFromMotion(cloudType, rawPoint, recentStillMotion) {
   return 50;
 }
 
-function hasRecentStillMotion(elapsedRealtimeNanos, motionSummaries) {
-  if (!Array.isArray(motionSummaries)) return false;
-  const cutoff = elapsedRealtimeNanos - MOTION_WINDOW_NANOS;
-  let total = 0;
-  let still = 0;
-  for (const summary of motionSummaries) {
-    const first = numberField(summary, 'firstElapsedRealtimeNanos');
-    const last = numberField(summary, 'lastElapsedRealtimeNanos');
-    if (first === null || last === null || last < cutoff || first > elapsedRealtimeNanos) continue;
-    total++;
-    if (summary.deviceStill === true || summary.isDeviceStill === true) still++;
-  }
-  return total > 0 && still / total >= 0.75;
+function hasRecentStillMotion(elapsedRealtimeNanos, motionSource) {
+  const stats = recentMotionStats(elapsedRealtimeNanos, motionSource, MOTION_WINDOW_NANOS);
+  return stats.total > 0 && stats.still / stats.total >= 0.75;
 }
 
-function hasRecentActiveMotion(elapsedRealtimeNanos, motionSummaries) {
-  if (!Array.isArray(motionSummaries)) return false;
-  const cutoff = elapsedRealtimeNanos - MOTION_WINDOW_NANOS;
-  let total = 0;
-  let active = 0;
-  for (const summary of motionSummaries) {
-    const first = numberField(summary, 'firstElapsedRealtimeNanos');
-    const last = numberField(summary, 'lastElapsedRealtimeNanos');
-    if (first === null || last === null || last < cutoff || first > elapsedRealtimeNanos) continue;
-    total++;
-    const accel = numberField(summary, 'dynamicAccelRmsMps2') ?? 0;
-    const gyro = numberField(summary, 'gyroscopeRmsRadps') ?? 0;
-    const stepDelta = numberField(summary, 'stepDelta') ?? 0;
-    const stepDetectorCount = numberField(summary, 'stepDetectorCount') ?? 0;
-    if (accel >= 0.35 || gyro >= 0.12 || stepDelta > 0 || stepDetectorCount > 0) {
-      active++;
-    }
-  }
-  return total > 0 && active / total >= 0.5;
+function hasRecentActiveMotion(elapsedRealtimeNanos, motionSource) {
+  const stats = recentMotionStats(elapsedRealtimeNanos, motionSource, MOTION_WINDOW_NANOS);
+  return stats.total > 0 && stats.active / stats.total >= 0.5;
 }
 
 function isMotionSupportedLowSpeedPoint(rawPoint, previousTrustedTrackPoint, config) {
@@ -1671,6 +2406,10 @@ function buildFindings(product, evidence) {
   if (product.stationarySessionCollapseBlockedByBarometer) {
     findings.push('气压证据显示垂直运动，未执行静止整段压缩');
   }
+  if (product.lowQualityMotionRebuild?.mode === 'review_only'
+      && product.lowQualityMotionRebuild.candidateCount > 0) {
+    findings.push(`发现 ${product.lowQualityMotionRebuild.candidateCount} 段低质量运动重建候选，默认仅复核不进入成品轨迹`);
+  }
   return findings;
 }
 
@@ -1700,20 +2439,41 @@ function emptyProduct(strategyVersion, sourceFilePath, recordStartElapsedRealtim
       weakPointCount: 0,
       rejectedPointCount: 0,
       intakeRejectedPointCount: 0,
-      gnssTotalAscentMeters: -1,
-      gnssAscentSampleCount: 0,
-      gnssAscentRejectedSampleCount: 0,
-      gnssAscentUsableSampleCount: 0,
-      gnssAscentMinVerticalAccuracyMeters: null,
-      gnssAscentMaxVerticalAccuracyMeters: null,
-      gnssAscentAvgVerticalAccuracyMeters: null,
+      locationAltitudeTotalAscentMeters: -1,
+      locationAltitudeAscentSampleCount: 0,
+      locationAltitudeAscentRejectedSampleCount: 0,
+      locationAltitudeAscentUsableSampleCount: 0,
+      locationAltitudeAscentMinVerticalAccuracyMeters: null,
+      locationAltitudeAscentMaxVerticalAccuracyMeters: null,
+      locationAltitudeAscentAvgVerticalAccuracyMeters: null,
       barometerTotalAscentMeters: -1,
       barometerAscentSampleCount: 0,
       barometerAscentRejectedSampleCount: 0,
       selectedTotalAscentMeters: -1,
       selectedAscentSource: 'NONE'
     },
-    findings: []
+    findings: [],
+    lowQualityMotionRebuild: {
+      mode: 'review_only',
+      candidateCount: 0,
+      candidates: [],
+      rawIntervalCandidateCount: 0,
+      rawIntervalCandidates: [],
+      rawIntervalScan: {
+        scannedIntervalCount: 0,
+        rejectedIntervalCount: 0
+      },
+      scannedMovingGoodFixCount: 0,
+      skipped: {
+        transportBoundary: 0,
+        missingLowQualityBoundary: 0,
+        sourceOutsideInterval: 0,
+        criteriaRejected: 0,
+        structureTooShort: 0
+      },
+      rejectedExamples: []
+    },
+    adaptiveShadow: null
   };
 }
 
