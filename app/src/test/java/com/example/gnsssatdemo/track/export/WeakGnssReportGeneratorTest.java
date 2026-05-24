@@ -16,12 +16,9 @@ public class WeakGnssReportGeneratorTest {
         String evidence = ""
                 + event(1, "session_metadata", 1_000_000_000L,
                 "\"createdElapsedRealtimeNanos\":1000000000")
-                + gnss(2, 1, 1_500_000_000L, 4, 18.0, 23.0)
-                + raw(3, 1, 2_000_000_000L, 8.0, false, 1, null)
-                + gnss(4, 2, 10_000_000_000L, 7, 30.0, 36.0)
-                + raw(5, 2, 12_000_000_000L, 35.0, false, 2, null)
-                + gnss(6, 3, 20_000_000_000L, 8, 31.0, 37.0)
-                + raw(7, 3, 22_000_000_000L, 8.0, false, 3, 5.0)
+                + raw(3, 1, 2_000_000_000L, 8.0, null)
+                + raw(5, 2, 12_000_000_000L, 35.0, null)
+                + raw(7, 3, 22_000_000_000L, 8.0, 5.0)
                 + event(8, "session_event", 120_000_000_000L,
                 "\"eventType\":\"no_location_timeout\","
                         + "\"elapsedSinceLastLocationMillis\":75000");
@@ -34,14 +31,14 @@ public class WeakGnssReportGeneratorTest {
         WeakGnssReport report = new WeakGnssReportGenerator().generate(manifest);
 
         assertEquals(3, report.rawLocationCount);
-        assertEquals(3, report.gnssSnapshotCount);
+        assertEquals(0, report.gnssSnapshotCount);
         assertEquals(1, report.weakDecisionCount);
-        assertEquals(1, report.weakDecisionWithGnssCount);
+        assertEquals(0, report.weakDecisionWithGnssCount);
         assertEquals(35.0, report.averageWeakAccuracyMeters, 0.0);
-        assertEquals(30.0, report.averageWeakUsedAvgCn0, 0.0);
+        assertEquals(0.0, report.averageWeakUsedAvgCn0, 0.0);
         assertEquals(1, report.transportDecisionCount);
-        assertEquals(1, report.transportDecisionWithGnssCount);
-        assertEquals(31.0, report.averageTransportUsedAvgCn0, 0.0);
+        assertEquals(0, report.transportDecisionWithGnssCount);
+        assertEquals(0.0, report.averageTransportUsedAvgCn0, 0.0);
         assertEquals(1, report.noLocationTimeoutCount);
         assertTrue(report.toText().contains("弱 GPS 诊断报告"));
     }
@@ -52,10 +49,9 @@ public class WeakGnssReportGeneratorTest {
         String evidence = ""
                 + event(1, "session_metadata", 1_000_000_000L,
                 "\"createdElapsedRealtimeNanos\":1000000000")
-                + gnss(2, 1, 1_500_000_000L, 8, 31.0, 37.0)
-                + raw(3, 1, 2_000_000_000L, 8.0, false, 1, null)
-                + raw(4, 2, 200_000_000_000L, 8.0, false, 1, null, 29.00001)
-                + raw(5, 3, 202_000_000_000L, 8.0, false, 1, null);
+                + raw(3, 1, 2_000_000_000L, 8.0, null)
+                + raw(4, 2, 200_000_000_000L, 8.0, null, 29.00001)
+                + raw(5, 3, 202_000_000_000L, 8.0, null);
         Files.write(new File(dir, "evidence.jsonl").toPath(),
                 evidence.getBytes(StandardCharsets.UTF_8));
         writeSessionJson(dir, 5, 3, 2, 1, 1);
@@ -65,7 +61,7 @@ public class WeakGnssReportGeneratorTest {
         WeakGnssReport report = new WeakGnssReportGenerator().generate(manifest);
 
         assertEquals(1, report.transportDecisionCount);
-        assertEquals(1, report.transportDecisionWithGnssCount);
+        assertEquals(0, report.transportDecisionWithGnssCount);
         assertEquals(1, report.gapRecoveryCount);
     }
 
@@ -77,13 +73,13 @@ public class WeakGnssReportGeneratorTest {
     }
 
     private String raw(int seq, int rawPointId, long elapsedRealtimeNanos, double accuracy,
-                       boolean stale, Integer snapshotId, Double speed) {
-        return raw(seq, rawPointId, elapsedRealtimeNanos, accuracy, stale, snapshotId, speed,
+                       Double speed) {
+        return raw(seq, rawPointId, elapsedRealtimeNanos, accuracy, speed,
                 29.0 + rawPointId * 0.01);
     }
 
     private String raw(int seq, int rawPointId, long elapsedRealtimeNanos, double accuracy,
-                       boolean stale, Integer snapshotId, Double speed, double latitude) {
+                       Double speed, double latitude) {
         return event(seq, "raw_location", elapsedRealtimeNanos,
                 "\"rawPointId\":" + rawPointId
                         + ",\"provider\":\"gps\",\"lat\":" + latitude
@@ -92,21 +88,7 @@ public class WeakGnssReportGeneratorTest {
                         + ",\"timeMillis\":1"
                         + ",\"hasElapsedRealtimeNanos\":true"
                         + ",\"elapsedRealtimeNanos\":" + elapsedRealtimeNanos
-                        + ",\"speed\":" + (speed == null ? "null" : speed)
-                        + ",\"gnssQualityStale\":" + stale
-                        + (snapshotId == null ? "" : ",\"sourceGnssSnapshotId\":" + snapshotId));
-    }
-
-    private String gnss(int seq, int snapshotId, long elapsedRealtimeNanos,
-                        int usedInFix, double usedAvgCn0, double top4AvgCn0) {
-        return event(seq, "gnss_snapshot", elapsedRealtimeNanos,
-                "\"snapshotId\":" + snapshotId
-                        + ",\"receivedElapsedRealtimeNanos\":" + elapsedRealtimeNanos
-                        + ",\"visibleTotal\":10"
-                        + ",\"usedInFixTotal\":" + usedInFix
-                        + ",\"usedAvgCn0\":" + usedAvgCn0
-                        + ",\"allAvgCn0\":" + usedAvgCn0
-                        + ",\"top4AvgCn0\":" + top4AvgCn0);
+                        + ",\"speed\":" + (speed == null ? "null" : speed));
     }
 
     private void writeSessionJson(File dir, int eventSeq, int rawCount, int trackCount,

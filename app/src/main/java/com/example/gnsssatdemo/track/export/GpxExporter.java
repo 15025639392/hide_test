@@ -102,9 +102,6 @@ public class GpxExporter {
         sb.append("          <hike:decisionReason>").append(point.decisionReason).append("</hike:decisionReason>\n");
         sb.append("          <hike:distanceDeltaMeters>").append(point.distanceDeltaMeters).append("</hike:distanceDeltaMeters>\n");
         sb.append("          <hike:movingTimeDeltaSeconds>").append(point.movingTimeDeltaSeconds).append("</hike:movingTimeDeltaSeconds>\n");
-        if (point.sourceGnssSnapshotId != null) {
-            sb.append("          <hike:sourceGnssSnapshotId>").append(point.sourceGnssSnapshotId).append("</hike:sourceGnssSnapshotId>\n");
-        }
         sb.append("        </extensions>\n");
         sb.append("      </trkpt>\n");
     }

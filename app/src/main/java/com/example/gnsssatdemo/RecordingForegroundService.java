@@ -15,7 +15,6 @@ import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
-import android.location.GnssStatus;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
@@ -29,7 +28,6 @@ import android.os.SystemClock;
 import com.example.gnsssatdemo.track.engine.BasicTrackSession;
 import com.example.gnsssatdemo.track.engine.SamplingEpoch;
 import com.example.gnsssatdemo.track.engine.TrackAscentCalculator;
-import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
 import com.example.gnsssatdemo.track.model.BarometerWindow;
 import com.example.gnsssatdemo.track.model.DeviceMotionWindow;
 import com.example.gnsssatdemo.track.model.TrackPoint;
@@ -99,8 +97,6 @@ public class RecordingForegroundService extends Service {
     private static final float SIGNAL_WEAK_DISTANCE_METERS = 0f;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final GnssQualitySnapshotFactory gnssQualitySnapshotFactory =
-            new GnssQualitySnapshotFactory();
     private LocationManager locationManager;
     private SensorManager sensorManager;
     private final List<Sensor> deviceMotionSensors = new ArrayList<>();
@@ -110,7 +106,6 @@ public class RecordingForegroundService extends Service {
     private long lastLocationReceivedElapsedRealtimeMillis;
     private boolean noLocationTimeoutLogged;
     private boolean listening;
-    private boolean gnssStatusRegistered;
     private boolean motionSensorRegistered;
     private boolean pressureSensorRegistered;
     private boolean stopRequested;
@@ -206,16 +201,6 @@ public class RecordingForegroundService extends Service {
             } else {
                 scheduleNoLocationTimeout();
             }
-        }
-    };
-
-    private final GnssStatus.Callback gnssStatusCallback = new GnssStatus.Callback() {
-        @Override
-        public void onSatelliteStatusChanged(GnssStatus status) {
-            if (trackSession == null || !trackSession.isActive()) {
-                return;
-            }
-            trackSession.onGnssSnapshot(snapshotFromStatus(status));
         }
     };
 
@@ -346,10 +331,6 @@ public class RecordingForegroundService extends Service {
         try {
             currentSamplingPolicy = null;
             updateLocationRequestForCurrentPolicy(true);
-            if (!gnssStatusRegistered) {
-                locationManager.registerGnssStatusCallback(gnssStatusCallback, mainHandler);
-                gnssStatusRegistered = true;
-            }
         } catch (RuntimeException e) {
             updateNotification("GPS 监听失败: " + e.getMessage());
             sendStatus("GPS 监听失败: " + e.getMessage());
@@ -364,14 +345,10 @@ public class RecordingForegroundService extends Service {
             if (listening && activeLocationListener != null) {
                 locationManager.removeUpdates(activeLocationListener);
             }
-            if (gnssStatusRegistered) {
-                locationManager.unregisterGnssStatusCallback(gnssStatusCallback);
-            }
         } catch (RuntimeException ignored) {
             // Some vendor builds throw if a callback was not fully registered.
         }
         listening = false;
-        gnssStatusRegistered = false;
         currentSamplingPolicy = null;
         activeLocationListener = null;
     }
@@ -553,12 +530,6 @@ public class RecordingForegroundService extends Service {
         if (trackSession != null && trackSession.isActive()) {
             mainHandler.postDelayed(noLocationTimeoutRunnable, NO_LOCATION_TIMEOUT_MILLIS);
         }
-    }
-
-    private GnssQualitySnapshot snapshotFromStatus(GnssStatus status) {
-        long receivedElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos();
-        return gnssQualitySnapshotFactory.fromStatus(trackSession.nextGnssSnapshotId(),
-                receivedElapsedRealtimeNanos, status);
     }
 
     private Notification buildNotification(String text) {

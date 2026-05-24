@@ -66,11 +66,10 @@ public class DiagnosticTrackPointReaderTest {
 
         List<TrackPoint> points = new DiagnosticTrackPointReader().readTrackPoints(evidence);
 
-        assertEquals(4, points.size());
+        assertEquals(3, points.size());
         assertEquals("weak", points.get(1).decisionResult);
-        assertEquals("recovery_cloud_pending", points.get(2).decisionReason);
-        assertEquals("continuity_rescue_gap_recovery", points.get(3).decisionReason);
-        assertEquals(2L, points.get(3).segmentId);
+        assertEquals("gap_recovery", points.get(2).decisionReason);
+        assertEquals(2L, points.get(2).segmentId);
     }
 
     @Test

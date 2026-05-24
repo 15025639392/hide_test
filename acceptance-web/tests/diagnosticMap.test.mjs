@@ -57,6 +57,8 @@ test('buildTargetOutput uses recomputed target product instead of recorded decis
   assert.equal(output.summaries.sessionProfile.raw.sampleCount, 2);
   assert.equal(output.summaries.sessionProfile.sampleInterval.p50Seconds, 1);
   assert.equal(output.summaries.adaptiveShadow.mode, 'shadow_only');
+  assert.ok(Array.isArray(output.summaries.adaptiveShadows));
+  assert.equal(output.summaries.adaptiveShadows[0].id, 'adaptive-balanced');
   assert.ok(Array.isArray(output.summaries.adaptiveShadow.track));
   assert.ok(Number.isFinite(output.summaries.adaptiveShadow.impact.fixed.trustedPointCount));
   assert.ok(Number.isFinite(output.summaries.adaptiveShadow.impact.delta.trustedPointCount));

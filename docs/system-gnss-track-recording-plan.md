@@ -26,7 +26,7 @@ Non-Negotiable Invariants、Change Checklist 和 Governance Phases。
 
 ```text
 前台服务采集 GPS_PROVIDER
-  -> RawPoint / GNSS Snapshot / evidence.jsonl
+  -> RawPoint / raw_location / optional GNSS diagnostics / evidence.jsonl
   -> SamplingEpoch / SamplingIntake
   -> TrackTrustEngine / TrackCloudWindow
   -> virtual-coordinate TrackPoint / session.json
@@ -75,8 +75,8 @@ LocationManager.GPS_PROVIDER
 - 前台服务与采样策略事件
 
 弱 GPS 诊断的外部参考与后续增强方向见
-`docs/weak-gps-github-research.md`。当前阶段优先补充卫星质量证据，
-不把弱信号修复结果写入可信轨迹。
+`docs/weak-gps-github-research.md`。GNSS 质量只保留为 Android 采集端的可选诊断附录，
+不作为 Web 目标算法的判点输入，也不把弱信号修复结果写入可信轨迹。
 
 不进入正式轨迹：
 
@@ -159,16 +159,16 @@ RawPoint：
 
 - 保存系统 Location 的原始字段。
 - 包含经纬度、精度、海拔、速度、方向、wall time、elapsed realtime、mock 标记。
-- 关联最近 3 秒窗口内的 GNSS snapshot。
 - 即使被拒绝，也应进入诊断日志。
 
-GNSS Snapshot：
+GNSS Snapshot（可选诊断附录）：
 
 - 来自 `GnssStatus`。
 - 记录可见卫星数、参与 fix 卫星数、平均 C/N0 和星座分布。
 - 与 Location 按 `elapsedRealtimeNanos` 匹配。
 - 优先匹配过去 3 秒内 snapshot；必要时记录 future match 诊断。
 - 超过窗口则标记 `gnssQualityStale`。
+- 不参与 Web 目标算法判点，不改变 TrackPoint、距离、运动时间、segment、GPX 或 replay 期望。
 
 TrackPoint：
 
@@ -355,7 +355,10 @@ transport mode 中:
 - `decisionReason`
 - `distanceDeltaMeters`
 - `movingTimeDeltaSeconds`
-- 可选 `sourceGnssSnapshotId`
+
+历史或可选诊断扩展字段：
+
+- `sourceGnssSnapshotId`（仅当 Android 采集端启用 `gnss_snapshot` 诊断附录时写入）
 
 `partial.gpx`：
 
@@ -381,7 +384,7 @@ transport mode 中:
 
 样本报告由 `evidence.jsonl` 和 `session.json` 自动生成，覆盖采样策略分布、记录时长、距离、GAP、no-location timeout、reject/weak/accept 原因分布和阻塞问题。当前报告明确不统计电量/省电证据，也不做多地图 GPX 兼容性自动回归。
 
-弱 GPS 诊断报告由 `evidence.jsonl` 和 `session.json` 自动生成，覆盖 weak/reject 决策关联的卫星 C/N0、参与定位卫星数、raw location stale GNSS 占比、GAP 前后 30 秒 GNSS 质量和 no-location timeout。该报告只解释弱信号证据，不改变可信轨迹、距离、GPX 或 replay 判点结果。
+弱 GPS 诊断报告由 `evidence.jsonl` 和 `session.json` 自动生成，是可选诊断附录。它覆盖 weak/reject 决策关联的卫星 C/N0、参与定位卫星数、raw location stale GNSS 占比、GAP 前后 30 秒 GNSS 质量和 no-location timeout。该报告只解释弱信号证据，不改变可信轨迹、距离、GPX、Web 目标算法或 replay 判点结果。
 
 `session.json` 至少表达：
 
@@ -419,9 +422,12 @@ transport mode 中:
 - `runtime_snapshot`
 - `session_event`
 - `sampling_policy`
-- `gnss_snapshot`
 - `raw_location`
 - `decision`
+
+可选诊断附录事件：
+
+- `gnss_snapshot`
 
 诊断日志必须能回答：
 

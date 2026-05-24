@@ -6,8 +6,6 @@ import com.example.gnsssatdemo.track.engine.TrackAscentCalculator;
 import com.example.gnsssatdemo.track.engine.TrackTrustDecision;
 import com.example.gnsssatdemo.track.engine.TrackTrustEngine;
 import com.example.gnsssatdemo.track.model.DeviceMotionWindow;
-import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
-import com.example.gnsssatdemo.track.model.GnssSnapshotDiagnosticFields;
 import com.example.gnsssatdemo.track.model.RawPoint;
 import com.example.gnsssatdemo.track.model.TrackPoint;
 
@@ -47,7 +45,6 @@ public class EvidenceTrackProductBuilder {
         SamplingIntake samplingIntake = new SamplingIntake();
         TrackTrustEngine trustEngine = new TrackTrustEngine();
         Map<Long, SamplingEpoch> samplingEpochs = new HashMap<>();
-        Map<Long, GnssQualitySnapshot> gnssSnapshots = new HashMap<>();
         List<DeviceMotionWindow> motionWindows = new ArrayList<>();
         List<TrackPoint> trackPoints = new ArrayList<>();
         List<DecisionRecord> decisions = new ArrayList<>();
@@ -84,9 +81,6 @@ public class EvidenceTrackProductBuilder {
                             (float) event.optDouble("locationRequestMinDistanceMeters", 0.0),
                             eventTime);
                     samplingEpochs.put(activeEpoch.samplingEpochId, activeEpoch);
-                } else if (GnssSnapshotDiagnosticFields.EVENT.equals(eventName)) {
-                    GnssQualitySnapshot snapshot = gnssSnapshotFromEvent(event);
-                    gnssSnapshots.put(snapshot.snapshotId, snapshot);
                 } else if ("device_motion_window".equals(eventName)) {
                     motionWindows.add(deviceMotionWindowFromEvent(event));
                 } else if ("barometer_window".equals(eventName)) {
@@ -112,18 +106,16 @@ public class EvidenceTrackProductBuilder {
                         stats.increment("intake_rejected:" + intake.reason);
                         decisions.add(new DecisionRecord(rawPoint.rawPointId,
                                 rawPoint.elapsedRealtimeNanos, "intake_rejected",
-                                intake.reason, rawPoint.sourceGnssSnapshotId));
+                                intake.reason));
                         continue;
                     }
                     TrackTrustDecision decision = trustEngine.decide(rawPoint, rawEpoch,
-                            snapshotById(gnssSnapshots, rawPoint.sourceGnssSnapshotId),
                             motionWindows, previousTrustedTrackPoint);
                     decisionSeq++;
                     stats.decisionCount++;
                     stats.increment(decision.result + ":" + decision.reason);
                     decisions.add(new DecisionRecord(rawPoint.rawPointId,
-                            rawPoint.elapsedRealtimeNanos, decision.result, decision.reason,
-                            rawPoint.sourceGnssSnapshotId));
+                            rawPoint.elapsedRealtimeNanos, decision.result, decision.reason));
                     if (decision.createsTrustedTrackPoint()) {
                         if (decision.startsNewSegment && previousTrustedTrackPoint != null) {
                             segmentId++;
@@ -374,7 +366,7 @@ public class EvidenceTrackProductBuilder {
                 representative.speedMetersPerSecond, representative.hasBearing,
                 representative.bearingDegrees, representative.timeMillis,
                 representative.elapsedRealtimeNanos, "anchor", "stationary_session_anchor",
-                0.0, 0.0, representative.sourceGnssSnapshotId, "ANCHOR",
+                0.0, 0.0, "ANCHOR",
                 representative.sourceCloudId, representative.representativeRawPointId,
                 representative.contributingRawPointIds, true,
                 latitude, longitude, radiusMeters, representative.hasPressureSample,
@@ -416,7 +408,7 @@ public class EvidenceTrackProductBuilder {
                 rawPoint.timeMillis, rawPoint.elapsedRealtimeNanos,
                 decision.result, decision.reason,
                 decision.distanceDeltaMeters, decision.movingTimeDeltaSeconds,
-                rawPoint.sourceGnssSnapshotId, decision.trustGrade, decision.cloudId,
+                decision.trustGrade, decision.cloudId,
                 decision.representativeRawPointId,
                 decision.contributingRawPointIds.toString(),
                 decision.virtualTrackPointCoordinate,
@@ -450,37 +442,10 @@ public class EvidenceTrackProductBuilder {
                 recordStartElapsedRealtimeNanos);
     }
 
-    private GnssQualitySnapshot snapshotById(Map<Long, GnssQualitySnapshot> snapshots,
-                                             Long snapshotId) {
-        if (snapshotId == null) {
-            return null;
-        }
-        return snapshots.get(snapshotId);
-    }
-
     private boolean isGapRecoveryReason(String reason) {
         return "gap_recovery".equals(reason)
                 || "continuity_rescue_gap_recovery".equals(reason)
                 || "recovery_transport_suspected_kept".equals(reason);
-    }
-
-    private GnssQualitySnapshot gnssSnapshotFromEvent(JSONObject event) {
-        return new GnssQualitySnapshot(event.optLong("snapshotId"),
-                event.optLong("receivedElapsedRealtimeNanos"),
-                event.optInt("visibleTotal"), event.optInt("usedInFixTotal"),
-                (float) event.optDouble("usedAvgCn0", 0.0),
-                (float) event.optDouble("allAvgCn0", 0.0),
-                (float) event.optDouble("top4AvgCn0", 0.0),
-                event.optInt("lowCn0VisibleCount"),
-                event.optInt("weakUsedCount"),
-                event.optInt("gpsUsed"), event.optInt("beidouUsed"),
-                event.optInt("galileoUsed"), event.optInt("glonassUsed"),
-                event.optInt("qzssUsed"),
-                event.optInt("gpsVisible"), event.optInt("beidouVisible"),
-                event.optInt("galileoVisible"), event.optInt("glonassVisible"),
-                event.optInt("qzssVisible"), event.optInt("sbasVisible"),
-                event.optInt("irnssVisible"), event.optInt("unknownVisible"),
-                event.optInt("otherVisible"), event.optBoolean("hasDualFrequency"));
     }
 
     private DeviceMotionWindow deviceMotionWindowFromEvent(JSONObject event) {
@@ -534,9 +499,7 @@ public class EvidenceTrackProductBuilder {
                 event.optLong("timeMillis", 0L),
                 event.optBoolean("hasElapsedRealtimeNanos", event.has("elapsedRealtimeNanos")),
                 event.optLong("elapsedRealtimeNanos", 0L),
-                event.optBoolean("mock", false),
-                event.has("sourceGnssSnapshotId")
-                        ? event.optLong("sourceGnssSnapshotId") : null);
+                event.optBoolean("mock", false));
     }
 
     public static class Result {
@@ -564,15 +527,13 @@ public class EvidenceTrackProductBuilder {
         public final long elapsedRealtimeNanos;
         public final String result;
         public final String reason;
-        public final Long sourceGnssSnapshotId;
 
         DecisionRecord(long rawPointId, long elapsedRealtimeNanos, String result,
-                       String reason, Long sourceGnssSnapshotId) {
+                       String reason) {
             this.rawPointId = rawPointId;
             this.elapsedRealtimeNanos = elapsedRealtimeNanos;
             this.result = result;
             this.reason = reason;
-            this.sourceGnssSnapshotId = sourceGnssSnapshotId;
         }
     }
 

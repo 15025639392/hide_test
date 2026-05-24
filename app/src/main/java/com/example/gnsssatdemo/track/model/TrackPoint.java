@@ -22,7 +22,6 @@ public class TrackPoint {
     public final String decisionReason;
     public final double distanceDeltaMeters;
     public final double movingTimeDeltaSeconds;
-    public final Long sourceGnssSnapshotId;
     public final String trustGrade;
     public final Long sourceCloudId;
     public final Long representativeRawPointId;
@@ -45,7 +44,7 @@ public class TrackPoint {
                 rawPoint.accuracyMeters, rawPoint.hasSpeed, rawPoint.speedMetersPerSecond,
                 rawPoint.hasBearing, rawPoint.bearingDegrees, rawPoint.timeMillis,
                 rawPoint.elapsedRealtimeNanos, decisionResult, decisionReason,
-                distanceDeltaMeters, movingTimeDeltaSeconds, rawPoint.sourceGnssSnapshotId);
+                distanceDeltaMeters, movingTimeDeltaSeconds);
     }
 
     public TrackPoint(long trackPointId, long sourceRawPointId, long sourceDecisionId,
@@ -55,13 +54,12 @@ public class TrackPoint {
                       boolean hasBearing, float bearingDegrees,
                       long timeMillis, long elapsedRealtimeNanos,
                       String decisionResult, String decisionReason,
-                      double distanceDeltaMeters, double movingTimeDeltaSeconds,
-                      Long sourceGnssSnapshotId) {
+                      double distanceDeltaMeters, double movingTimeDeltaSeconds) {
         this(trackPointId, sourceRawPointId, sourceDecisionId, segmentId, latitude, longitude,
                 hasAltitude, altitude, false, 0f, accuracyMeters,
                 hasSpeed, speedMetersPerSecond, hasBearing, bearingDegrees, timeMillis,
                 elapsedRealtimeNanos, decisionResult, decisionReason, distanceDeltaMeters,
-                movingTimeDeltaSeconds, sourceGnssSnapshotId, false, 0L, 0.0, 0.0);
+                movingTimeDeltaSeconds, false, 0L, 0.0, 0.0);
     }
 
     public TrackPoint(long trackPointId, long sourceRawPointId, long sourceDecisionId,
@@ -73,14 +71,12 @@ public class TrackPoint {
                       boolean hasBearing, float bearingDegrees,
                       long timeMillis, long elapsedRealtimeNanos,
                       String decisionResult, String decisionReason,
-                      double distanceDeltaMeters, double movingTimeDeltaSeconds,
-                      Long sourceGnssSnapshotId) {
+                      double distanceDeltaMeters, double movingTimeDeltaSeconds) {
         this(trackPointId, sourceRawPointId, sourceDecisionId, segmentId, latitude, longitude,
                 hasAltitude, altitude, hasVerticalAccuracy, verticalAccuracyMeters,
                 accuracyMeters, hasSpeed, speedMetersPerSecond, hasBearing, bearingDegrees,
                 timeMillis, elapsedRealtimeNanos, decisionResult, decisionReason,
-                distanceDeltaMeters, movingTimeDeltaSeconds, sourceGnssSnapshotId,
-                false, 0L, 0.0, 0.0);
+                distanceDeltaMeters, movingTimeDeltaSeconds, false, 0L, 0.0, 0.0);
     }
 
     public TrackPoint(long trackPointId, long sourceRawPointId, long sourceDecisionId,
@@ -93,14 +89,13 @@ public class TrackPoint {
                       long timeMillis, long elapsedRealtimeNanos,
                       String decisionResult, String decisionReason,
                       double distanceDeltaMeters, double movingTimeDeltaSeconds,
-                      Long sourceGnssSnapshotId,
                       boolean hasPressureSample, long pressureSampleElapsedRealtimeNanos,
                       double pressureHpa, double rawBarometerAltitudeMeters) {
         this(trackPointId, sourceRawPointId, sourceDecisionId, segmentId, latitude, longitude,
                 hasAltitude, altitude, hasVerticalAccuracy, verticalAccuracyMeters,
                 accuracyMeters, hasSpeed, speedMetersPerSecond, hasBearing, bearingDegrees,
                 timeMillis, elapsedRealtimeNanos, decisionResult, decisionReason,
-                distanceDeltaMeters, movingTimeDeltaSeconds, sourceGnssSnapshotId,
+                distanceDeltaMeters, movingTimeDeltaSeconds,
                 legacyTrustGrade(decisionResult), null, null, "", false,
                 latitude, longitude, 0.0,
                 hasPressureSample, pressureSampleElapsedRealtimeNanos,
@@ -117,7 +112,6 @@ public class TrackPoint {
                       long timeMillis, long elapsedRealtimeNanos,
                       String decisionResult, String decisionReason,
                       double distanceDeltaMeters, double movingTimeDeltaSeconds,
-                      Long sourceGnssSnapshotId,
                       String trustGrade, Long sourceCloudId, Long representativeRawPointId,
                       String contributingRawPointIds, boolean virtualTrackPointCoordinate,
                       double cloudCenterLatitude, double cloudCenterLongitude,
@@ -145,7 +139,6 @@ public class TrackPoint {
         this.decisionReason = decisionReason;
         this.distanceDeltaMeters = distanceDeltaMeters;
         this.movingTimeDeltaSeconds = movingTimeDeltaSeconds;
-        this.sourceGnssSnapshotId = sourceGnssSnapshotId;
         this.trustGrade = trustGrade == null ? legacyTrustGrade(decisionResult) : trustGrade;
         this.sourceCloudId = sourceCloudId;
         this.representativeRawPointId = representativeRawPointId;

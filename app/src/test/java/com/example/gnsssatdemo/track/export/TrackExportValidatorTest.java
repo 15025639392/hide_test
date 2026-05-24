@@ -103,7 +103,6 @@ public class TrackExportValidatorTest {
                 decisionResult,
                 decisionReason,
                 0.0,
-                0.0,
-                null);
+                0.0);
     }
 }

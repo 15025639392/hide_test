@@ -12,6 +12,7 @@ const MOTION_SUPPORTED_MAX_SPEED_METERS_PER_SECOND = 3.5;
 const MOTION_SUPPORTED_MIN_DISTANCE_METERS = 2.5;
 const LOW_QUALITY_SEGMENT_MIN_DURATION_SECONDS = 60;
 const LOW_QUALITY_SEGMENT_MIN_ACTIVE_RATIO = 0.7;
+const LOW_QUALITY_SEGMENT_MIN_LOW_QUALITY_RATIO = 0.7;
 const LOW_QUALITY_SEGMENT_MIN_PLAUSIBLE_DISTANCE_METERS = 25;
 const LOW_QUALITY_SEGMENT_MIN_MOVING_STEPS = 8;
 const LOW_QUALITY_SEGMENT_MIN_BBOX_METERS = 25;
@@ -20,18 +21,95 @@ const LOW_QUALITY_SEGMENT_MAX_STEP_METERS = 10;
 const LOW_QUALITY_SEGMENT_SIMPLIFY_TOLERANCE_METERS = 12;
 const LOW_ACCURACY_RESCUE_MAX_ACCURACY_METERS = 35;
 const LOW_ACCURACY_RESCUE_MIN_DISTANCE_METERS = 2.5;
+const WEAK_SIGNAL_DIRECTION_HOLD_MIN_HISTORY_METERS = 12;
+const WEAK_SIGNAL_DIRECTION_HOLD_MIN_HINT_METERS = 20;
+const WEAK_SIGNAL_DIRECTION_HOLD_MAX_HINT_METERS = 80;
+const WEAK_SIGNAL_DIRECTION_HOLD_LATERAL_METERS = 25;
+const WEAK_SIGNAL_DIRECTION_HOLD_MIN_RUN_POINTS = 2;
+const WEAK_SIGNAL_DIRECTION_HOLD_MAX_HINTS = 20;
 const ADAPTIVE_SHADOW_MAX_DIFFERENCES = 50;
 const ADAPTIVE_SHADOW_DISTANCE_REVIEW_METERS = 30;
 const ADAPTIVE_SHADOW_DISTANCE_REVIEW_RATIO = 0.05;
 const ADAPTIVE_SHADOW_TRUSTED_POINT_REVIEW_MIN_DELTA = 3;
 const ADAPTIVE_SHADOW_TRUSTED_POINT_REVIEW_RATIO = 0.05;
 const ADAPTIVE_SHADOW_CHANGED_REVIEW_RATIO = 0.1;
+const ADAPTIVE_SHADOW_FIELD_NAMES = Object.freeze([
+  'weakCloudAccuracyMeters',
+  'gapSeconds',
+  'stationaryDistanceMeters',
+  'transportSpeedMetersPerSecond',
+  'transportMinDistanceMeters',
+  'continuityRescueMaxSpeedMetersPerSecond'
+]);
+const ADAPTIVE_SHADOW_CANDIDATES = Object.freeze([
+  {
+    id: 'adaptive-balanced',
+    label: '综合自适应',
+    description: '同时观察弱点云、GAP、静止噪声、交通和连续性救回阈值。',
+    fields: ADAPTIVE_SHADOW_FIELD_NAMES
+  },
+  {
+    id: 'adaptive-gap-sensitive',
+    label: 'GAP 敏感',
+    description: '只观察采样节奏推导出的 GAP 阈值会改变什么。',
+    fields: Object.freeze(['gapSeconds'])
+  },
+  {
+    id: 'adaptive-stationary-noise',
+    label: '静止噪声',
+    description: '只观察静止点云噪声半径对轨迹压漂移的影响。',
+    fields: Object.freeze(['stationaryDistanceMeters'])
+  },
+  {
+    id: 'adaptive-weak-signal-rescue',
+    label: '弱信号救回',
+    description: '只观察弱点云和连续性救回速度阈值对低质量移动的影响。',
+    fields: Object.freeze([
+      'weakCloudAccuracyMeters',
+      'continuityRescueMaxSpeedMetersPerSecond'
+    ])
+  },
+  {
+    id: 'adaptive-weak-signal-direction-hold',
+    label: '弱信号方向保持',
+    description: '弱信号低速/逗留区不补路线，只冻结进入弱区前的稳定主方向作为导航线索。',
+    fields: Object.freeze([
+      'weakSignalDirectionHoldEnabled'
+    ]),
+    overrides: Object.freeze({
+      weakSignalDirectionHoldEnabled: true
+    }),
+    postProcess: 'weak_signal_direction_hold'
+  },
+  {
+    id: 'adaptive-transport-guard',
+    label: '交通守卫',
+    description: '只观察疑似交通速度和最小距离阈值是否误伤徒步。',
+    fields: Object.freeze([
+      'transportSpeedMetersPerSecond',
+      'transportMinDistanceMeters'
+    ])
+  }
+]);
+const BAROMETER_ASCENT_ALPHA = 0.35;
+const BAROMETER_ASCENT_CLIMB_THRESHOLD_METERS = 3;
+const BAROMETER_ASCENT_DROP_THRESHOLD_METERS = 1.5;
+const BAROMETER_ASCENT_MAX_VERTICAL_SPEED_METERS_PER_SECOND = 2;
+const BAROMETER_ASCENT_MAX_SAMPLE_GAP_NANOS = 30_000_000_000;
 
 export const DEFAULT_TARGET_PRODUCT_CONFIG = Object.freeze({
   maxIntakeAccuracyMeters: 80,
   weakCloudAccuracyMeters: 30,
   continuityRescueMaxAccuracyMeters: 650,
   continuityRescueMaxSpeedMetersPerSecond: 6,
+  lowAccuracyRescueMaxAccuracyMeters: LOW_ACCURACY_RESCUE_MAX_ACCURACY_METERS,
+  lowAccuracyRescueMinDistanceMeters: LOW_ACCURACY_RESCUE_MIN_DISTANCE_METERS,
+  weakSignalDirectionHoldEnabled: false,
+  weakSignalDirectionHoldMinHistoryMeters: WEAK_SIGNAL_DIRECTION_HOLD_MIN_HISTORY_METERS,
+  weakSignalDirectionHoldMinHintMeters: WEAK_SIGNAL_DIRECTION_HOLD_MIN_HINT_METERS,
+  weakSignalDirectionHoldMaxHintMeters: WEAK_SIGNAL_DIRECTION_HOLD_MAX_HINT_METERS,
+  weakSignalDirectionHoldLateralMeters: WEAK_SIGNAL_DIRECTION_HOLD_LATERAL_METERS,
+  weakSignalDirectionHoldMinRunPoints: WEAK_SIGNAL_DIRECTION_HOLD_MIN_RUN_POINTS,
   gapSeconds: 120,
   stationaryDistanceMeters: 5,
   stationaryAccuracyMultiplier: 1.5,
@@ -152,8 +230,9 @@ export function buildTargetTrackProduct(modelOrEvents, options = {}) {
   recoverStationaryExitMovement(product, evidence, config);
   collapseStationarySessionIfNeeded(product, evidence);
   recomputeAscentStats(product, evidence);
-  product.adaptiveShadow = buildAdaptiveShadow(events, config, product, product.sessionProfile,
+  product.adaptiveShadows = buildAdaptiveShadows(events, config, product, product.sessionProfile,
     sourceFilePath, options);
+  product.adaptiveShadow = product.adaptiveShadows[0] ?? null;
   product.findings = buildFindings(product, evidence);
   return product;
 }
@@ -193,6 +272,8 @@ function rebuildLowQualityMotionSegments(product, evidence, config, engineEligib
       missingLowQualityBoundary: 0,
       sourceOutsideInterval: 0,
       criteriaRejected: 0,
+      lowQualityMixRejected: 0,
+      trackAlreadyExpressed: 0,
       structureTooShort: 0
     },
     rejectedExamples: []
@@ -202,6 +283,7 @@ function rebuildLowQualityMotionSegments(product, evidence, config, engineEligib
   const candidates = [];
   const rebuiltTrack = product.track.length > 0 ? [product.track[0]] : [];
   const reclassifiedRawPointIds = new Set();
+  const rawStatusById = lowQualityRawStatusById(product);
   for (let index = 1; index < product.track.length; index++) {
     const point = product.track[index];
     const previous = rebuiltTrack.at(-1) || product.track[index - 1];
@@ -246,6 +328,19 @@ function rebuildLowQualityMotionSegments(product, evidence, config, engineEligib
       rebuiltTrack.push(point);
       continue;
     }
+    const decisionMix = lowQualityIntervalDecisionMix(intervalRawPoints, rawStatusById);
+    if (!hasStrongLowQualityDecisionMix(decisionMix)) {
+      addLowQualityRejectedExample(product.lowQualityMotionRebuild, point,
+        'lowQualityMixRejected', lowQualityDecisionMixRejectMessage(decisionMix));
+      rebuiltTrack.push(point);
+      continue;
+    }
+    if (!hasInsufficientTrackExpression(decisionMix)) {
+      addLowQualityRejectedExample(product.lowQualityMotionRebuild, point,
+        'trackAlreadyExpressed', '现有清洗轨迹已覆盖该区间的主要运动形状');
+      rebuiltTrack.push(point);
+      continue;
+    }
     const structureRawPoints = selectLowQualityMotionStructure(intervalRawPoints);
     if (structureRawPoints.length < 2) {
       addLowQualityRejectedExample(product.lowQualityMotionRebuild, point,
@@ -255,7 +350,14 @@ function rebuildLowQualityMotionSegments(product, evidence, config, engineEligib
     }
     const rebuiltPoints = buildLowQualityMotionTrackPoints(point, previous,
       intervalRawPoints, structureRawPoints, summary);
-    candidates.push(lowQualityMotionCandidate(point, previous, next, summary, rebuiltPoints));
+    if (!lowQualityRebuildMayChangeTrack(point, rebuiltPoints)) {
+      addLowQualityRejectedExample(product.lowQualityMotionRebuild, point,
+        'trackAlreadyExpressed', '开启低质量重建不会改变轨迹、里程或运动时间');
+      rebuiltTrack.push(point);
+      continue;
+    }
+    candidates.push(lowQualityMotionCandidate(point, previous, next, summary,
+      rebuiltPoints, decisionMix));
     if (!config.lowQualityMotionRebuildEnabled) {
       rebuiltTrack.push(point);
       continue;
@@ -271,7 +373,7 @@ function rebuildLowQualityMotionSegments(product, evidence, config, engineEligib
   product.lowQualityMotionRebuild.candidateCount = candidates.length;
   product.lowQualityMotionRebuild.candidates = candidates;
   const rawIntervalCandidates = scanLowQualityRawIntervals(product, evidence, config,
-    engineEligibleRawPointIds);
+    engineEligibleRawPointIds, candidates);
   product.lowQualityMotionRebuild.rawIntervalCandidateCount = rawIntervalCandidates.length;
   product.lowQualityMotionRebuild.rawIntervalCandidates = rawIntervalCandidates;
   if (!changed) return;
@@ -282,7 +384,8 @@ function rebuildLowQualityMotionSegments(product, evidence, config, engineEligib
   recomputeProductStats(product);
 }
 
-function scanLowQualityRawIntervals(product, evidence, config, engineEligibleRawPointIds) {
+function scanLowQualityRawIntervals(product, evidence, config, engineEligibleRawPointIds,
+  rebuildCandidates) {
   const intervals = [];
   let current = [];
   for (const rawPoint of evidence.rawPoints) {
@@ -310,11 +413,21 @@ function scanLowQualityRawIntervals(product, evidence, config, engineEligibleRaw
       continue;
     }
     const decisionMix = lowQualityIntervalDecisionMix(interval, rawStatusById);
-    if (decisionMix.weakCount + decisionMix.rejectedCount + decisionMix.intakeRejectedCount === 0) {
+    if (!hasStrongLowQualityDecisionMix(decisionMix)) {
       product.lowQualityMotionRebuild.rawIntervalScan.rejectedIntervalCount++;
       continue;
     }
-    candidates.push(rawIntervalLowQualityMotionCandidate(interval, summary, decisionMix));
+    if (!hasInsufficientTrackExpression(decisionMix)) {
+      product.lowQualityMotionRebuild.rawIntervalScan.rejectedIntervalCount++;
+      continue;
+    }
+    const overlappingCandidates = overlappingLowQualityRebuildCandidates(interval, rebuildCandidates);
+    if (overlappingCandidates.length === 0) {
+      product.lowQualityMotionRebuild.rawIntervalScan.rejectedIntervalCount++;
+      continue;
+    }
+    candidates.push(rawIntervalLowQualityMotionCandidate(interval, summary, decisionMix,
+      overlappingCandidates));
     if (candidates.length >= 20) break;
   }
   return candidates;
@@ -358,8 +471,13 @@ function lowQualityIntervalDecisionMix(rawPoints, rawStatusById) {
     weakCount: 0,
     rejectedCount: 0,
     intakeRejectedCount: 0,
-    unexplainedCount: 0
+    unexplainedCount: 0,
+    lowQualityCount: 0,
+    lowQualityRatio: 0,
+    longestLowQualityRunCount: 0,
+    longestLowQualityRunRatio: 0
   };
+  let currentLowQualityRunCount = 0;
   for (const rawPoint of rawPoints) {
     const status = rawStatusById.get(rawPoint.rawPointId);
     if (status === 'trusted') mix.trustedCount++;
@@ -367,16 +485,67 @@ function lowQualityIntervalDecisionMix(rawPoints, rawStatusById) {
     else if (status === 'rejected') mix.rejectedCount++;
     else if (status === 'intake_rejected') mix.intakeRejectedCount++;
     else mix.unexplainedCount++;
+    if (isLowQualityDecisionStatus(status)) {
+      mix.lowQualityCount++;
+      currentLowQualityRunCount++;
+      mix.longestLowQualityRunCount = Math.max(mix.longestLowQualityRunCount,
+        currentLowQualityRunCount);
+    } else {
+      currentLowQualityRunCount = 0;
+    }
   }
+  mix.lowQualityRatio = ratio(mix.lowQualityCount, mix.rawCount);
+  mix.longestLowQualityRunRatio = ratio(mix.longestLowQualityRunCount, mix.rawCount);
   return mix;
 }
 
-function rawIntervalLowQualityMotionCandidate(rawPoints, summary, decisionMix) {
+function isLowQualityDecisionStatus(status) {
+  return status === 'weak' || status === 'rejected';
+}
+
+function hasStrongLowQualityDecisionMix(decisionMix) {
+  return decisionMix.lowQualityRatio >= LOW_QUALITY_SEGMENT_MIN_LOW_QUALITY_RATIO
+    && decisionMix.longestLowQualityRunRatio >= LOW_QUALITY_SEGMENT_MIN_LOW_QUALITY_RATIO;
+}
+
+function hasInsufficientTrackExpression(decisionMix) {
+  const maxExpressedRatio = 1 - LOW_QUALITY_SEGMENT_MIN_LOW_QUALITY_RATIO;
+  return ratio(decisionMix.trustedCount, decisionMix.rawCount) <= maxExpressedRatio;
+}
+
+function lowQualityDecisionMixRejectMessage(decisionMix) {
+  return `weak/reject 占比 ${decisionMix.lowQualityRatio.toFixed(2)}，连续占比 ${decisionMix.longestLowQualityRunRatio.toFixed(2)}，未达到 ${LOW_QUALITY_SEGMENT_MIN_LOW_QUALITY_RATIO}`;
+}
+
+function lowQualityRebuildMayChangeTrack(point, rebuiltPoints) {
+  if (rebuiltPoints.length !== 1) return true;
+  const rebuilt = rebuiltPoints[0];
+  if (rebuilt.sourceRawPointId !== point.sourceRawPointId) return true;
+  if (distanceMeters(rebuilt.lat, rebuilt.lng, point.lat, point.lng) > 1) return true;
+  const distanceDelta = Math.abs((rebuilt.distanceDeltaMeters || 0)
+    - (point.distanceDeltaMeters || 0));
+  if (distanceDelta > 0.5) return true;
+  const movingTimeDelta = Math.abs((rebuilt.movingTimeDeltaSeconds || 0)
+    - (point.movingTimeDeltaSeconds || 0));
+  return movingTimeDelta > 1;
+}
+
+function overlappingLowQualityRebuildCandidates(rawPoints, rebuildCandidates) {
+  const intervalRawPointIds = new Set(rawPoints.map((rawPoint) => rawPoint.rawPointId));
+  return (rebuildCandidates || []).filter((candidate) =>
+    (candidate.rawPointIds || []).some((rawPointId) => intervalRawPointIds.has(rawPointId)));
+}
+
+function rawIntervalLowQualityMotionCandidate(rawPoints, summary, decisionMix,
+  overlappingCandidates) {
   const structureRawPoints = selectLowQualityMotionStructure(rawPoints);
   return {
     kind: 'raw_interval_review',
     rawPointIds: summary.rawPointIds,
     structureRawPointIds: structureRawPoints.map((rawPoint) => rawPoint.rawPointId),
+    enablingRebuildMayChange: true,
+    overlappingCandidateRawPointIds: Array.from(new Set(overlappingCandidates
+      .flatMap((candidate) => candidate.rawPointIds || []))),
     decisionMix,
     summary: {
       sampleCount: summary.sampleCount,
@@ -429,7 +598,7 @@ function lowQualitySegmentRejectMessage(summary) {
   return reasons.length > 0 ? reasons.join('；') : '未满足低质量运动段组合条件';
 }
 
-function lowQualityMotionCandidate(point, previous, next, summary, rebuiltPoints) {
+function lowQualityMotionCandidate(point, previous, next, summary, rebuiltPoints, decisionMix) {
   return {
     kind: 'boundary_rebuild',
     sourceRawPointId: point.sourceRawPointId,
@@ -437,6 +606,8 @@ function lowQualityMotionCandidate(point, previous, next, summary, rebuiltPoints
     nextTrackPointId: next?.trackPointId ?? null,
     rawPointIds: summary.rawPointIds,
     structureRawPointIds: rebuiltPoints.map((rebuiltPoint) => rebuiltPoint.sourceRawPointId),
+    enablingRebuildMayChange: true,
+    decisionMix,
     summary: {
       sampleCount: summary.sampleCount,
       durationSeconds: summary.durationSeconds,
@@ -589,12 +760,26 @@ function simplifyRawPoints(rawPoints, toleranceMeters) {
 
 function projectRawPoints(rawPoints) {
   const origin = rawPoints[0];
-  const originLatRad = radians(origin.lat);
   return rawPoints.map((rawPoint) => ({
     rawPoint,
-    x: EARTH_RADIUS_METERS * radians(rawPoint.lng - origin.lng) * Math.cos(originLatRad),
-    y: EARTH_RADIUS_METERS * radians(rawPoint.lat - origin.lat)
+    ...projectCoordinateToOrigin(rawPoint.lat, rawPoint.lng, origin)
   }));
+}
+
+function projectCoordinateToOrigin(lat, lng, origin) {
+  const originLatRad = radians(origin.lat);
+  return {
+    x: EARTH_RADIUS_METERS * radians(lng - origin.lng) * Math.cos(originLatRad),
+    y: EARTH_RADIUS_METERS * radians(lat - origin.lat)
+  };
+}
+
+function coordinateFromOrigin(origin, x, y) {
+  const originLatRad = radians(origin.lat);
+  return {
+    lat: origin.lat + degrees(y / EARTH_RADIUS_METERS),
+    lng: origin.lng + degrees(x / (EARTH_RADIUS_METERS * Math.cos(originLatRad)))
+  };
 }
 
 function simplifyProjectedPoints(points, toleranceMeters) {
@@ -887,6 +1072,7 @@ function recomputeProductStats(product) {
 }
 
 function recomputeAscentStats(product, evidence) {
+  const barometer = computeBarometerAscent(evidence.barometerWindows);
   const locationAltitude = computeLocationAltitudeAscent(product.track, evidence.rawPoints,
     product.config);
   product.stats.locationAltitudeTotalAscentMeters = locationAltitude.totalAscentMeters;
@@ -899,25 +1085,41 @@ function recomputeAscentStats(product, evidence) {
     locationAltitude.maxVerticalAccuracyMeters;
   product.stats.locationAltitudeAscentAvgVerticalAccuracyMeters =
     locationAltitude.avgVerticalAccuracyMeters;
-  product.stats.barometerTotalAscentMeters = -1;
-  product.stats.barometerAscentSampleCount = 0;
-  product.stats.barometerAscentRejectedSampleCount = 0;
-  product.stats.selectedTotalAscentMeters = locationAltitude.totalAscentMeters >= 0
-    ? locationAltitude.totalAscentMeters
-    : -1;
-  product.stats.selectedAscentSource = locationAltitude.totalAscentMeters >= 0
-    ? 'LOCATION_ALTITUDE'
-    : 'NONE';
+  product.stats.barometerTotalAscentMeters = barometer.totalAscentMeters;
+  product.stats.barometerAscentSampleCount = barometer.sampleCount;
+  product.stats.barometerAscentRejectedSampleCount = barometer.rejectedSampleCount;
+  // Legacy summary fields remain for older consumers; the Web UI displays both paths.
+  if (barometer.totalAscentMeters >= 0) {
+    product.stats.selectedTotalAscentMeters = barometer.totalAscentMeters;
+    product.stats.selectedAscentSource = 'BAROMETER';
+  } else if (locationAltitude.totalAscentMeters >= 0) {
+    product.stats.selectedTotalAscentMeters = locationAltitude.totalAscentMeters;
+    product.stats.selectedAscentSource = 'LOCATION_ALTITUDE';
+  } else {
+    product.stats.selectedTotalAscentMeters = -1;
+    product.stats.selectedAscentSource = 'NONE';
+  }
 }
 
-function buildAdaptiveShadow(events, fixedConfig, fixedProduct, sessionProfile, sourceFilePath, options) {
-  if (options.adaptiveShadow === false) return null;
-  const adaptiveConfig = adaptiveShadowConfig(fixedConfig, sessionProfile);
+function buildAdaptiveShadows(events, fixedConfig, fixedProduct, sessionProfile, sourceFilePath,
+  options) {
+  if (options.adaptiveShadow === false || options.adaptiveShadows === false) return [];
+  return ADAPTIVE_SHADOW_CANDIDATES.map((candidate) =>
+    buildAdaptiveShadow(events, fixedConfig, fixedProduct, sessionProfile, sourceFilePath,
+      candidate));
+}
+
+function buildAdaptiveShadow(events, fixedConfig, fixedProduct, sessionProfile, sourceFilePath,
+  candidate) {
+  const adaptiveConfig = adaptiveShadowConfig(fixedConfig, sessionProfile, candidate.fields,
+    candidate.overrides);
   const adaptiveProduct = buildTargetTrackProduct(events, {
     config: adaptiveConfig,
     sourceFilePath,
     adaptiveShadow: false
   });
+  postProcessAdaptiveShadowProduct(candidate, adaptiveProduct, events, adaptiveConfig);
+  const diagnosticOnly = isDiagnosticOnlyAdaptiveShadow(candidate);
   const fixedDecisions = rawDecisionMapFromProduct(fixedProduct);
   const adaptiveDecisions = rawDecisionMapFromProduct(adaptiveProduct);
   const rawPointIds = Array.from(new Set([
@@ -960,20 +1162,321 @@ function buildAdaptiveShadow(events, fixedConfig, fixedProduct, sessionProfile, 
       && promotedToTrustedCount + demotedFromTrustedCount + reasonChangedCount
         > ADAPTIVE_SHADOW_MAX_DIFFERENCES
   };
+  const assessment = diagnosticOnly
+    ? adaptiveShadowDiagnosticAssessment(adaptiveProduct.weakSignalDirectionHold)
+    : adaptiveShadowAssessment(summary, impact);
   return {
     version: 1,
-    mode: 'shadow_only',
-    note: '自适应影子只用于对比，不改变当前成品轨迹。',
+    id: candidate.id,
+    label: candidate.label,
+    description: candidate.description,
+    changedFields: candidate.fields,
+    mode: diagnosticOnly ? 'diagnostic_only' : 'shadow_only',
+    note: diagnosticOnly
+      ? '诊断型候选只输出方向提示，不生成影子轨迹，不改变当前成品轨迹。'
+      : '自适应影子只用于对比，不改变当前成品轨迹。',
     thresholds: {
       fixed: shadowThresholdsFromConfig(fixedConfig),
       adaptive: shadowThresholdsFromConfig(adaptiveConfig)
     },
     impact,
     summary,
-    assessment: adaptiveShadowAssessment(summary, impact),
-    track: adaptiveShadowTrackView(adaptiveProduct.track),
-    differences
+    assessment,
+    track: diagnosticOnly ? [] : adaptiveShadowTrackView(adaptiveProduct.track),
+    weakSignalDirectionHold: adaptiveProduct.weakSignalDirectionHold ?? null,
+    differences: diagnosticOnly ? [] : differences
   };
+}
+
+function isDiagnosticOnlyAdaptiveShadow(candidate) {
+  return candidate.postProcess === 'weak_signal_direction_hold';
+}
+
+function adaptiveShadowDiagnosticAssessment(directionHold) {
+  const hintCount = directionHold?.hintCount ?? 0;
+  if (hintCount > 0) {
+    return {
+      level: 'observe',
+      label: '方向提示',
+      summary: `生成 ${hintCount} 段弱信号方向提示；不改变轨迹、里程或判点。`,
+      reasons: [{
+        code: 'weak_signal_direction_hold_hint',
+        severity: 'observe',
+        message: '方向提示只用于人工判断下一步主方向，不能当作清洗轨迹差异。'
+      }]
+    };
+  }
+  return {
+    level: 'same',
+    label: '无方向提示',
+    summary: '没有找到可用的弱信号方向保持线索。',
+    reasons: []
+  };
+}
+
+function postProcessAdaptiveShadowProduct(candidate, adaptiveProduct, events, adaptiveConfig) {
+  if (candidate.postProcess !== 'weak_signal_direction_hold') return;
+  const evidence = buildEvidence(events);
+  applyWeakSignalDirectionHold(adaptiveProduct, evidence, adaptiveConfig);
+}
+
+function applyWeakSignalDirectionHold(product, evidence, config) {
+  const summary = {
+    mode: 'diagnostic_only',
+    hintCount: 0,
+    candidateRunCount: 0,
+    skippedNoHistoryCount: 0,
+    skippedShortRunCount: 0,
+    maxLateralMeters: 0,
+    hints: []
+  };
+  product.weakSignalDirectionHold = summary;
+  if (!config.weakSignalDirectionHoldEnabled || product.track.length === 0) {
+    return;
+  }
+
+  const rawById = new Map((evidence.rawPoints || []).map((rawPoint) => [
+    rawPoint.rawPointId,
+    rawPoint
+  ]));
+  const trackByRawId = trackPointByRawPointId(product);
+  const decisionByRawId = rawDecisionMapFromProduct(product);
+  const runs = weakSignalDirectionRuns(evidence.rawPoints || [], decisionByRawId,
+    trackByRawId, config);
+  summary.candidateRunCount = runs.length;
+
+  const stableTrack = (product.track || [])
+    .filter((point) => isDirectionStableTrackPoint(point, rawById, config))
+    .sort((a, b) => a.elapsedRealtimeNanos - b.elapsedRealtimeNanos);
+
+  for (const run of runs) {
+    if (run.length < config.weakSignalDirectionHoldMinRunPoints) {
+      summary.skippedShortRunCount++;
+      continue;
+    }
+    const history = directionHistoryBefore(stableTrack, run[0].elapsedRealtimeNanos, config);
+    if (!history) {
+      summary.skippedNoHistoryCount++;
+      continue;
+    }
+    const exit = directionExitAfter(stableTrack, run.at(-1).elapsedRealtimeNanos);
+    const hint = weakSignalDirectionHint(run, history, exit, config);
+    summary.hints.push(hint);
+    summary.maxLateralMeters = Math.max(summary.maxLateralMeters, hint.maxLateralMeters);
+    if (summary.hints.length >= WEAK_SIGNAL_DIRECTION_HOLD_MAX_HINTS) {
+      break;
+    }
+  }
+  summary.hintCount = summary.hints.length;
+}
+
+function trackPointByRawPointId(product) {
+  const byRawId = new Map();
+  for (const point of product.track || []) {
+    if (Number.isFinite(point.sourceRawPointId)) {
+      byRawId.set(point.sourceRawPointId, point);
+    }
+    for (const rawPointId of point.contributingRawPointIds || []) {
+      if (!byRawId.has(rawPointId)) byRawId.set(rawPointId, point);
+    }
+  }
+  return byRawId;
+}
+
+function weakSignalDirectionRuns(rawPoints, decisionByRawId, trackByRawId, config) {
+  const runs = [];
+  let current = [];
+  for (const rawPoint of rawPoints
+    .filter((point) => Number.isFinite(point.elapsedRealtimeNanos))
+    .sort((a, b) => a.elapsedRealtimeNanos - b.elapsedRealtimeNanos)) {
+    const decision = decisionByRawId.get(rawPoint.rawPointId) || emptyShadowDecision();
+    const trackPoint = trackByRawId.get(rawPoint.rawPointId) || null;
+    if (!isWeakSignalDirectionCandidate(rawPoint, decision, trackPoint, config)) {
+      pushWeakSignalDirectionRun(runs, current, config);
+      current = [];
+      continue;
+    }
+    const previous = current.at(-1);
+    if (previous
+        && rawPoint.elapsedRealtimeNanos - previous.elapsedRealtimeNanos
+          > config.gapSeconds * 1_000_000_000) {
+      pushWeakSignalDirectionRun(runs, current, config);
+      current = [];
+    }
+    current.push(rawPoint);
+  }
+  pushWeakSignalDirectionRun(runs, current, config);
+  return runs;
+}
+
+function pushWeakSignalDirectionRun(runs, current, config) {
+  if (current.length >= config.weakSignalDirectionHoldMinRunPoints) {
+    runs.push(current);
+  }
+}
+
+function isWeakSignalDirectionCandidate(rawPoint, decision, trackPoint, config) {
+  if (!validCoordinate(rawPoint.lat, rawPoint.lng)) return false;
+  if (decision.bucket === 'intakeRejected') return false;
+  if (trackPoint?.reason === 'continuity_rescue_low_accuracy'
+      || trackPoint?.reason === 'motion_supported_low_speed') {
+    return true;
+  }
+  if (trackPoint && isDirectionStableReason(trackPoint.reason)) return false;
+  if (decision.bucket === 'weak') return true;
+  if (decision.bucket === 'rejected') return weakSignalDirectionRejectReason(decision.reason);
+  if (!Number.isFinite(rawPoint.accuracy)) return false;
+  return rawPoint.accuracy >= config.weakCloudAccuracyMeters * 0.75
+    && (!rawPoint.hasSpeed || !Number.isFinite(rawPoint.speed) || rawPoint.speed <= 1.5);
+}
+
+function weakSignalDirectionRejectReason(reason) {
+  return reason === 'stationary_cloud_jitter'
+    || reason === 'stationary_continuity_jitter'
+    || reason === 'stationary_low_speed_tail'
+    || reason === 'stationary_low_accuracy_tail'
+    || reason === 'isolated_stationary_movement'
+    || reason === 'moving_cloud_unstable'
+    || reason === 'weak_signal_stage2';
+}
+
+function isDirectionStableTrackPoint(point, rawById, config) {
+  if (!point || !isDirectionStableReason(point.reason)) return false;
+  if (isTransportRiskReason(point.reason)) return false;
+  const rawPoint = rawById.get(point.sourceRawPointId);
+  return !rawPoint || !Number.isFinite(rawPoint.accuracy)
+    || rawPoint.accuracy <= config.weakCloudAccuracyMeters;
+}
+
+function isDirectionStableReason(reason) {
+  return reason === 'first_fix_good'
+    || reason === 'first_fix_relaxed'
+    || reason === 'moving_good_fix';
+}
+
+function directionHistoryBefore(stableTrack, elapsedRealtimeNanos, config) {
+  const before = stableTrack.filter((point) =>
+    point.elapsedRealtimeNanos < elapsedRealtimeNanos);
+  for (let index = before.length - 1; index > 0; index--) {
+    const from = before[index - 1];
+    const to = before[index];
+    if (from.segmentId !== to.segmentId) continue;
+    const line = directionLine(from, to);
+    if (line && line.lengthMeters >= config.weakSignalDirectionHoldMinHistoryMeters) {
+      return { from, to, line };
+    }
+  }
+  return null;
+}
+
+function directionExitAfter(stableTrack, elapsedRealtimeNanos) {
+  return stableTrack.find((point) => point.elapsedRealtimeNanos > elapsedRealtimeNanos) || null;
+}
+
+function weakSignalDirectionHint(run, history, exit, config) {
+  const anchor = history.to;
+  const items = run.map((rawPoint) =>
+    weakSignalDirectionProjection(rawPoint, anchor, history.line));
+  const maxForwardProgressMeters = Math.max(0,
+    ...items.map((item) => item.progressMeters).filter(Number.isFinite));
+  const maxBacktrackMeters = Math.max(0,
+    ...items.map((item) => -item.progressMeters).filter(Number.isFinite));
+  const maxLateralMeters = Math.max(0,
+    ...items.map((item) => Math.abs(item.lateralMeters)).filter(Number.isFinite));
+  const hintLengthMeters = clamp(
+    Math.max(config.weakSignalDirectionHoldMinHintMeters, maxForwardProgressMeters),
+    config.weakSignalDirectionHoldMinHintMeters,
+    config.weakSignalDirectionHoldMaxHintMeters
+  );
+  const end = coordinateFromOrigin(anchor,
+    history.line.unitX * hintLengthMeters,
+    history.line.unitY * hintLengthMeters);
+  const exitProjection = exit
+    ? weakSignalDirectionProjection(exit, anchor, history.line)
+    : null;
+  const exitAligned = exitProjection
+    && exitProjection.progressMeters > 0
+    && Math.abs(exitProjection.lateralMeters) <= config.weakSignalDirectionHoldLateralMeters;
+  const confidence = weakSignalDirectionConfidence(maxForwardProgressMeters,
+    maxLateralMeters, exitProjection, exitAligned, config);
+  return {
+    kind: 'weak_signal_direction_hold',
+    startRawPointId: run[0].rawPointId,
+    endRawPointId: run.at(-1).rawPointId,
+    rawPointIds: run.map((rawPoint) => rawPoint.rawPointId),
+    rawPointCount: run.length,
+    durationSeconds: Math.max(0,
+      (run.at(-1).elapsedRealtimeNanos - run[0].elapsedRealtimeNanos) / 1_000_000_000),
+    anchorTrackPointId: anchor.trackPointId,
+    anchorRawPointId: anchor.sourceRawPointId,
+    historyFromTrackPointId: history.from.trackPointId,
+    headingDegrees: headingDegreesFromLine(history.line),
+    startLat: anchor.lat,
+    startLng: anchor.lng,
+    endLat: end.lat,
+    endLng: end.lng,
+    hintLengthMeters,
+    maxForwardProgressMeters,
+    maxBacktrackMeters,
+    maxLateralMeters,
+    exitTrackPointId: exit?.trackPointId ?? null,
+    exitRawPointId: exit?.sourceRawPointId ?? null,
+    exitProgressMeters: exitProjection?.progressMeters ?? null,
+    exitLateralMeters: exitProjection?.lateralMeters ?? null,
+    confidence,
+    status: weakSignalDirectionStatus(maxForwardProgressMeters, maxLateralMeters,
+      exitProjection, exitAligned, config)
+  };
+}
+
+function weakSignalDirectionProjection(point, origin, line) {
+  const projected = projectCoordinateToOrigin(point.lat, point.lng, origin);
+  return {
+    progressMeters: projected.x * line.unitX + projected.y * line.unitY,
+    lateralMeters: projected.x * -line.unitY + projected.y * line.unitX
+  };
+}
+
+function weakSignalDirectionConfidence(maxForwardProgressMeters, maxLateralMeters,
+  exitProjection, exitAligned, config) {
+  if (exitAligned) return 'high';
+  if (maxForwardProgressMeters >= config.weakSignalDirectionHoldMinHistoryMeters
+      && maxLateralMeters <= config.weakSignalDirectionHoldLateralMeters) {
+    return 'medium';
+  }
+  if (exitProjection && !exitAligned) return 'low';
+  return 'low';
+}
+
+function weakSignalDirectionStatus(maxForwardProgressMeters, maxLateralMeters,
+  exitProjection, exitAligned, config) {
+  if (exitAligned) return 'confirmed_by_exit';
+  if (exitProjection && !exitAligned) return 'exit_deviates_from_held_direction';
+  if (maxForwardProgressMeters < config.weakSignalDirectionHoldMinHistoryMeters) {
+    return 'weak_region_has_little_forward_progress';
+  }
+  if (maxLateralMeters > config.weakSignalDirectionHoldLateralMeters) {
+    return 'weak_region_lateral_noise_high';
+  }
+  return 'history_direction_only';
+}
+
+function directionLine(from, to) {
+  if (!from || !to) return null;
+  const end = projectCoordinateToOrigin(to.lat, to.lng, from);
+  const lengthMeters = Math.hypot(end.x, end.y);
+  if (lengthMeters <= 0) return null;
+  return {
+    origin: { lat: from.lat, lng: from.lng },
+    unitX: end.x / lengthMeters,
+    unitY: end.y / lengthMeters,
+    lengthMeters
+  };
+}
+
+function headingDegreesFromLine(line) {
+  const heading = degrees(Math.atan2(line.unitX, line.unitY));
+  return heading < 0 ? heading + 360 : heading;
 }
 
 function adaptiveShadowTrackView(track) {
@@ -987,7 +1490,10 @@ function adaptiveShadowTrackView(track) {
     result: point.result,
     reason: point.reason,
     distanceDeltaMeters: point.distanceDeltaMeters,
-    movingTimeDeltaSeconds: point.movingTimeDeltaSeconds
+    movingTimeDeltaSeconds: point.movingTimeDeltaSeconds,
+    contributingRawPointIds: point.contributingRawPointIds || [],
+    coordinateSource: point.coordinateSource || null,
+    virtualCoordinate: point.virtualCoordinate === true
   }));
 }
 
@@ -1146,16 +1652,29 @@ function percentForMessage(value) {
   return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '-';
 }
 
-function adaptiveShadowConfig(config, profile) {
-  return normalizeConfig({
-    ...config,
+function adaptiveShadowConfig(config, profile, fields = ADAPTIVE_SHADOW_FIELD_NAMES,
+  overrides = null) {
+  const selectedFields = new Set(fields);
+  const adaptiveValues = {
     weakCloudAccuracyMeters: adaptiveWeakCloudAccuracyMeters(config, profile),
     gapSeconds: adaptiveGapSeconds(config, profile),
     stationaryDistanceMeters: adaptiveStationaryDistanceMeters(config, profile),
     transportSpeedMetersPerSecond: adaptiveTransportSpeedMetersPerSecond(config, profile),
     transportMinDistanceMeters: adaptiveTransportMinDistanceMeters(config, profile),
     continuityRescueMaxSpeedMetersPerSecond: adaptiveContinuitySpeedMetersPerSecond(config, profile)
-  });
+  };
+  const nextConfig = { ...config };
+  for (const field of ADAPTIVE_SHADOW_FIELD_NAMES) {
+    if (selectedFields.has(field)) nextConfig[field] = adaptiveValues[field];
+  }
+  applyAdaptiveShadowOverrides(nextConfig, overrides, config, profile);
+  return normalizeConfig(nextConfig);
+}
+
+function applyAdaptiveShadowOverrides(nextConfig, overrides, baseConfig, profile) {
+  for (const [field, value] of Object.entries(overrides || {})) {
+    nextConfig[field] = typeof value === 'function' ? value(baseConfig, profile) : value;
+  }
 }
 
 function adaptiveWeakCloudAccuracyMeters(config, profile) {
@@ -1205,7 +1724,10 @@ function shadowThresholdsFromConfig(config) {
     stationaryDistanceMeters: config.stationaryDistanceMeters,
     transportSpeedMetersPerSecond: config.transportSpeedMetersPerSecond,
     transportMinDistanceMeters: config.transportMinDistanceMeters,
-    continuityRescueMaxSpeedMetersPerSecond: config.continuityRescueMaxSpeedMetersPerSecond
+    continuityRescueMaxSpeedMetersPerSecond: config.continuityRescueMaxSpeedMetersPerSecond,
+    lowAccuracyRescueMaxAccuracyMeters: config.lowAccuracyRescueMaxAccuracyMeters,
+    lowAccuracyRescueMinDistanceMeters: config.lowAccuracyRescueMinDistanceMeters,
+    weakSignalDirectionHoldEnabled: config.weakSignalDirectionHoldEnabled
   };
 }
 
@@ -1460,6 +1982,146 @@ function ratio(count, total) {
   return total > 0 ? count / total : 0;
 }
 
+function computeBarometerAscent(barometerWindows) {
+  const engine = createBarometerAscentEngine();
+  const windows = [...(barometerWindows || [])].sort((a, b) =>
+    (a.endElapsedRealtimeNanos ?? 0) - (b.endElapsedRealtimeNanos ?? 0));
+  for (const window of windows) {
+    engine.onSample({
+      elapsedRealtimeNanos: window.endElapsedRealtimeNanos,
+      pressureHpa: window.avgPressureHpa,
+      altitudeMeters: window.avgRawAltitudeMeters
+    });
+  }
+  return engine.finish();
+}
+
+function createBarometerAscentEngine() {
+  let totalAscentMeters = 0;
+  let filteredAltitude = null;
+  let baseAltitude = null;
+  let peakAltitude = null;
+  let lastAltitude = null;
+  let lastElapsedRealtimeNanos = 0;
+  let hasReliableSample = false;
+  let sampleCount = 0;
+  let rejectedSampleCount = 0;
+
+  function resetAltitudeAnchor(sample) {
+    flushPendingGain();
+    filteredAltitude = null;
+    baseAltitude = null;
+    peakAltitude = null;
+    lastAltitude = null;
+    lastElapsedRealtimeNanos = 0;
+    sampleCount++;
+    const altitude = filter(sample.altitudeMeters);
+    baseAltitude = altitude;
+    peakAltitude = altitude;
+    lastAltitude = altitude;
+    lastElapsedRealtimeNanos = sample.elapsedRealtimeNanos;
+    hasReliableSample = true;
+  }
+
+  function filter(altitudeMeters) {
+    if (filteredAltitude === null) {
+      filteredAltitude = altitudeMeters;
+    } else {
+      filteredAltitude = BAROMETER_ASCENT_ALPHA * altitudeMeters
+        + (1 - BAROMETER_ASCENT_ALPHA) * filteredAltitude;
+    }
+    return filteredAltitude;
+  }
+
+  function passesPhysicalGate(sample) {
+    if (lastAltitude === null || lastElapsedRealtimeNanos <= 0) return true;
+    if (sample.elapsedRealtimeNanos <= lastElapsedRealtimeNanos) return false;
+    const elapsedSeconds =
+      (sample.elapsedRealtimeNanos - lastElapsedRealtimeNanos) / 1_000_000_000;
+    if (elapsedSeconds <= 0) return true;
+    const verticalSpeed = Math.abs(sample.altitudeMeters - lastAltitude) / elapsedSeconds;
+    return verticalSpeed <= BAROMETER_ASCENT_MAX_VERTICAL_SPEED_METERS_PER_SECOND;
+  }
+
+  function acceptedPendingGain() {
+    if (baseAltitude === null || peakAltitude === null) return 0;
+    const pendingGain = peakAltitude - baseAltitude;
+    return pendingGain >= BAROMETER_ASCENT_CLIMB_THRESHOLD_METERS ? pendingGain : 0;
+  }
+
+  function flushPendingGain() {
+    totalAscentMeters += acceptedPendingGain();
+  }
+
+  function updateTrend(altitude, sample) {
+    hasReliableSample = true;
+    if (baseAltitude === null) {
+      baseAltitude = altitude;
+      peakAltitude = altitude;
+      lastAltitude = altitude;
+      lastElapsedRealtimeNanos = sample.elapsedRealtimeNanos;
+      return;
+    }
+    if (altitude >= peakAltitude) {
+      peakAltitude = altitude;
+      lastAltitude = altitude;
+      lastElapsedRealtimeNanos = sample.elapsedRealtimeNanos;
+      return;
+    }
+
+    const drop = peakAltitude - altitude;
+    const pendingGain = peakAltitude - baseAltitude;
+    if (drop >= BAROMETER_ASCENT_DROP_THRESHOLD_METERS) {
+      if (pendingGain >= BAROMETER_ASCENT_CLIMB_THRESHOLD_METERS) {
+        totalAscentMeters += pendingGain;
+      }
+      baseAltitude = altitude;
+      peakAltitude = altitude;
+    }
+    lastAltitude = altitude;
+    lastElapsedRealtimeNanos = sample.elapsedRealtimeNanos;
+  }
+
+  function acceptSample(sample) {
+    sampleCount++;
+    const altitude = filter(sample.altitudeMeters);
+    updateTrend(altitude, sample);
+  }
+
+  return {
+    onSample(sample) {
+      if (!sample
+          || !Number.isFinite(sample.elapsedRealtimeNanos)
+          || !Number.isFinite(sample.pressureHpa)
+          || sample.pressureHpa <= 0
+          || !Number.isFinite(sample.altitudeMeters)) {
+        rejectedSampleCount++;
+        return;
+      }
+      if (lastElapsedRealtimeNanos > 0
+          && sample.elapsedRealtimeNanos - lastElapsedRealtimeNanos
+          > BAROMETER_ASCENT_MAX_SAMPLE_GAP_NANOS) {
+        resetAltitudeAnchor(sample);
+        return;
+      }
+      if (!passesPhysicalGate(sample)) {
+        rejectedSampleCount++;
+        return;
+      }
+      acceptSample(sample);
+    },
+    finish() {
+      return {
+        totalAscentMeters: hasReliableSample && sampleCount >= 2
+          ? totalAscentMeters + acceptedPendingGain()
+          : -1,
+        sampleCount,
+        rejectedSampleCount
+      };
+    }
+  };
+}
+
 function computeLocationAltitudeAscent(track, rawPoints, config) {
   const rawById = new Map(rawPoints.map((point) => [point.rawPointId, point]));
   const samples = [];
@@ -1555,6 +2217,14 @@ function normalizeConfig(config = {}) {
     weakCloudAccuracyMeters: positiveNumber(merged.weakCloudAccuracyMeters, DEFAULT_TARGET_PRODUCT_CONFIG.weakCloudAccuracyMeters),
     continuityRescueMaxAccuracyMeters: positiveNumber(merged.continuityRescueMaxAccuracyMeters, DEFAULT_TARGET_PRODUCT_CONFIG.continuityRescueMaxAccuracyMeters),
     continuityRescueMaxSpeedMetersPerSecond: positiveNumber(merged.continuityRescueMaxSpeedMetersPerSecond, DEFAULT_TARGET_PRODUCT_CONFIG.continuityRescueMaxSpeedMetersPerSecond),
+    lowAccuracyRescueMaxAccuracyMeters: positiveNumber(merged.lowAccuracyRescueMaxAccuracyMeters, DEFAULT_TARGET_PRODUCT_CONFIG.lowAccuracyRescueMaxAccuracyMeters),
+    lowAccuracyRescueMinDistanceMeters: positiveNumber(merged.lowAccuracyRescueMinDistanceMeters, DEFAULT_TARGET_PRODUCT_CONFIG.lowAccuracyRescueMinDistanceMeters),
+    weakSignalDirectionHoldEnabled: merged.weakSignalDirectionHoldEnabled === true,
+    weakSignalDirectionHoldMinHistoryMeters: positiveNumber(merged.weakSignalDirectionHoldMinHistoryMeters, DEFAULT_TARGET_PRODUCT_CONFIG.weakSignalDirectionHoldMinHistoryMeters),
+    weakSignalDirectionHoldMinHintMeters: positiveNumber(merged.weakSignalDirectionHoldMinHintMeters, DEFAULT_TARGET_PRODUCT_CONFIG.weakSignalDirectionHoldMinHintMeters),
+    weakSignalDirectionHoldMaxHintMeters: positiveNumber(merged.weakSignalDirectionHoldMaxHintMeters, DEFAULT_TARGET_PRODUCT_CONFIG.weakSignalDirectionHoldMaxHintMeters),
+    weakSignalDirectionHoldLateralMeters: positiveNumber(merged.weakSignalDirectionHoldLateralMeters, DEFAULT_TARGET_PRODUCT_CONFIG.weakSignalDirectionHoldLateralMeters),
+    weakSignalDirectionHoldMinRunPoints: positiveNumber(merged.weakSignalDirectionHoldMinRunPoints, DEFAULT_TARGET_PRODUCT_CONFIG.weakSignalDirectionHoldMinRunPoints),
     gapSeconds: positiveNumber(merged.gapSeconds, DEFAULT_TARGET_PRODUCT_CONFIG.gapSeconds),
     stationaryDistanceMeters: positiveNumber(merged.stationaryDistanceMeters, DEFAULT_TARGET_PRODUCT_CONFIG.stationaryDistanceMeters),
     stationaryAccuracyMultiplier: positiveNumber(merged.stationaryAccuracyMultiplier, DEFAULT_TARGET_PRODUCT_CONFIG.stationaryAccuracyMultiplier),
@@ -1826,8 +2496,11 @@ function deviceMotionWindowAsMotionEvidence(event) {
 function normalizeBarometerWindow(event) {
   return {
     event: 'barometer_window',
+    barometerWindowId: numberField(event, 'barometerWindowId'),
     startElapsedRealtimeNanos: numberField(event, 'startElapsedRealtimeNanos'),
     endElapsedRealtimeNanos: numberField(event, 'endElapsedRealtimeNanos'),
+    sampleCount: numberField(event, 'sampleCount'),
+    avgPressureHpa: numberField(event, 'avgPressureHpa'),
     avgRawAltitudeMeters: numberField(event, 'avgRawAltitudeMeters'),
     minRawAltitudeMeters: numberField(event, 'minRawAltitudeMeters'),
     maxRawAltitudeMeters: numberField(event, 'maxRawAltitudeMeters')
@@ -2136,12 +2809,12 @@ function isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint, config) {
 function isLowAccuracyRescuePoint(rawPoint, previousTrustedTrackPoint, config) {
   if (!isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint, config)) return false;
   if (!Number.isFinite(rawPoint.accuracy)
-      || rawPoint.accuracy > LOW_ACCURACY_RESCUE_MAX_ACCURACY_METERS) {
+      || rawPoint.accuracy > config.lowAccuracyRescueMaxAccuracyMeters) {
     return false;
   }
   const distance = distanceMeters(previousTrustedTrackPoint.lat, previousTrustedTrackPoint.lng,
     rawPoint.lat, rawPoint.lng);
-  return distance >= LOW_ACCURACY_RESCUE_MIN_DISTANCE_METERS;
+  return distance >= config.lowAccuracyRescueMinDistanceMeters;
 }
 
 function isRecoveryContinuityRescuePoint(rawPoint, previousRawPoint, config) {
@@ -2469,11 +3142,14 @@ function emptyProduct(strategyVersion, sourceFilePath, recordStartElapsedRealtim
         missingLowQualityBoundary: 0,
         sourceOutsideInterval: 0,
         criteriaRejected: 0,
+        lowQualityMixRejected: 0,
+        trackAlreadyExpressed: 0,
         structureTooShort: 0
       },
       rejectedExamples: []
     },
-    adaptiveShadow: null
+    adaptiveShadow: null,
+    adaptiveShadows: []
   };
 }
 

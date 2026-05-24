@@ -30,8 +30,7 @@ public class GpxExporterTest {
                 "anchor",
                 "first_fix_good",
                 0.0,
-                0.0,
-                9L);
+                0.0);
 
         String gpx = new GpxExporter().buildTrustedGpx(
                 "session<&\"'>",
@@ -46,7 +45,6 @@ public class GpxExporterTest {
         assertTrue(gpx.contains("<hike:elapsedRealtimeNanos>123456789</hike:elapsedRealtimeNanos>"));
         assertTrue(gpx.contains("<hike:decisionResult>anchor</hike:decisionResult>"));
         assertTrue(gpx.contains("<hike:decisionReason>first_fix_good</hike:decisionReason>"));
-        assertTrue(gpx.contains("<hike:sourceGnssSnapshotId>9</hike:sourceGnssSnapshotId>"));
         assertTrue(gpx.contains("<hike:trackPointCount>1</hike:trackPointCount>"));
     }
 
@@ -71,13 +69,11 @@ public class GpxExporterTest {
                 "accept",
                 "moving_good_fix",
                 6.7,
-                3.0,
-                null);
+                3.0);
 
         String gpx = new GpxExporter().buildTrustedGpx("session", Arrays.asList(point), 6.7, 3.0);
 
         assertTrue(!gpx.contains("<ele>"));
-        assertTrue(!gpx.contains("sourceGnssSnapshotId"));
         assertTrue(gpx.contains("<hike:decisionResult>accept</hike:decisionResult>"));
         assertTrue(gpx.contains("<hike:distanceDeltaMeters>6.7</hike:distanceDeltaMeters>"));
         assertTrue(gpx.contains("<hike:movingTimeDeltaSeconds>3.0</hike:movingTimeDeltaSeconds>"));
@@ -104,8 +100,7 @@ public class GpxExporterTest {
                 "anchor",
                 "first_fix_good",
                 0.0,
-                0.0,
-                null);
+                0.0);
 
         String gpx = new GpxExporter().buildPartialGpx("session", Arrays.asList(point), 0.0, 0.0);
 
@@ -165,8 +160,7 @@ public class GpxExporterTest {
                 result,
                 reason,
                 "accept".equals(result) ? 10.0 : 0.0,
-                "accept".equals(result) ? 5.0 : 0.0,
-                null);
+                "accept".equals(result) ? 5.0 : 0.0);
     }
 
     private int countOccurrences(String text, String needle) {

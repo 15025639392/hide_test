@@ -18,10 +18,10 @@
 
 - 系统 `Location`
 - 采样请求归因 `SamplingEpoch`
-- GNSS 质量快照
 - 气压计样本
 - 运动传感器摘要
 - session、GAP、回调延迟和采样策略诊断上下文
+- Android 可选 GNSS 质量诊断快照
 
 输出是可解释、可复测的运动结果：
 
@@ -49,7 +49,7 @@ Phase 11 complete
 ```text
 RecordingForegroundService
   -> LocationManager.GPS_PROVIDER
-  -> RawPoint / raw_location / GNSS Snapshot
+  -> RawPoint / raw_location / optional GNSS diagnostics
   -> SamplingEpoch / SamplingIntake
   -> TrackTrustEngine / TrackCloudWindow
   -> TrackPoint / session.json

@@ -21,13 +21,14 @@
 
 - 系统 `Location`：位置、精度、速度、海拔、fix 时间等。
 - 采样请求归因：`SamplingEpoch`、采样状态、请求间隔和请求距离。
-- GNSS 质量证据：卫星数量、C/N0、used-in-fix 状态、快照新鲜度。
 - 气压计样本：用于计算或校验累计爬升。
 - 运动传感器摘要：用于解释静止、慢速移动、休息和恢复。
 - 诊断上下文：session 起点、GAP、回调延迟、采样策略切换和异常事件。
+- Android 可选诊断附录：GNSS snapshot、卫星数量、C/N0、used-in-fix 状态和快照新鲜度。
 
 每个系统 `Location` 必须先写成 `RawPoint` 和 `raw_location` 诊断证据，然后才进入
-策略链路。
+策略链路。GNSS 质量附录不作为 Web 目标算法的判点输入，不改变目标轨迹、距离、
+GAP、segment 或 GPX。
 
 ## 输出
 
@@ -53,7 +54,7 @@ stage2-track-trust-v3-sampling-cloud
 ```text
 RecordingForegroundService
   -> LocationManager.GPS_PROVIDER
-  -> RawPoint / raw_location / GNSS Snapshot
+  -> RawPoint / raw_location / optional GNSS diagnostics
   -> SamplingEpoch / SamplingIntake
   -> TrackTrustEngine / TrackCloudWindow
   -> TrackPoint / session.json

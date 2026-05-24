@@ -67,6 +67,6 @@ public class SamplingIntakeTest {
         return new RawPoint(id, "gps", 29.0, 106.0,
                 false, 0.0, true, 5f,
                 false, 0f, false, 0f, 1L,
-                true, elapsedRealtimeNanos, false, null);
+                true, elapsedRealtimeNanos, false);
     }
 }

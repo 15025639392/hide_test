@@ -6,8 +6,6 @@ import com.example.gnsssatdemo.track.engine.SamplingEpoch;
 import com.example.gnsssatdemo.track.engine.SamplingIntake;
 import com.example.gnsssatdemo.track.engine.TrackTrustDecision;
 import com.example.gnsssatdemo.track.engine.TrackTrustEngine;
-import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
-import com.example.gnsssatdemo.track.model.GnssSnapshotDiagnosticFields;
 import com.example.gnsssatdemo.track.model.DeviceMotionWindow;
 import com.example.gnsssatdemo.track.model.RawPoint;
 import com.example.gnsssatdemo.track.model.TrackPoint;
@@ -20,9 +18,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.HashMap;
 
 public class ReplayRunner {
     private static final int RECENT_SUMMARY_LIMIT = 8;
@@ -47,7 +45,6 @@ public class ReplayRunner {
         SamplingEpoch activeEpoch = null;
         SamplingIntake samplingIntake = new SamplingIntake();
         TrackTrustEngine trustEngine = new TrackTrustEngine();
-        Map<Long, GnssQualitySnapshot> gnssSnapshots = new HashMap<>();
         Map<Long, SamplingEpoch> samplingEpochs = new HashMap<>();
         List<TrackPoint> trackPoints = new ArrayList<>();
         List<DeviceMotionWindow> recentDeviceMotionWindows = new ArrayList<>();
@@ -90,9 +87,6 @@ public class ReplayRunner {
                         (float) event.optDouble("locationRequestMinDistanceMeters", 0.0),
                         eventTime);
                 samplingEpochs.put(activeEpoch.samplingEpochId, activeEpoch);
-            } else if (GnssSnapshotDiagnosticFields.EVENT.equals(eventName)) {
-                GnssQualitySnapshot snapshot = gnssSnapshotFromEvent(event);
-                gnssSnapshots.put(snapshot.snapshotId, snapshot);
             } else if ("device_motion_window".equals(eventName)) {
                 DeviceMotionWindow window = deviceMotionWindowFromEvent(event);
                 rememberDeviceMotionWindow(recentDeviceMotionWindows, window);
@@ -120,7 +114,6 @@ public class ReplayRunner {
                 } else {
                     TrackPoint previousTrackPoint = lastTrackPoint(trackPoints);
                     TrackTrustDecision decision = trustEngine.decide(rawPoint, rawEpoch,
-                            snapshotById(gnssSnapshots, rawPoint.sourceGnssSnapshotId),
                             recentDeviceMotionWindows, previousTrackPoint);
                     actualResult = decision.result;
                     actualReason = decision.reason;
@@ -139,7 +132,6 @@ public class ReplayRunner {
                                 rawPoint.timeMillis, rawPoint.elapsedRealtimeNanos,
                                 decision.result, decision.reason,
                                 decision.distanceDeltaMeters, decision.movingTimeDeltaSeconds,
-                                rawPoint.sourceGnssSnapshotId,
                                 decision.trustGrade, decision.cloudId,
                                 decision.representativeRawPointId, "", true,
                                 decision.cloudCenterLatitude, decision.cloudCenterLongitude,
@@ -178,8 +170,7 @@ public class ReplayRunner {
                 event.has("bearing"), (float) event.optDouble("bearing", 0.0),
                 event.optLong("timeMillis", 0L),
                 hasElapsedRealtimeNanos, event.optLong("elapsedRealtimeNanos", 0L),
-                event.optBoolean("mock", false),
-                event.has("sourceGnssSnapshotId") ? event.optLong("sourceGnssSnapshotId") : null);
+                event.optBoolean("mock", false));
     }
 
     private SamplingEpoch samplingEpochForRawEvent(JSONObject event, SamplingEpoch activeEpoch,
@@ -223,41 +214,6 @@ public class ReplayRunner {
                 event.optInt("stepDetectorCount", 0),
                 event.optInt("stepCounterDelta", 0),
                 event.optBoolean("stepCounterAvailable", false));
-    }
-
-    private GnssQualitySnapshot gnssSnapshotFromEvent(JSONObject event) {
-        float usedAvgCn0 = (float) event.optDouble(GnssSnapshotDiagnosticFields.USED_AVG_CN0, 0.0);
-        return new GnssQualitySnapshot(
-                event.optLong(GnssSnapshotDiagnosticFields.SNAPSHOT_ID),
-                event.optLong(GnssSnapshotDiagnosticFields.RECEIVED_ELAPSED_REALTIME_NANOS,
-                        event.optLong("eventElapsedRealtimeNanos", 0L)),
-                event.optInt(GnssSnapshotDiagnosticFields.VISIBLE_TOTAL, 0),
-                event.optInt(GnssSnapshotDiagnosticFields.USED_IN_FIX_TOTAL, 0),
-                usedAvgCn0,
-                (float) event.optDouble(GnssSnapshotDiagnosticFields.ALL_AVG_CN0, usedAvgCn0),
-                (float) event.optDouble(GnssSnapshotDiagnosticFields.TOP4_AVG_CN0, usedAvgCn0),
-                event.optInt(GnssSnapshotDiagnosticFields.LOW_CN0_VISIBLE_COUNT, 0),
-                event.optInt(GnssSnapshotDiagnosticFields.WEAK_USED_COUNT, 0),
-                event.optInt(GnssSnapshotDiagnosticFields.GPS_USED, 0),
-                event.optInt(GnssSnapshotDiagnosticFields.BEIDOU_USED, 0),
-                event.optInt(GnssSnapshotDiagnosticFields.GALILEO_USED, 0),
-                event.optInt(GnssSnapshotDiagnosticFields.GLONASS_USED, 0),
-                event.optInt(GnssSnapshotDiagnosticFields.QZSS_USED, 0),
-                event.optInt(GnssSnapshotDiagnosticFields.GPS_VISIBLE, 0),
-                event.optInt(GnssSnapshotDiagnosticFields.BEIDOU_VISIBLE, 0),
-                event.optInt(GnssSnapshotDiagnosticFields.GALILEO_VISIBLE, 0),
-                event.optInt(GnssSnapshotDiagnosticFields.GLONASS_VISIBLE, 0),
-                event.optInt(GnssSnapshotDiagnosticFields.QZSS_VISIBLE, 0),
-                event.optInt(GnssSnapshotDiagnosticFields.SBAS_VISIBLE, 0),
-                event.optInt(GnssSnapshotDiagnosticFields.IRNSS_VISIBLE, 0),
-                event.optInt(GnssSnapshotDiagnosticFields.UNKNOWN_VISIBLE, 0),
-                event.optInt(GnssSnapshotDiagnosticFields.OTHER_VISIBLE, 0),
-                event.optBoolean(GnssSnapshotDiagnosticFields.HAS_DUAL_FREQUENCY, false));
-    }
-
-    private GnssQualitySnapshot snapshotById(Map<Long, GnssQualitySnapshot> gnssSnapshots,
-                                             Long snapshotId) {
-        return snapshotId == null ? null : gnssSnapshots.get(snapshotId);
     }
 
     private TrackPoint lastTrackPoint(List<TrackPoint> trackPoints) {

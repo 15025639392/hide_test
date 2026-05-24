@@ -17,10 +17,6 @@ import android.graphics.PointF;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.drawable.GradientDrawable;
-import android.location.GnssClock;
-import android.location.GnssMeasurement;
-import android.location.GnssMeasurementsEvent;
-import android.location.GnssStatus;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
@@ -61,7 +57,6 @@ import com.example.gnsssatdemo.track.export.SessionManifest;
 import com.example.gnsssatdemo.track.export.SessionManifestReader;
 import com.example.gnsssatdemo.track.export.WeakGnssReport;
 import com.example.gnsssatdemo.track.export.WeakGnssReportGenerator;
-import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
 import com.example.gnsssatdemo.track.model.ReferenceTrackPoint;
 import com.example.gnsssatdemo.track.model.TrackPoint;
 
@@ -110,8 +105,6 @@ public class MainActivity extends Activity {
     private final DecimalFormat three = new DecimalFormat("0.000");
     private final SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss", Locale.US);
     private final SimpleDateFormat dateTimeFormat = new SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA);
-    private final GnssQualitySnapshotFactory gnssQualitySnapshotFactory =
-            new GnssQualitySnapshotFactory();
     private boolean satelliteMapInvalidateScheduled;
 
     private LocationManager locationManager;
@@ -137,8 +130,6 @@ public class MainActivity extends Activity {
     private Dialog historyDialog;
 
     private Location lastLocation;
-    private GnssStatus lastGnssStatus;
-    private GnssMeasurementsEvent lastMeasurements;
     private boolean listening;
     private BasicTrackSession trackSession;
     private long lastLocationReceivedElapsedRealtimeMillis;
@@ -204,12 +195,15 @@ public class MainActivity extends Activity {
     private final List<TrackPoint> cachedHistoricalMapPoints = new ArrayList<>();
     private final List<TrackAscentCalculator.BarometerSample> cachedHistoricalBarometerSamples =
             new ArrayList<>();
+    private final Set<String> pendingHistoricalMapCacheKeys = new HashSet<>();
+    private final Set<String> failedHistoricalMapCacheKeys = new HashSet<>();
     private final Map<String, TrackAscentCalculator.Result> cachedHistoricalAscentResults =
             new HashMap<>();
     private final Set<String> pendingHistoricalAscentCacheKeys = new HashSet<>();
     private final Set<String> failedHistoricalAscentCacheKeys = new HashSet<>();
     private final ExecutorService historicalAscentExecutor = Executors.newSingleThreadExecutor();
     private long historicalAscentCacheGeneration;
+    private long historicalMapCacheGeneration;
     private boolean historicalAscentRefreshScheduled;
     private boolean historicalAscentDestroyed;
     private boolean controlsVisible = true;
@@ -327,44 +321,6 @@ public class MainActivity extends Activity {
         scheduleNoLocationTimeout();
         render();
     };
-
-    private final GnssStatus.Callback gnssStatusCallback = new GnssStatus.Callback() {
-        @Override
-        public void onStarted() {
-            setStatus("GNSS 已启动");
-        }
-
-        @Override
-        public void onStopped() {
-            setStatus("GNSS 已停止");
-        }
-
-        @Override
-        public void onFirstFix(int ttffMillis) {
-            setStatus("首次定位耗时: " + ttffMillis + " ms");
-        }
-
-        @Override
-        public void onSatelliteStatusChanged(GnssStatus gnssStatus) {
-            lastGnssStatus = gnssStatus;
-            appendGnssSnapshotIfRecording(gnssStatus);
-            render();
-        }
-    };
-
-    private final GnssMeasurementsEvent.Callback measurementsCallback =
-            new GnssMeasurementsEvent.Callback() {
-                @Override
-                public void onGnssMeasurementsReceived(GnssMeasurementsEvent eventArgs) {
-                    lastMeasurements = eventArgs;
-                    render();
-                }
-
-                @Override
-                public void onStatusChanged(int status) {
-                    setStatus("原始测量状态: " + measurementStatusName(status));
-                }
-            };
 
     private final BroadcastReceiver foregroundServiceStatusReceiver = new BroadcastReceiver() {
         @Override
@@ -577,7 +533,7 @@ public class MainActivity extends Activity {
                         accuracy,
                         false, 0f, bearing >= 0f, bearing,
                         timeMillis, elapsedRealtimeNanos, decisionResult, decisionReason,
-                        0.0, 0.0, null,
+                        0.0, 0.0,
                         hasPressureSample, pressureElapsedRealtimeNanos,
                         hasPressureSample ? pressureHpa : 0.0,
                         hasPressureSample ? rawBarometerAltitude : 0.0));
@@ -607,7 +563,7 @@ public class MainActivity extends Activity {
                 foregroundServiceHasSpeed, foregroundServiceSpeedMetersPerSecond,
                 foregroundServiceHasBearing, foregroundServiceBearingDegrees,
                 System.currentTimeMillis(), 0L, "raw_live", "foreground_live_raw",
-                0.0, 0.0, null));
+                0.0, 0.0));
         while (foregroundServiceLiveRawPoints.size() > 1000) {
             foregroundServiceLiveRawPoints.remove(0);
         }
@@ -874,11 +830,8 @@ public class MainActivity extends Activity {
         try {
             requestGpsLocationUpdates(1000L, 0f);
 
-            locationManager.registerGnssStatusCallback(gnssStatusCallback, mainHandler);
-            locationManager.registerGnssMeasurementsCallback(measurementsCallback, mainHandler);
-
             listening = true;
-            setStatus("正在监听 GPS_PROVIDER，高精度请求已启用。请到户外或窗边等待卫星数据。");
+            setStatus("正在监听 GPS_PROVIDER，高精度请求已启用。请到户外或窗边等待定位。");
             render();
         } catch (SecurityException e) {
             setStatus("缺少权限: " + e.getMessage());
@@ -906,8 +859,6 @@ public class MainActivity extends Activity {
         if (!listening || locationManager == null) return;
         try {
             locationManager.removeUpdates(locationListener);
-            locationManager.unregisterGnssStatusCallback(gnssStatusCallback);
-            locationManager.unregisterGnssMeasurementsCallback(measurementsCallback);
         } catch (RuntimeException ignored) {
             // Some vendor builds throw if a callback was not fully registered.
         }
@@ -1117,26 +1068,6 @@ public class MainActivity extends Activity {
             bearing = "-";
         }
         appendInfoRow(sb, "行进", bearing + "  时间 " + timeFormat.format(lastLocation.getTime()));
-    }
-
-    private void appendSatelliteBrief(StringBuilder sb) {
-        appendInfoSectionTitle(sb, "卫星");
-        if (lastGnssStatus == null) {
-            appendInfoRow(sb, "状态", "等待卫星数据");
-            return;
-        }
-        int visible = lastGnssStatus.getSatelliteCount();
-        int used = 0;
-        float maxCn0 = 0f;
-        for (int i = 0; i < lastGnssStatus.getSatelliteCount(); i++) {
-            if (lastGnssStatus.usedInFix(i)) {
-                used++;
-            }
-            maxCn0 = Math.max(maxCn0, lastGnssStatus.getCn0DbHz(i));
-        }
-        appendInfoRow(sb, "概况", "可见 " + visible
-                + "  参与 " + used
-                + "  最强 " + one.format(maxCn0) + " dB-Hz");
     }
 
     private void appendInfoSectionTitle(StringBuilder sb, String title) {
@@ -1416,29 +1347,7 @@ public class MainActivity extends Activity {
             }
         }
 
-        int satelliteLevel = 0;
-        if (lastGnssStatus != null) {
-            int visible = lastGnssStatus.getSatelliteCount();
-            int used = 0;
-            float maxCn0 = 0f;
-            for (int i = 0; i < visible; i++) {
-                if (lastGnssStatus.usedInFix(i)) {
-                    used++;
-                }
-                maxCn0 = Math.max(maxCn0, lastGnssStatus.getCn0DbHz(i));
-            }
-            if (used >= 8 && maxCn0 >= 35f) {
-                satelliteLevel = 4;
-            } else if (used >= 5 && maxCn0 >= 28f) {
-                satelliteLevel = 3;
-            } else if (used >= 3 && maxCn0 >= 22f) {
-                satelliteLevel = 2;
-            } else if (visible > 0 || maxCn0 > 0f) {
-                satelliteLevel = 1;
-            }
-        }
-
-        return Math.max(accuracyLevel, satelliteLevel);
+        return accuracyLevel;
     }
 
     private String gpsSignalText() {
@@ -1491,20 +1400,6 @@ public class MainActivity extends Activity {
             return lastLocation.getTime();
         }
         return System.currentTimeMillis();
-    }
-
-    private String satelliteHudText() {
-        if (lastGnssStatus == null) {
-            return "卫星：等待数据";
-        }
-        int visible = lastGnssStatus.getSatelliteCount();
-        int used = 0;
-        for (int i = 0; i < visible; i++) {
-            if (lastGnssStatus.usedInFix(i)) {
-                used++;
-            }
-        }
-        return "卫星：定位 " + used + " 颗 / 可见 " + visible + " 颗";
     }
 
     private String barometerHudText() {
@@ -1609,6 +1504,8 @@ public class MainActivity extends Activity {
                 return "INVALID_JSONL（诊断日志有损坏行）";
             case DiagnosticLogSummary.STATUS_READ_ERROR:
                 return "READ_ERROR（诊断日志读取失败）";
+            case DiagnosticLogSummary.STATUS_NOT_SCANNED:
+                return "NOT_SCANNED（列表未完整扫描）";
             default:
                 return status + "（未知诊断状态）";
         }
@@ -2457,16 +2354,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void appendGnssSnapshotIfRecording(GnssStatus gnssStatus) {
-        if (trackSession == null || !trackSession.isActive() || gnssStatus == null) {
-            return;
-        }
-        GnssQualitySnapshot snapshot = gnssQualitySnapshotFactory.fromStatus(
-                trackSession.nextGnssSnapshotId(), SystemClock.elapsedRealtimeNanos(),
-                gnssStatus);
-        trackSession.onGnssSnapshot(snapshot);
-    }
-
     private void appendLocation(StringBuilder sb) {
         sb.append("== 当前定位结果 ==\n");
         if (lastLocation == null) {
@@ -2675,26 +2562,66 @@ public class MainActivity extends Activity {
                     new ArrayList<>(cachedHistoricalMapPoints),
                     new ArrayList<>(cachedHistoricalBarometerSamples));
         }
-        cachedHistoricalMapSessionId = manifest.sessionId == null ? "" : manifest.sessionId;
-        cachedHistoricalMapLastEventSeq = manifest.lastEventSeq;
-        cachedHistoricalMapDiagnosticBytes = manifest.diagnosticLogBytes;
-        cachedHistoricalMapPoints.clear();
-        cachedHistoricalBarometerSamples.clear();
+        scheduleHistoricalMapInputs(manifest, historicalMapCacheKey(manifest));
+        return new DiagnosticTrackPointReader.AscentInputs(new ArrayList<>(), new ArrayList<>());
+    }
+
+    private void scheduleHistoricalMapInputs(SessionManifest manifest, String cacheKey) {
+        if (historicalAscentDestroyed || historicalAscentExecutor.isShutdown()
+                || failedHistoricalMapCacheKeys.contains(cacheKey)) {
+            return;
+        }
+        if (!pendingHistoricalMapCacheKeys.add(cacheKey)) {
+            return;
+        }
+        final long generation = historicalMapCacheGeneration;
+        try {
+            historicalAscentExecutor.execute(() -> {
+                final DiagnosticTrackPointReader.AscentInputs inputs =
+                        readHistoricalMapInputs(manifest);
+                mainHandler.post(() -> {
+                    pendingHistoricalMapCacheKeys.remove(cacheKey);
+                    if (historicalAscentDestroyed || generation != historicalMapCacheGeneration) {
+                        return;
+                    }
+                    if (inputs == null) {
+                        failedHistoricalMapCacheKeys.add(cacheKey);
+                        return;
+                    }
+                    cachedHistoricalMapSessionId =
+                            manifest.sessionId == null ? "" : manifest.sessionId;
+                    cachedHistoricalMapLastEventSeq = manifest.lastEventSeq;
+                    cachedHistoricalMapDiagnosticBytes = manifest.diagnosticLogBytes;
+                    cachedHistoricalMapPoints.clear();
+                    cachedHistoricalBarometerSamples.clear();
+                    cachedHistoricalMapPoints.addAll(inputs.trackPoints);
+                    cachedHistoricalBarometerSamples.addAll(inputs.barometerSamples);
+                    render();
+                    invalidateVisibleSatelliteMapView();
+                });
+            });
+        } catch (RejectedExecutionException ignored) {
+            pendingHistoricalMapCacheKeys.remove(cacheKey);
+        }
+    }
+
+    private DiagnosticTrackPointReader.AscentInputs readHistoricalMapInputs(
+            SessionManifest manifest) {
         try {
             DiagnosticTrackPointReader.AscentInputs inputs =
                     new DiagnosticTrackPointReader().readDisplayAscentInputs(
                     new File(manifest.sessionDir, manifest.diagnosticLogFileName));
             List<TrackPoint> points = inputs.trackPoints;
             sortMapTrackPoints(points);
-            cachedHistoricalMapPoints.addAll(points);
-            cachedHistoricalBarometerSamples.addAll(inputs.barometerSamples);
+            return inputs;
         } catch (IOException | JSONException ignored) {
-            cachedHistoricalMapPoints.clear();
-            cachedHistoricalBarometerSamples.clear();
+            return null;
         }
-        return new DiagnosticTrackPointReader.AscentInputs(
-                new ArrayList<>(cachedHistoricalMapPoints),
-                new ArrayList<>(cachedHistoricalBarometerSamples));
+    }
+
+    private String historicalMapCacheKey(SessionManifest manifest) {
+        String sessionId = manifest.sessionId == null ? "" : manifest.sessionId;
+        return sessionId + "|" + manifest.lastEventSeq + "|" + manifest.diagnosticLogBytes;
     }
 
     private boolean isHistoricalMapCacheValid(SessionManifest manifest) {
@@ -2706,11 +2633,14 @@ public class MainActivity extends Activity {
     }
 
     private void invalidateHistoricalMapCache() {
+        historicalMapCacheGeneration++;
         cachedHistoricalMapSessionId = "";
         cachedHistoricalMapLastEventSeq = -1L;
         cachedHistoricalMapDiagnosticBytes = -1L;
         cachedHistoricalMapPoints.clear();
         cachedHistoricalBarometerSamples.clear();
+        pendingHistoricalMapCacheKeys.clear();
+        failedHistoricalMapCacheKeys.clear();
     }
 
     private void invalidateHistoricalAscentCache() {
@@ -3529,8 +3459,6 @@ public class MainActivity extends Activity {
             baseline += lineHeight;
             drawGpsHudLine(canvas, textX, baseline, textWidth);
             baseline += lineHeight;
-            canvas.drawText(fitHudText(satelliteHudText(), textWidth), textX, baseline, paint);
-            baseline += lineHeight;
             canvas.drawText(fitHudText(trackLine, textWidth), textX, baseline, paint);
             baseline += lineHeight;
             canvas.drawText(fitHudText(barometerHudText(), textWidth), textX, baseline, paint);
@@ -3949,154 +3877,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void appendSatelliteStatus(StringBuilder sb) {
-        sb.append("== 卫星状态 ==\n");
-        if (lastGnssStatus == null) {
-            sb.append("还没有收到卫星状态\n\n");
-            return;
-        }
-
-        Map<String, SatSummary> summaries = new HashMap<>();
-        List<SatRow> rows = new ArrayList<>();
-
-        for (int i = 0; i < lastGnssStatus.getSatelliteCount(); i++) {
-            String name = constellationName(lastGnssStatus.getConstellationType(i));
-            SatSummary summary = summaries.get(name);
-            if (summary == null) {
-                summary = new SatSummary(name);
-                summaries.put(name, summary);
-            }
-            summary.add(lastGnssStatus.getCn0DbHz(i), lastGnssStatus.usedInFix(i));
-            rows.add(new SatRow(
-                    name,
-                    lastGnssStatus.getSvid(i),
-                    lastGnssStatus.usedInFix(i),
-                    lastGnssStatus.getCn0DbHz(i),
-                    lastGnssStatus.getElevationDegrees(i),
-                    lastGnssStatus.getAzimuthDegrees(i),
-                    lastGnssStatus.hasCarrierFrequencyHz(i)
-                            ? lastGnssStatus.getCarrierFrequencyHz(i) : Float.NaN));
-        }
-
-        appendSummary(sb, summaries);
-        sb.append("星座     编号  参与 信号  高度角 方位角 载波MHz\n");
-
-        Collections.sort(rows, Comparator
-                .comparing((SatRow r) -> r.constellation)
-                .thenComparingInt(r -> r.svid));
-
-        for (SatRow row : rows) {
-            sb.append(pad(row.constellation, 7)).append(' ')
-                    .append(pad(String.valueOf(row.svid), 4)).append(' ')
-                    .append(row.used ? "是   " : "否   ")
-                    .append(pad(one.format(row.cn0), 5)).append(' ')
-                    .append(pad(one.format(row.elevation), 5)).append(' ')
-                    .append(pad(one.format(row.azimuth), 5)).append(' ');
-            if (Float.isNaN(row.carrierHz)) {
-                sb.append("-");
-            } else {
-                sb.append(three.format(row.carrierHz / 1_000_000.0f));
-            }
-            sb.append('\n');
-        }
-        sb.append('\n');
-    }
-
-    private void appendSummary(StringBuilder sb, Map<String, SatSummary> summaries) {
-        SatSummary beidou = summaries.get("BeiDou");
-        if (beidou == null) {
-            sb.append("结论: 当前没有看到北斗卫星。\n\n");
-        } else if (beidou.used > 0) {
-            sb.append("结论: 北斗正在参与定位，参与数量 ")
-                    .append(beidou.used).append(" 颗。\n\n");
-        } else if (beidou.maxCn0 >= 20f) {
-            sb.append("结论: 已收到北斗信号，但暂未参与最终定位。\n\n");
-        } else {
-            sb.append("结论: 能看到北斗列表，但北斗信号还很弱或尚未锁定。\n\n");
-        }
-
-        sb.append("星座汇总\n");
-        sb.append("星座     可见数 参与数 最强CN0  平均CN0\n");
-        List<SatSummary> ordered = new ArrayList<>(summaries.values());
-        Collections.sort(ordered, Comparator.comparing(s -> s.name));
-        for (SatSummary summary : ordered) {
-            sb.append(pad(summary.name, 8)).append(' ')
-                    .append(pad(String.valueOf(summary.visible), 7)).append(' ')
-                    .append(pad(String.valueOf(summary.used), 4)).append(' ')
-                    .append(pad(one.format(summary.maxCn0), 8)).append(' ')
-                    .append(one.format(summary.averageCn0())).append('\n');
-        }
-        sb.append("\n怎么看:\n");
-        sb.append("参与数 > 0 表示参与定位；CN0 > 20 通常表示有可用信号。\n\n");
-        sb.append("详细卫星列表\n");
-    }
-
-    private void appendMeasurements(StringBuilder sb) {
-        sb.append("== 原始 GNSS 测量 ==\n");
-        if (lastMeasurements == null) {
-            sb.append("还没有原始测量数据。部分设备或系统会限制这个 API。\n");
-            return;
-        }
-
-        GnssClock clock = lastMeasurements.getClock();
-        sb.append("接收机时间ns=").append(clock.getTimeNanos());
-        if (clock.hasFullBiasNanos()) {
-            sb.append(" fullBiasNanos=").append(clock.getFullBiasNanos());
-        }
-        sb.append('\n');
-        sb.append("星座     编号  信号  状态       伪距m           ADRm    多普勒Hz\n");
-
-        List<GnssMeasurement> measurements = new ArrayList<>();
-        for (GnssMeasurement measurement : lastMeasurements.getMeasurements()) {
-            measurements.add(measurement);
-        }
-        Collections.sort(measurements, Comparator
-                .comparing((GnssMeasurement m) -> constellationName(m.getConstellationType()))
-                .thenComparingInt(GnssMeasurement::getSvid));
-
-        for (GnssMeasurement m : measurements) {
-            String pseudorange = computePseudorangeMeters(clock, m);
-            sb.append(pad(constellationName(m.getConstellationType()), 7)).append(' ')
-                    .append(pad(String.valueOf(m.getSvid()), 4)).append(' ')
-                    .append(pad(one.format(m.getCn0DbHz()), 5)).append(' ')
-                    .append(pad(measurementState(m.getState()), 10)).append(' ')
-                    .append(pad(pseudorange, 15)).append(' ');
-
-            if ((m.getAccumulatedDeltaRangeState()
-                    & GnssMeasurement.ADR_STATE_VALID) != 0) {
-                sb.append(pad(one.format(m.getAccumulatedDeltaRangeMeters()), 7)).append(' ');
-            } else {
-                sb.append(pad("-", 7)).append(' ');
-            }
-            sb.append(one.format(m.getPseudorangeRateMetersPerSecond())).append('\n');
-        }
-    }
-
-    private String computePseudorangeMeters(GnssClock clock, GnssMeasurement m) {
-        if (!clock.hasFullBiasNanos()) {
-            return "-";
-        }
-
-        double weekNanos = 604_800.0e9;
-        double c = 299_792_458.0;
-        double gpsTimeNanos = clock.getTimeNanos() - (clock.getFullBiasNanos()
-                + (clock.hasBiasNanos() ? clock.getBiasNanos() : 0.0));
-        double tRxNanos = gpsTimeNanos % weekNanos;
-        if (tRxNanos < 0) {
-            tRxNanos += weekNanos;
-        }
-        double tTxNanos = m.getReceivedSvTimeNanos();
-        double prSeconds = (tRxNanos - tTxNanos) * 1.0e-9;
-        if (prSeconds < 0) {
-            prSeconds += 604_800.0;
-        }
-        double meters = prSeconds * c;
-        if (meters <= 0 || meters > 100_000_000) {
-            return "-";
-        }
-        return one.format(meters);
-    }
-
     private boolean hasFineLocation() {
         return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
                 == PackageManager.PERMISSION_GRANTED;
@@ -4135,48 +3915,6 @@ public class MainActivity extends Activity {
 
     private void setStatus(String message) {
         status.setText(message);
-    }
-
-    private String constellationName(int constellationType) {
-        switch (constellationType) {
-            case GnssStatus.CONSTELLATION_GPS:
-                return "GPS";
-            case GnssStatus.CONSTELLATION_SBAS:
-                return "SBAS";
-            case GnssStatus.CONSTELLATION_GLONASS:
-                return "GLONASS";
-            case GnssStatus.CONSTELLATION_QZSS:
-                return "QZSS";
-            case GnssStatus.CONSTELLATION_BEIDOU:
-                return "BeiDou";
-            case GnssStatus.CONSTELLATION_GALILEO:
-                return "Galileo";
-            case GnssStatus.CONSTELLATION_IRNSS:
-                return "IRNSS";
-            default:
-                return "UNK";
-        }
-    }
-
-    private String measurementState(int state) {
-        if ((state & GnssMeasurement.STATE_CODE_LOCK) != 0) return "CODE_LOCK";
-        if ((state & GnssMeasurement.STATE_BIT_SYNC) != 0) return "BIT_SYNC";
-        if ((state & GnssMeasurement.STATE_SUBFRAME_SYNC) != 0) return "SUBFRAME";
-        if ((state & GnssMeasurement.STATE_TOW_DECODED) != 0) return "TOW";
-        return "UNKNOWN";
-    }
-
-    private String measurementStatusName(int status) {
-        switch (status) {
-            case GnssMeasurementsEvent.Callback.STATUS_READY:
-                return "就绪";
-            case GnssMeasurementsEvent.Callback.STATUS_NOT_SUPPORTED:
-                return "不支持";
-            case GnssMeasurementsEvent.Callback.STATUS_LOCATION_DISABLED:
-                return "定位关闭";
-            default:
-                return String.valueOf(status);
-        }
     }
 
     private String pad(String value, int width) {
@@ -4350,48 +4088,4 @@ public class MainActivity extends Activity {
         prepareButton(button, 44);
     }
 
-    private static class SatRow {
-        final String constellation;
-        final int svid;
-        final boolean used;
-        final float cn0;
-        final float elevation;
-        final float azimuth;
-        final float carrierHz;
-
-        SatRow(String constellation, int svid, boolean used, float cn0,
-               float elevation, float azimuth, float carrierHz) {
-            this.constellation = constellation;
-            this.svid = svid;
-            this.used = used;
-            this.cn0 = cn0;
-            this.elevation = elevation;
-            this.azimuth = azimuth;
-            this.carrierHz = carrierHz;
-        }
-    }
-
-    private static class SatSummary {
-        final String name;
-        int visible;
-        int used;
-        float maxCn0;
-        float totalCn0;
-
-        SatSummary(String name) {
-            this.name = name;
-        }
-
-        void add(float cn0, boolean usedInFix) {
-            visible++;
-            if (usedInFix) used++;
-            if (cn0 > maxCn0) maxCn0 = cn0;
-            totalCn0 += cn0;
-        }
-
-        float averageCn0() {
-            if (visible == 0) return 0f;
-            return totalCn0 / visible;
-        }
-    }
 }

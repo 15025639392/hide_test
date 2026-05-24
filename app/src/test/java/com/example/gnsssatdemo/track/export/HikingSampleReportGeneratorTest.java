@@ -40,9 +40,9 @@ public class HikingSampleReportGeneratorTest {
 
         assertEquals(2, report.rawLocationCount);
         assertEquals(2, report.decisionCount);
-        assertEquals(1, report.trustedDecisionCount);
-        assertEquals(1, report.weakDecisionCount);
-        assertTrue(report.decisionReasonCounts.containsKey("weak:moving_cloud_unstable"));
+        assertEquals(2, report.trustedDecisionCount);
+        assertEquals(0, report.weakDecisionCount);
+        assertTrue(report.decisionReasonCounts.containsKey("accept:moving_good_fix"));
     }
 
     @Test

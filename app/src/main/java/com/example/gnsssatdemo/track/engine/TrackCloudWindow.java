@@ -1,6 +1,5 @@
 package com.example.gnsssatdemo.track.engine;
 
-import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
 import com.example.gnsssatdemo.track.model.DeviceMotionWindow;
 import com.example.gnsssatdemo.track.model.RawPoint;
 
@@ -35,12 +34,11 @@ public class TrackCloudWindow {
         this.samplingEpochId = samplingEpochId;
     }
 
-    public Snapshot add(RawPoint rawPoint, GnssQualitySnapshot snapshot,
-                        List<DeviceMotionWindow> motionWindows) {
+    public Snapshot add(RawPoint rawPoint, List<DeviceMotionWindow> motionWindows) {
         if (origin == null) {
             origin = rawPoint;
         }
-        samples.add(new Sample(rawPoint, snapshot, motionWindows));
+        samples.add(new Sample(rawPoint, motionWindows));
         return snapshot();
     }
 
@@ -98,7 +96,6 @@ public class TrackCloudWindow {
         double closestDistance = Double.MAX_VALUE;
         List<Long> rawIds = new ArrayList<>();
         int latestAccuracyScore = 0;
-        int latestGnssScore = 0;
         int latestMotionScore = 0;
         int latestSpatialScore = 0;
         for (WeightedSample sample : weighted) {
@@ -111,7 +108,6 @@ public class TrackCloudWindow {
                 representativeRawPointId = sample.sample.rawPoint.rawPointId;
             }
             latestAccuracyScore = scoreFromAccuracy(sample.sample.rawPoint.accuracyMeters);
-            latestGnssScore = scoreFromGnss(sample.sample.snapshot);
             latestMotionScore = scoreFromMotion(sample.sample.rawPoint,
                     sample.sample.motionWindows);
             latestSpatialScore = scoreFromSpatial(distance, sample.sample.rawPoint.accuracyMeters);
@@ -120,7 +116,7 @@ public class TrackCloudWindow {
         int timeScore = scoreFromTimeSpan();
         int speedScore = 100;
         TrackTrustScore score = new TrackTrustScore(latestAccuracyScore, 100, timeScore,
-                latestSpatialScore, latestMotionScore, latestGnssScore, speedScore);
+                latestSpatialScore, latestMotionScore, speedScore);
         return new Snapshot(cloudId, cloudType, samplingEpochId, samples.size(), totalWeight,
                 weightedRadius, centerLat, centerLon, representativeRawPointId, rawIds, score);
     }
@@ -151,19 +147,17 @@ public class TrackCloudWindow {
         }
         Sample sample = samples.get(0);
         return sample.rawPoint.accuracyMeters <= 10f
-                && scoreFromGnss(sample.snapshot) >= 80
                 && (!sample.rawPoint.hasSpeed || sample.rawPoint.speedMetersPerSecond <= 2.5f);
     }
 
     private double baseWeight(Sample sample, long latestElapsed) {
         double accuracyWeight = clamp(1.0 / Math.max(sample.rawPoint.accuracyMeters, 3.0),
                 0.01, 0.33);
-        double gnssWeight = gnssWeight(sample.snapshot);
         double motionWeight = motionWeight(sample.rawPoint, sample.motionWindows);
         double sampleAgeSeconds = Math.max(0.0,
                 (latestElapsed - sample.rawPoint.elapsedRealtimeNanos) / 1_000_000_000.0);
         double temporalWeight = Math.exp(-sampleAgeSeconds / TEMPORAL_DECAY_SECONDS);
-        return accuracyWeight * gnssWeight * motionWeight * temporalWeight;
+        return accuracyWeight * motionWeight * temporalWeight;
     }
 
     private double spatialWeight(double distanceMeters, float accuracyMeters) {
@@ -217,30 +211,6 @@ public class TrackCloudWindow {
             return 30.0;
         }
         return values.get(values.size() / 2);
-    }
-
-    private double gnssWeight(GnssQualitySnapshot snapshot) {
-        int score = scoreFromGnss(snapshot);
-        if (score >= 80) return 1.0;
-        if (score >= 60) return 0.7;
-        if (score >= 35) return 0.4;
-        return 0.25;
-    }
-
-    private int scoreFromGnss(GnssQualitySnapshot snapshot) {
-        if (snapshot == null) {
-            return 25;
-        }
-        if (snapshot.usedInFixTotal >= 8 && snapshot.top4AvgCn0 >= 28f) {
-            return 100;
-        }
-        if (snapshot.usedInFixTotal >= 5 && snapshot.top4AvgCn0 >= 22f) {
-            return 70;
-        }
-        if (snapshot.usedInFixTotal >= 3) {
-            return 40;
-        }
-        return 25;
     }
 
     private double motionWeight(RawPoint rawPoint, List<DeviceMotionWindow> motionWindows) {
@@ -341,13 +311,10 @@ public class TrackCloudWindow {
 
     private static class Sample {
         final RawPoint rawPoint;
-        final GnssQualitySnapshot snapshot;
         final List<DeviceMotionWindow> motionWindows;
 
-        Sample(RawPoint rawPoint, GnssQualitySnapshot snapshot,
-               List<DeviceMotionWindow> motionWindows) {
+        Sample(RawPoint rawPoint, List<DeviceMotionWindow> motionWindows) {
             this.rawPoint = rawPoint;
-            this.snapshot = snapshot;
             this.motionWindows = motionWindows == null
                     ? Collections.<DeviceMotionWindow>emptyList()
                     : new ArrayList<>(motionWindows);
@@ -416,7 +383,7 @@ public class TrackCloudWindow {
         static Snapshot empty(long cloudId, String cloudType, long samplingEpochId) {
             return new Snapshot(cloudId, cloudType, samplingEpochId, 0, 0.0,
                     0.0, 0.0, 0.0, 0L, new ArrayList<Long>(),
-                    new TrackTrustScore(0, 0, 0, 0, 0, 0, 0));
+                    new TrackTrustScore(0, 0, 0, 0, 0, 0));
         }
     }
 }

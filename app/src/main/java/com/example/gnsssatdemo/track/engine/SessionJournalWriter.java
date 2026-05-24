@@ -90,7 +90,6 @@ public class SessionJournalWriter {
                 || "runtime_snapshot".equals(eventName)
                 || "session_event".equals(eventName)
                 || "sampling_policy".equals(eventName)
-                || "gnss_snapshot".equals(eventName)
                 || "raw_location".equals(eventName)
                 || "device_motion_window".equals(eventName)
                 || "barometer_window".equals(eventName)

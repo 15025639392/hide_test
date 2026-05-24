@@ -6,24 +6,46 @@ import {
   parseEvidenceJsonl
 } from './diagnosticMap.mjs';
 import {
-  DEFAULT_TARGET_PRODUCT_CONFIG,
-  buildTargetTrackProduct,
-  normalizeTargetProductConfig
-} from './targetProduct.mjs';
+  buildSixLayerTrackProduct,
+  normalizeSixLayerTrackConfig,
+  reviewTrackPointScenarioCoverage
+} from './sixLayerTrackProduct.mjs';
 
 const COLORS = ['#2dd4bf', '#fb7185', '#facc15', '#60a5fa', '#c084fc', '#34d399', '#f97316', '#e879f9'];
 const MAP_LINE_POINT_LIMIT = 6000;
 const MAP_RAW_POINT_LIMIT = 7000;
 const MAP_TRACK_POINT_LIMIT = 5000;
+const FIXED_CLEANING_CONFIG = normalizeSixLayerTrackConfig();
+const TERRAIN_EXAGGERATION = 1.15;
+const TERRAIN_TILEJSON_URL = 'https://tiles.mapterhorn.com/tilejson.json';
+const TERRAIN_TILE_TEMPLATE = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
+const TERRAIN_DEM_MAX_ZOOM = 13;
+const TERRAIN_TILE_SIZE = 512;
+const CONTOUR_LAYER_IDS = [
+  'terrain-contours-minor',
+  'terrain-contours-major',
+  'terrain-contour-minor-labels',
+  'terrain-contour-major-labels'
+];
+const CONTOUR_LINE_LAYER_IDS = ['terrain-contours-minor', 'terrain-contours-major'];
+const CONTOUR_THRESHOLDS_METERS = {
+  10: [100, 500],
+  11: [50, 250],
+  12: [50, 250],
+  13: [20, 100],
+  14: [10, 50],
+  15: [10, 50]
+};
 const CLEANING_ALGORITHM_SECTIONS = [
   {
-    title: '数据入口',
+    title: '六层模型',
     rows: [
-	      '输入 evidence.jsonl',
-	      'Android 只作为纯证据产出端，Web 负责重新 intake、判点和生成清洗轨迹',
-	      '先复原 raw_location、sampling_policy、device_motion_window、barometer_window',
-	      '同步生成 sessionProfile，用于观察采样节奏、accuracy 分布、速度分布和静止噪声；当前不参与判点',
-      '所有连续性、GAP、速度计算使用 elapsedRealtimeNanos，不用 timeMillis 代替'
+      '输入 evidence.jsonl，Web 使用六层因果模型离线生成清洗轨迹',
+      '天空/大气层和场景传播层只落为 accuracy、GAP、raw 点发散、气压趋势等可观测证据',
+      '设备采样层解释 SamplingEpoch、sampling_policy、callbackDelayNanos 和传感器可用性',
+      '水平轨迹层决定 anchor / accept / weak / reject 和 segment',
+      '垂直高度层将 Location.altitude 与 BAROMETER altitude 拆成两条独立线',
+      '活动与结算层统一决定 GPX、距离、运动时间、配速和 selected ascent'
     ]
   },
   {
@@ -37,62 +59,43 @@ const CLEANING_ALGORITHM_SECTIONS = [
     ]
   },
   {
-    title: '点云与权重',
+    title: '水平轨迹',
     rows: (config) => [
-	      '静止 anchor 使用点云 weighted center；真实移动、GAP 恢复、交通风险和连续性救援使用 raw 坐标',
-	      'weight = accuracy 反向权重 * motion * temporal * spatial',
-	      `temporal 使用 ${formatPlainNumber(config.cloudTemporalDecaySeconds)}s 衰减`
+      `GAP > ${formatPlainNumber(config.gapSeconds)}s 进入恢复边界，gap_recovery 进可信轨迹但 delta=0`,
+      `accuracy > ${formatPlainNumber(config.weakCloudAccuracyMeters)}m 进入 weak_horizontal_accuracy 或 recovery pending，不进可信 GPX`,
+      `静止阈值 = max(${formatPlainNumber(config.stationaryDistanceMeters)}m, accuracy * ${formatPlainNumber(config.stationaryAccuracyMultiplier)})`,
+      '静止 anchor 必须有近期 still motion 支持；慢走有 walking motion 时可保留为 motion_supported_low_speed',
+      'transport_risk 只保留为诊断，不计入徒步距离、运动时间或爬升'
     ]
   },
   {
-    title: '关键阈值',
+    title: '垂直高度双线',
     rows: (config) => [
-      `GAP > ${formatPlainNumber(config.gapSeconds)}s 进入 RECOVERY_CLOUD，恢复点 delta=0`,
-      `accuracy > ${formatPlainNumber(config.weakCloudAccuracyMeters)}m 默认进入 WEAK_CLOUD，除非满足连续性或低精度救援规则`,
-      `静止阈值 = max(${formatPlainNumber(config.stationaryDistanceMeters)}m, accuracy * ${formatPlainNumber(config.stationaryAccuracyMultiplier)})`,
-      `速度 > ${formatPlainNumber(config.impossibleSpeedMetersPerSecond)}m/s 视为异常弱点`,
-      `速度 >= ${formatPlainNumber(config.transportSpeedMetersPerSecond)}m/s 且位移 >= ${formatPlainNumber(config.transportMinDistanceMeters)}m 标记为交通工具风险并保留`
+      `Location.altitude 只在水平点可信且 verticalAccuracy <= ${formatPlainNumber(config.locationAltitudeAscentMaxVerticalAccuracyMeters)}m 时进入 GNSS altitude line`,
+      'GAP recovery、stationary_anchor、transport_risk 会 reset 或 suspend 高度累计，不跨边界计爬升',
+      'BAROMETER altitude 来自 pressure window，按传感器时间独立累计，不绑定单个 TrackPoint',
+      `barometer 样本间隔超过 ${formatPlainNumber(config.barometerAscentMaxSampleGapNanos / 1_000_000_000)}s 或出现压力突变时 reset/reject`,
+      'selected ascent 优先选择可信 BAROMETER，气压不可用时才使用 GNSS altitude 兜底'
     ]
   },
   {
     title: '统计口径',
     rows: [
-      '里程 = 清洗后的同 segment 运动线路连线总长度，只累计当前点 distanceDeltaMeters > 0 的边',
-      '运动里程 = 成品轨迹中 anchor / accept 点的 distanceDeltaMeters 求和',
-      '疑似交通里程 = 成品轨迹中交通工具风险点的 distanceDeltaMeters 求和',
-      '运动耗时 = 记录终止 elapsedRealtimeNanos - 记录起始 elapsedRealtimeNanos',
-      '如果证据缺少记录终止时间，Web 退回使用最后一个 raw_location 的 elapsedRealtimeNanos',
-      '单点 movingTimeDelta 只保留为轨迹连续性解释，不再作为聚合运动耗时来源'
+      '里程 = 清洗轨迹中 countsDistance=true 的 distanceDeltaMeters 求和',
+      '运动耗时 = countsMovingTime=true 的 movingTimeDeltaSeconds 求和',
+      'GAP recovery 可以进入可信线，但不计距、不计运动时间、不跨边界计爬升',
+      'weak / reject / intake_rejected 都只作为诊断证据，不进入 trusted GPX',
+      'Location 海拔累计和气压累计都会保留，selected ascent 只是展示主结果'
     ]
   },
   {
-    title: '低质量运动段',
-    rows: (config) => [
-      '孤立 moving_good_fix 如果被低质量定位静止抖动包围，不直接按普通好点解释',
-      `候选区间只允许已通过 intake 且 accuracy <= ${formatPlainNumber(config.weakCloudAccuracyMeters)}m 的定位 raw 点参与`,
-      '持续时间 >= 60s、active-motion 覆盖 >= 0.7、合理采样步距 >= 25m、移动步数 >= 8、bbox 展开 >= 25m 时，默认只标记为复核候选',
-      '只有显式开启 lowQualityMotionRebuildEnabled 时，才抽稀为 motion_supported_low_quality 进入成品轨迹',
-      '该规则不跨 raw 采样 GAP，不接受交通工具风险，不凭单点 motion 恢复'
-    ]
-  },
-  {
-    title: '气压边界',
-    rows: (config) => [
-      `气压阻止静止整段压缩当前${config.barometerCleaningEnabled ? '开启' : '关闭'}`,
-      `开启后，仅当有效气压窗口 >= ${formatPlainNumber(config.barometerVerticalMotionMinWindowCount)} 且高度范围 >= ${formatPlainNumber(config.barometerVerticalMotionMinRangeMeters)}m 时，阻止 stationary_session_anchor 压缩`,
-      '气压不直接删点，不改变 intake、GAP、交通工具识别或点云稳定性',
-      '累计爬升仍不是由这个清洗开关直接计算'
-    ]
-  },
-  {
-    title: '为什么这样配',
+    title: '不使用 gnss_snapshot',
     rows: (config) => [
       `${formatPlainNumber(config.maxIntakeAccuracyMeters)}m 是 raw 进入复算的宽门槛，用于保留弱 GPS 诊断证据`,
-      `${formatPlainNumber(config.weakCloudAccuracyMeters)}m 是可信点云分界，避免弱信号直接污染目标轨迹`,
-      `${formatPlainNumber(config.gapSeconds)}s GAP 避免把长时间无定位两端直线计入成品距离`,
-      '交通工具风险只做解释标签，不作为删除条件，成品轨迹保留真实移动但标记风险',
-      '低速点必须有近期运动证据才能进入轨迹，低精度点必须满足连续性、accuracy 和位移下限才能被救援',
-      '整段 motion 几乎全静止且 stationary_anchor 占主导时，Web 成品轨迹压缩为一个稳定中心点'
+      `${formatPlainNumber(config.weakCloudAccuracyMeters)}m 是水平观测弱分界，避免弱定位污染目标轨迹`,
+      '算法不读取卫星数、C/N0、星座分布或 used-in-fix',
+      '弱定位原因只写可观测现象，例如 weak_horizontal_accuracy、local scatter、GAP、pressure jump',
+      '场景原因如山谷、密林、城市峡谷只进入人工复盘，不进入自动判点标签'
     ]
   }
 ];
@@ -101,11 +104,15 @@ const state = {
   datasets: [],
   selectedDatasetId: null,
   selectedPoint: null,
+  scenarioReviewRangeText: '',
+  selectedShadowIds: [],
+  selectedContour: null,
   map: null,
   mapLoaded: false,
+  contoursAvailable: false,
+  contourDemSource: null,
   popup: null,
-  algorithmSourceText: '正在读取 acceptance-web/src/targetProduct.mjs...',
-  cleaningConfig: normalizeTargetProductConfig()
+  algorithmSourceText: '正在读取 acceptance-web/src/sixLayerTrackProduct.mjs...'
 };
 
 const elements = {
@@ -117,29 +124,29 @@ const elements = {
   showTrusted: document.querySelector('#showTrusted'),
   showCleaned: document.querySelector('#showCleaned'),
   showShadow: document.querySelector('#showShadow'),
+  showTerrain: document.querySelector('#showTerrain'),
+  showContours: document.querySelector('#showContours'),
+  contourDataPanel: document.querySelector('#contourDataPanel'),
+  contourDataStatus: document.querySelector('#contourDataStatus'),
+  contourDataSelected: document.querySelector('#contourDataSelected'),
+  shadowFilterSummary: document.querySelector('#shadowFilterSummary'),
+  shadowFilterOptions: document.querySelector('#shadowFilterOptions'),
   showDirection: document.querySelector('#showDirection'),
   showLowQualityCandidates: document.querySelector('#showLowQualityCandidates'),
   showShadowDiffs: document.querySelector('#showShadowDiffs'),
   showCleanedPoints: document.querySelector('#showCleanedPoints'),
   showPoints: document.querySelector('#showPoints'),
-  configStateText: document.querySelector('#configStateText'),
-  applyConfigButton: document.querySelector('#applyConfigButton'),
-  resetConfigButton: document.querySelector('#resetConfigButton'),
   cleaningAlgorithm: document.querySelector('#cleaningAlgorithm'),
   algorithmDialog: document.querySelector('#algorithmDialog'),
   algorithmDialogContent: document.querySelector('#algorithmDialogContent'),
   closeAlgorithmDialogButton: document.querySelector('#closeAlgorithmDialogButton'),
-  configInputs: {
-    maxIntakeAccuracyMeters: document.querySelector('#maxIntakeAccuracyMeters'),
-    weakCloudAccuracyMeters: document.querySelector('#weakCloudAccuracyMeters'),
-    gapSeconds: document.querySelector('#gapSeconds'),
-    stationaryDistanceMeters: document.querySelector('#stationaryDistanceMeters'),
-    barometerCleaningEnabled: document.querySelector('#barometerCleaningEnabled'),
-    lowQualityMotionRebuildEnabled: document.querySelector('#lowQualityMotionRebuildEnabled')
-  },
   importStatus: document.querySelector('#importStatus'),
   importSpinner: document.querySelector('#importSpinner'),
   importText: document.querySelector('#importText'),
+  scenarioRangeInput: document.querySelector('#scenarioRangeInput'),
+  scenarioRangeReviewButton: document.querySelector('#scenarioRangeReviewButton'),
+  scenarioRangeState: document.querySelector('#scenarioRangeState'),
+  scenarioRangeReview: document.querySelector('#scenarioRangeReview'),
   selectedPointText: document.querySelector('#selectedPointText'),
   pointDetails: document.querySelector('#pointDetails'),
   mapView: document.querySelector('#mapView')
@@ -153,13 +160,14 @@ elements.fileInput.addEventListener('change', async (event) => {
 });
 elements.clearButton.addEventListener('click', clearAll);
 elements.fitBoundsButton.addEventListener('click', fitAllBounds);
-elements.applyConfigButton.addEventListener('click', () => {
-  void applyCleaningConfig();
-});
-elements.resetConfigButton.addEventListener('click', () => {
-  void resetCleaningConfig();
-});
 elements.cleaningAlgorithm.addEventListener('click', handleCleaningAlgorithmClick);
+elements.scenarioRangeReviewButton.addEventListener('click', applyScenarioRangeReview);
+elements.scenarioRangeInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') applyScenarioRangeReview();
+});
+elements.showTerrain.addEventListener('change', renderTerrain);
+elements.showContours.addEventListener('change', renderContours);
+elements.shadowFilterOptions.addEventListener('change', handleShadowFilterChange);
 elements.closeAlgorithmDialogButton.addEventListener('click', closeAlgorithmDialog);
 elements.algorithmDialog.addEventListener('click', (event) => {
   if (event.target === elements.algorithmDialog) closeAlgorithmDialog();
@@ -183,17 +191,16 @@ for (const input of [
 }
 
 initMap();
-renderConfigInputs();
 render();
 loadAlgorithmSource();
 
 async function loadAlgorithmSource() {
   try {
-    const response = await fetch('./src/targetProduct.mjs', { cache: 'no-store' });
+    const response = await fetch('./src/sixLayerTrackProduct.mjs', { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     state.algorithmSourceText = await response.text();
   } catch (error) {
-    state.algorithmSourceText = `无法读取 targetProduct.mjs: ${error.message}`;
+    state.algorithmSourceText = `无法读取 sixLayerTrackProduct.mjs: ${error.message}`;
   }
   renderCleaningAlgorithm();
   renderAlgorithmDialog();
@@ -237,7 +244,7 @@ async function importFiles(files, fromDirectory) {
 
 async function readEvidenceFile(file, index) {
   const filePath = file.webkitRelativePath || file.name;
-  const result = await readEvidenceFileInWorker(file, filePath, state.cleaningConfig);
+  const result = await readEvidenceFileInWorker(file, filePath, FIXED_CLEANING_CONFIG);
   return finalizeDataset({
     ...result,
     sourceFile: file
@@ -275,7 +282,7 @@ async function readEvidenceFileInWorker(file, filePath, config) {
 async function readEvidenceFileOnMainThread(file, filePath, config) {
   const text = await file.text();
   const model = parseEvidenceJsonl(text, filePath);
-  const targetProduct = buildTargetTrackProduct(model, { config });
+  const targetProduct = buildSixLayerTrackProduct(model, { config });
   return {
     fileName: file.name,
     filePath,
@@ -305,6 +312,9 @@ function compactTargetOutput(output) {
   return {
     selectedTotalAscentMeters: output?.selectedTotalAscentMeters ?? null,
     selectedAscentSource: output?.selectedAscentSource || 'NONE',
+    barometerTotalAscentMeters: output?.summaries?.pressure?.barometerTotalAscentMeters ?? null,
+    locationAltitudeTotalAscentMeters:
+      output?.summaries?.pressure?.locationAltitudeTotalAscentMeters ?? null,
     findings: output?.findings || []
   };
 }
@@ -314,10 +324,11 @@ function attachDatasetIndexes(dataset) {
     .map((point) => [point.rawPointId, point]));
   dataset.targetTrackPointById = new Map((dataset.targetProduct?.track || [])
     .map((point) => [point.trackPointId, point]));
-  dataset.shadowTrackPointById = new Map((dataset.targetProduct?.adaptiveShadow?.track || [])
+  dataset.shadowTrackPointById = new Map((primaryAdaptiveShadow(dataset)?.track || [])
     .map((point) => [point.trackPointId, point]));
-  dataset.shadowDifferenceByRawId = new Map((dataset.targetProduct?.adaptiveShadow?.differences || [])
-    .map((difference) => [difference.rawPointId, difference]));
+  dataset.shadowDifferencesByRawId = buildShadowDifferencesByRawId(dataset);
+  dataset.shadowDifferenceByRawId = new Map(Array.from(dataset.shadowDifferencesByRawId.entries())
+    .map(([rawPointId, differences]) => [rawPointId, differences[0]]));
   dataset.rawDecisionById = buildRawDecisionIndex(dataset.targetProduct);
   dataset.mapRender = buildMapRenderIndexes(dataset);
 }
@@ -370,8 +381,8 @@ function buildRawDecisionIndex(targetProduct) {
 function buildMapRenderIndexes(dataset) {
   const rawPoints = dataset.model?.points || [];
   const track = dataset.targetProduct?.track || [];
-  const shadowTrack = dataset.targetProduct?.adaptiveShadow?.track || [];
-  const shadowDifferenceIds = new Set((dataset.targetProduct?.adaptiveShadow?.differences || [])
+  const shadowTrack = primaryAdaptiveShadow(dataset)?.track || [];
+  const shadowDifferenceIds = new Set(adaptiveShadowDifferencesForDataset(dataset)
     .map((difference) => difference.rawPointId)
     .filter(Number.isFinite));
   return {
@@ -381,6 +392,51 @@ function buildMapRenderIndexes(dataset) {
     cleanedPointTrackPointIds: sampleIds(track, MAP_TRACK_POINT_LIMIT, 'trackPointId'),
     shadowLineTrackPointIds: sampleIds(shadowTrack, MAP_LINE_POINT_LIMIT, 'trackPointId')
   };
+}
+
+function adaptiveShadowsForDataset(dataset) {
+  const shadows = dataset?.targetProduct?.adaptiveShadows;
+  if (Array.isArray(shadows) && shadows.length > 0) return shadows;
+  return dataset?.targetProduct?.adaptiveShadow ? [dataset.targetProduct.adaptiveShadow] : [];
+}
+
+function selectedAdaptiveShadowsForDataset(dataset) {
+  const shadows = adaptiveShadowsForDataset(dataset);
+  if (state.selectedShadowIds.length === 0) return shadows;
+  const selectedIds = new Set(state.selectedShadowIds);
+  return shadows.filter((shadow) => selectedIds.has(shadow.id || 'adaptive-shadow'));
+}
+
+function primaryAdaptiveShadow(dataset) {
+  return adaptiveShadowsForDataset(dataset)[0] || null;
+}
+
+function adaptiveShadowDifferencesForDataset(dataset) {
+  return adaptiveShadowDifferencesFromShadows(selectedAdaptiveShadowsForDataset(dataset));
+}
+
+function allAdaptiveShadowDifferencesForDataset(dataset) {
+  return adaptiveShadowDifferencesFromShadows(adaptiveShadowsForDataset(dataset));
+}
+
+function adaptiveShadowDifferencesFromShadows(shadows) {
+  return shadows.flatMap((shadow) =>
+    (shadow.differences || []).map((difference) => ({
+      ...difference,
+      shadowId: shadow.id || 'adaptive-shadow',
+      shadowLabel: shadow.label || '自适应影子'
+    })));
+}
+
+function buildShadowDifferencesByRawId(dataset) {
+  const differencesByRawId = new Map();
+  for (const difference of allAdaptiveShadowDifferencesForDataset(dataset)) {
+    if (!Number.isFinite(difference.rawPointId)) continue;
+    const current = differencesByRawId.get(difference.rawPointId) || [];
+    current.push(difference);
+    differencesByRawId.set(difference.rawPointId, current);
+  }
+  return differencesByRawId;
 }
 
 function sampleIds(points, limit, idField, extraIds = new Set()) {
@@ -411,92 +467,20 @@ function clearAll() {
   state.datasets = [];
   state.selectedDatasetId = null;
   state.selectedPoint = null;
+  state.scenarioReviewRangeText = '';
+  state.selectedShadowIds = [];
   elements.folderInput.value = '';
   elements.fileInput.value = '';
+  elements.scenarioRangeInput.value = '';
   setImportText('等待导入 evidence.jsonl');
   if (state.popup) state.popup.remove();
   render();
   renderMap();
 }
 
-async function applyCleaningConfig() {
-  state.cleaningConfig = normalizeTargetProductConfig(readConfigInputs());
-  renderConfigInputs();
-  if (state.datasets.length === 0) {
-    setImportText('已应用自定义清洗参数，等待导入 evidence.jsonl');
-    render();
-    return;
-  }
-  setLoading(true, `已应用自定义清洗参数，准备重算 ${state.datasets.length} 个文件`);
-  try {
-    await recomputeTargetProducts();
-    setImportText(`已应用自定义清洗参数，重新计算 ${state.datasets.length} 个文件`);
-    render();
-  } finally {
-    setLoading(false);
-  }
-}
-
-async function resetCleaningConfig() {
-  state.cleaningConfig = normalizeTargetProductConfig(DEFAULT_TARGET_PRODUCT_CONFIG);
-  renderConfigInputs();
-  if (state.datasets.length === 0) {
-    setImportText('已恢复默认清洗参数，等待导入 evidence.jsonl');
-    render();
-    return;
-  }
-  setLoading(true, `已恢复默认清洗参数，准备重算 ${state.datasets.length} 个文件`);
-  try {
-    await recomputeTargetProducts();
-    setImportText(`已恢复默认清洗参数，重新计算 ${state.datasets.length} 个文件`);
-    render();
-  } finally {
-    setLoading(false);
-  }
-}
-
-function readConfigInputs() {
-  return Object.fromEntries(Object.entries(elements.configInputs)
-    .map(([key, input]) => [key, input.type === 'checkbox' ? input.checked : Number(input.value)]));
-}
-
-function renderConfigInputs() {
-  for (const [key, input] of Object.entries(elements.configInputs)) {
-    if (input.type === 'checkbox') {
-      input.checked = state.cleaningConfig[key] === true;
-    } else {
-      input.value = state.cleaningConfig[key];
-    }
-  }
-  elements.configStateText.textContent = isDefaultCleaningConfig() ? '默认' : '自定义';
-  renderCleaningAlgorithm();
-}
-
-function isDefaultCleaningConfig() {
-  return Object.entries(DEFAULT_TARGET_PRODUCT_CONFIG)
-    .every(([key, value]) => state.cleaningConfig[key] === value);
-}
-
-async function recomputeTargetProducts() {
-  for (let index = 0; index < state.datasets.length; index++) {
-    const dataset = state.datasets[index];
-    setLoading(true, `正在重算 ${index + 1}/${state.datasets.length}: ${dataset.filePath}`);
-    await nextFrame();
-    if (dataset.sourceFile) {
-      const result = await readEvidenceFileInWorker(dataset.sourceFile, dataset.filePath,
-        state.cleaningConfig);
-      Object.assign(dataset, {
-        model: result.model,
-        targetProduct: result.targetProduct,
-        targetOutput: result.targetOutput
-      });
-    } else {
-      dataset.targetProduct = buildTargetTrackProduct(dataset.model, { config: state.cleaningConfig });
-      dataset.targetOutput = compactTargetOutput(buildTargetOutput(dataset.model,
-        dataset.targetProduct));
-    }
-    attachDatasetIndexes(dataset);
-  }
+function applyScenarioRangeReview() {
+  state.scenarioReviewRangeText = elements.scenarioRangeInput.value.trim();
+  renderScenarioRangeReview();
 }
 
 function setImportText(text) {
@@ -510,9 +494,7 @@ function setLoading(loading, text = null) {
     elements.folderInput,
     elements.fileInput,
     elements.fitBoundsButton,
-    elements.clearButton,
-    elements.applyConfigButton,
-    elements.resetConfigButton
+    elements.clearButton
   ]) {
     element.disabled = loading;
   }
@@ -535,10 +517,218 @@ function nextFrame() {
 }
 
 function render() {
+  renderShadowFilterOptions();
+  renderScenarioRangeReview();
   renderPointDetails();
   renderCleaningAlgorithm();
   renderAlgorithmDialog();
   renderMap();
+}
+
+function renderShadowFilterOptions() {
+  const options = shadowFilterOptions();
+  const candidateIds = new Set(options.map((option) => option.id));
+  state.selectedShadowIds = state.selectedShadowIds.filter((id) => candidateIds.has(id));
+  elements.shadowFilterSummary.textContent = shadowFilterSummaryText(options);
+  elements.shadowFilterOptions.innerHTML = [
+    shadowFilterOptionMarkup('all', '全部候选', state.selectedShadowIds.length === 0),
+    ...options.map((option) =>
+      shadowFilterOptionMarkup(option.id, option.label, state.selectedShadowIds.includes(option.id)))
+  ].join('');
+}
+
+function shadowFilterOptionMarkup(id, label, checked) {
+  return `
+    <label class="shadow-filter-option">
+      <input
+        type="checkbox"
+        value="${escapeHtml(id)}"
+        ${checked ? 'checked' : ''}
+      />
+      <span>${escapeHtml(label)}</span>
+    </label>
+  `;
+}
+
+function handleShadowFilterChange(event) {
+  const input = event.target.closest('input[type="checkbox"]');
+  if (!input) return;
+  if (input.value === 'all') {
+    state.selectedShadowIds = [];
+    render();
+    return;
+  }
+  state.selectedShadowIds = Array.from(elements.shadowFilterOptions
+    .querySelectorAll('input[type="checkbox"]:checked'))
+    .map((checkbox) => checkbox.value)
+    .filter((value) => value !== 'all');
+  render();
+}
+
+function shadowFilterStatusText() {
+  if (state.selectedShadowIds.length === 0) return '全部候选';
+  const labelsById = new Map(shadowFilterOptions().map((option) => [option.id, option.label]));
+  return state.selectedShadowIds
+    .map((id) => labelsById.get(id) || id)
+    .join('、');
+}
+
+function shadowFilterSummaryText(options) {
+  if (state.selectedShadowIds.length === 0) return '影子 全部';
+  if (state.selectedShadowIds.length === 1) return `影子 ${shadowFilterStatusText()}`;
+  return `影子 ${state.selectedShadowIds.length}/${options.length}`;
+}
+
+function shadowFilterOptions() {
+  const byId = new Map();
+  for (const dataset of state.datasets) {
+    for (const shadow of adaptiveShadowsForDataset(dataset)) {
+      const id = shadow.id || 'adaptive-shadow';
+      if (!byId.has(id)) {
+        byId.set(id, { id, label: shadow.label || id });
+      }
+    }
+  }
+  return Array.from(byId.values());
+}
+
+function renderScenarioRangeReview() {
+  const dataset = selectedDataset();
+  const rangeText = state.scenarioReviewRangeText;
+  elements.scenarioRangeState.textContent = rangeText || '-';
+  if (!dataset) {
+    elements.scenarioRangeReview.innerHTML =
+      '<p class="empty-note">导入 evidence.jsonl 后复核清洗点区间</p>';
+    return;
+  }
+  if (!rangeText) {
+    elements.scenarioRangeReview.innerHTML =
+      '<p class="empty-note">清洗点范围格式示例：1836-1919</p>';
+    return;
+  }
+  const parsed = parseScenarioRangeText(rangeText);
+  if (!parsed) {
+    elements.scenarioRangeReview.innerHTML =
+      '<p class="empty-note">无法识别清洗点范围</p>';
+    return;
+  }
+  const review = reviewTrackPointScenarioCoverage(dataset.targetProduct,
+    parsed.startTrackPointId, parsed.endTrackPointId);
+  elements.scenarioRangeState.textContent =
+    `#${review.requestedTrackPointRange.startTrackPointId}-${review.requestedTrackPointRange.endTrackPointId}`;
+  elements.scenarioRangeReview.innerHTML = scenarioRangeReviewMarkup(review);
+}
+
+function parseScenarioRangeText(text) {
+  const normalized = String(text || '').replace(/#/g, '').trim();
+  if (!normalized) return null;
+  const rangeMatch = normalized.match(/^(\d+)\s*(?:-|~|,|，|至|到|\s+)\s*(\d+)$/);
+  if (rangeMatch) {
+    return {
+      startTrackPointId: Number(rangeMatch[1]),
+      endTrackPointId: Number(rangeMatch[2])
+    };
+  }
+  const singleMatch = normalized.match(/^(\d+)$/);
+  if (singleMatch) {
+    const trackPointId = Number(singleMatch[1]);
+    return { startTrackPointId: trackPointId, endTrackPointId: trackPointId };
+  }
+  return null;
+}
+
+function scenarioRangeReviewMarkup(review) {
+  if (!review.valid) {
+    return '<p class="empty-note">清洗点范围无效</p>';
+  }
+  const overviewRows = [
+    `清洗点 ${review.requestedTrackPointRange.startTrackPointId}-${review.requestedTrackPointRange.endTrackPointId}`,
+    `点数 ${review.trackPointCount}`,
+    formatScenarioRawRange(review.rawRange),
+    `主解释 ${formatScenarioNames(review.primaryScenarios)}`,
+    `关联情景 ${formatScenarioNames(review.contextScenarios)}`
+  ];
+  const hitMarkup = review.scenarioCoverage.length > 0
+    ? scenarioHitListMarkup(review.scenarioCoverage, true)
+    : '<p class="empty-note">该清洗点区间没有命中稳定情景</p>';
+  return [
+    summaryBlock('区间概览', overviewRows),
+    `<section class="summary-block scenario-hit-block">
+      <h3>命中情景</h3>
+      ${hitMarkup}
+    </section>`
+  ].join('');
+}
+
+function scenarioHitListMarkup(items, useMatchedRange = false, limit = Infinity) {
+  return `
+    <div class="scenario-hit-list">
+      ${items.slice(0, limit).map((item) => scenarioHitMarkup(item, useMatchedRange)).join('')}
+    </div>
+  `;
+}
+
+function scenarioHitMarkup(item, useMatchedRange) {
+  const trackRange = useMatchedRange
+    ? formatMatchedScenarioTrackCoverage(item)
+    : formatScenarioTrackCoverage(item);
+  const action = item.actionLabel || item.action || '-';
+  const rebuild = item.localRebuildLabel || item.localRebuild || '-';
+  return `
+    <article class="scenario-hit">
+      <div class="scenario-hit-title">
+        <strong>${escapeHtml(item.scenarioLabel || item.scenario || '-')}</strong>
+        <span>${escapeHtml(`#${item.scenarioId} ${item.scenario || ''}`)}</span>
+      </div>
+      <div class="scenario-hit-meta">
+        <span>${escapeHtml(trackRange)}</span>
+        <span>${escapeHtml(formatScenarioRawRange(item.rawRange))}</span>
+        <span>主解释点 ${escapeHtml(String(item.primaryTrackPointCount || 0))}</span>
+        <span>关联点 ${escapeHtml(String(item.contextTrackPointCount || 0))}</span>
+      </div>
+      <p>${escapeHtml(item.summary || '-')}</p>
+      <p class="scenario-hit-action">${escapeHtml(action)}；${escapeHtml(rebuild)}</p>
+    </article>
+  `;
+}
+
+function formatScenarioNames(names) {
+  if (!Array.isArray(names) || names.length === 0) return '-';
+  return names.map(scenarioNameLabel).join('、');
+}
+
+function scenarioNameLabel(name) {
+  const labels = {
+    weak_recovery_endpoint: '弱信号端点保留',
+    same_road_round_trip: '同路往返交织',
+    closed_loop_round_trip: '闭合往返/回环',
+    round_trip_line: '往返线形',
+    enclosed_gap_cluster: '山洞/室内类遮挡聚集',
+    stationary_session_collapse: '整段静止压缩',
+    stationary_drift_collapse: '停留漂移压缩',
+    rest_photo_micro_move: '拍照/休息微移动',
+    gap_recovery_boundary: 'GAP 恢复边界',
+    transport_contamination: '交通工具混入'
+  };
+  return labels[name] || name || '-';
+}
+
+function formatMatchedScenarioTrackCoverage(item) {
+  if (item?.continuousCoverage === true
+      && Number.isFinite(item.matchedTrackPointRange?.startTrackPointId)
+      && Number.isFinite(item.matchedTrackPointRange?.endTrackPointId)) {
+    return `清洗#${item.matchedTrackPointRange.startTrackPointId}-${item.matchedTrackPointRange.endTrackPointId}`;
+  }
+  const ids = item?.matchedTrackPointIds || [];
+  if (ids.length > 0) {
+    return `清洗点 ${formatIdPreview(ids)}`;
+  }
+  return '清洗#-';
+}
+
+function formatIdPreview(ids, limit = 6) {
+  const visible = ids.slice(0, limit).join(', ');
+  return ids.length > limit ? `${visible} ... +${ids.length - limit}` : visible;
 }
 
 function summaryBlock(title, rows) {
@@ -555,15 +745,11 @@ function renderCleaningAlgorithm() {
 }
 
 function algorithmBlock() {
-  const config = state.cleaningConfig;
+  const config = FIXED_CLEANING_CONFIG;
   const dataset = selectedDataset();
   return `
     <section class="summary-block algorithm-block">
       <h3>清洗规则</h3>
-      <div class="algorithm-section">
-        <b>批量影子复核</b>
-        ${adaptiveShadowBatchSummaryRows(state.datasets).map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
-      </div>
       <div class="algorithm-section">
         <b>清洗结果</b>
         ${targetProductSummaryRows(dataset).map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
@@ -573,15 +759,15 @@ function algorithmBlock() {
         ${sessionProfileSummaryRows(dataset).map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
       </div>
       <div class="algorithm-section">
-        <b>自适应影子</b>
-        ${adaptiveShadowSummaryRows(dataset).map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
-        ${adaptiveShadowNavigatorMarkup(dataset)}
+        <b>情景覆盖</b>
+        ${scenarioCoverageSummaryRows(dataset).map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
       </div>
       <div class="algorithm-section">
-        <b>当前参数</b>
+        <b>固定策略口径</b>
+        <span>Web UI 不提供手动参数覆盖；导入后始终使用六层算法默认配置复算</span>
         <span>弱点云 ${formatPlainNumber(config.weakCloudAccuracyMeters)}m；GAP ${formatPlainNumber(config.gapSeconds)}s；静止基础距离 ${formatPlainNumber(config.stationaryDistanceMeters)}m</span>
-        <span>accuracy 上限 ${formatPlainNumber(config.maxIntakeAccuracyMeters)}m；气压阻止静止整段压缩 ${config.barometerCleaningEnabled ? '开启' : '关闭'}</span>
-        <span>低质量运动重建进入轨迹 ${config.lowQualityMotionRebuildEnabled ? '开启' : '关闭'}</span>
+        <span>accuracy 上限 ${formatPlainNumber(config.maxIntakeAccuracyMeters)}m；低精度连续救回 <= ${formatPlainNumber(config.lowAccuracyRescueMaxAccuracyMeters)}m</span>
+        <span>交通风险 ${formatPlainNumber(config.transportSpeedMetersPerSecond)}m/s + ${formatPlainNumber(config.transportMinDistanceMeters)}m；只做诊断，不进徒步真值</span>
       </div>
       <button id="openAlgorithmDialogButton" class="secondary-button" type="button">查看完整规则说明</button>
     </section>
@@ -591,15 +777,13 @@ function algorithmBlock() {
 function targetProductSummaryRows(dataset) {
   if (!dataset) return ['导入 evidence.jsonl 后显示里程、运动里程、疑似交通里程和运动耗时'];
   const stats = dataset.targetProduct.stats;
-  const ascent = displayAscent(dataset);
   const rows = [
     `文件 ${dataset.fileName}`,
     `里程 ${formatMeters(stats.routeDistanceMeters)}`,
     `运动里程 ${formatMeters(stats.totalDistanceMeters)}`,
     `疑似交通里程 ${formatMeters(stats.suspectedDistanceMeters)}`,
-    `累计爬升 ${formatAscent(ascent.totalMeters)}（${formatAscentSource(ascent.source)}）`,
-    `运动耗时 ${formatDuration(stats.movingTimeSeconds)}`,
-    ...lowQualityMotionSummaryRows(dataset)
+    ...ascentSummaryRows(dataset),
+    `运动耗时 ${formatDuration(stats.movingTimeSeconds)}`
   ];
   if ((dataset.model.points?.length || 0) > MAP_RAW_POINT_LIMIT) {
     rows.push(`地图 raw 点抽样显示 ${dataset.mapRender?.rawPointIds?.length || 0} / ${dataset.model.points.length}；清洗算法仍使用全量 evidence`);
@@ -634,8 +818,8 @@ function lowQualityMotionSummaryRows(dataset) {
   }
   if (rawIntervalCount > 0) {
     const rawCandidate = rebuild.rawIntervalCandidates?.[0];
-    rows.push(`广义 raw 区间示例：raw#${candidateRawRange(rawCandidate)}；时长 ${formatDuration(rawCandidate.summary?.durationSeconds)}；active ${formatPercent(rawCandidate.summary?.activeRatio)}；弱/拒绝/未解释 ${rawCandidate.decisionMix?.weakCount || 0}/${rawCandidate.decisionMix?.rejectedCount || 0}/${rawCandidate.decisionMix?.unexplainedCount || 0}`);
-    rows.push('广义 raw 区间只用于发现真实连续运动线索，当前不会被“进入轨迹”开关直接写入成品轨迹');
+    rows.push(`广义 raw 区间示例：raw#${candidateRawRange(rawCandidate)}；时长 ${formatDuration(rawCandidate.summary?.durationSeconds)}；active ${formatPercent(rawCandidate.summary?.activeRatio)}；weak/reject 占比 ${formatPercent(rawCandidate.decisionMix?.lowQualityRatio)}；弱/拒绝/未解释 ${rawCandidate.decisionMix?.weakCount || 0}/${rawCandidate.decisionMix?.rejectedCount || 0}/${rawCandidate.decisionMix?.unexplainedCount || 0}`);
+    rows.push('广义 raw 区间只用于复核可入轨候选周边的连续运动线索，当前不会被“进入轨迹”开关直接写入成品轨迹');
   }
   return rows;
 }
@@ -647,6 +831,8 @@ function lowQualityNoCandidateReason(rebuild) {
     ['交通风险边界阻断', skipped.transportBoundary],
     ['raw 区间不包含源点', skipped.sourceOutsideInterval],
     ['组合条件不足', skipped.criteriaRejected],
+    ['weak/reject 连续占比不足', skipped.lowQualityMixRejected],
+    ['清洗轨迹已表达', skipped.trackAlreadyExpressed],
     ['抽稀结构点不足', skipped.structureTooShort]
   ].filter(([, count]) => count > 0)
     .map(([label, count]) => `${label} ${count}`);
@@ -683,29 +869,100 @@ function sessionProfileSummaryRows(dataset) {
   ];
 }
 
-function adaptiveShadowSummaryRows(dataset) {
-  const shadow = dataset?.targetProduct?.adaptiveShadow;
-  if (!shadow) return ['导入 evidence.jsonl 后显示固定阈值和自适应阈值的旁路对比'];
-  const rows = [
-    '读法：影子结果只做旁路对比，不改变当前成品轨迹',
-    ...adaptiveShadowAssessmentRows(shadow.assessment),
-    ...adaptiveShadowImpactRows(shadow.impact),
-    `阈值变化：弱点云 ${formatThresholdMeters(shadow.thresholds.fixed.weakCloudAccuracyMeters)} -> ${formatThresholdMeters(shadow.thresholds.adaptive.weakCloudAccuracyMeters)}；GAP ${formatThresholdDuration(shadow.thresholds.fixed.gapSeconds)} -> ${formatThresholdDuration(shadow.thresholds.adaptive.gapSeconds)}`,
-    `阈值变化：静止基础距离 ${formatThresholdMeters(shadow.thresholds.fixed.stationaryDistanceMeters)} -> ${formatThresholdMeters(shadow.thresholds.adaptive.stationaryDistanceMeters)}；交通速度 ${formatThresholdSpeed(shadow.thresholds.fixed.transportSpeedMetersPerSecond)} -> ${formatThresholdSpeed(shadow.thresholds.adaptive.transportSpeedMetersPerSecond)}`,
-    `判点分歧：${shadow.summary.changedCount} / ${shadow.summary.rawPointCount}；可能救回 ${shadow.summary.promotedToTrustedCount}，可能降级 ${shadow.summary.demotedFromTrustedCount}，原因变化 ${shadow.summary.reasonChangedCount}`
-  ];
-  for (const difference of (shadow.differences || []).slice(0, 3)) {
-    rows.push(`例：raw#${difference.rawPointId} ${shadowDecisionLabel(difference.fixed)} -> ${shadowDecisionLabel(difference.adaptive)}`);
+function scenarioCoverageSummaryRows(dataset) {
+  const coverage = dataset?.targetProduct?.scenarioCoverage || [];
+  if (coverage.length === 0) {
+    return ['导入 evidence.jsonl 后显示每个情景覆盖的清洗点区间和 raw 区间'];
   }
-  if (shadow.summary.truncated) {
-    rows.push(`仅显示前 ${shadow.summary.reportedDifferenceCount} 个分歧`);
+  const scenarioNames = [...new Set(coverage.map((item) => item.scenario))];
+  const rows = [
+    `情景覆盖 ${coverage.length} 段；类型 ${formatScenarioNames(scenarioNames)}`
+  ];
+  for (const item of coverage.slice(0, 8)) {
+    rows.push(`${item.scenarioLabel || scenarioLabel(item)}：${formatScenarioTrackCoverage(item)} / ${formatScenarioRawRange(item.rawRange)}；主解释点 ${item.primaryTrackPointCount}，关联点 ${item.contextTrackPointCount}；${item.summary || '-'}`);
+  }
+  if (coverage.length > 8) {
+    rows.push(`还有 ${coverage.length - 8} 段情景覆盖未展开，可点击对应清洗点查看关联情景`);
+  }
+  return rows;
+}
+
+function scenarioLabel(item) {
+  return `#${item.scenarioId} ${item.scenario}`;
+}
+
+function formatScenarioTrackCoverage(item) {
+  if (item?.continuousCoverage === true
+      && Number.isFinite(item.trackPointRange?.startTrackPointId)
+      && Number.isFinite(item.trackPointRange?.endTrackPointId)) {
+    return `清洗#${item.trackPointRange.startTrackPointId}-${item.trackPointRange.endTrackPointId}`;
+  }
+  const ids = item?.trackPointIds || [];
+  if (ids.length > 0) {
+    const visible = ids.slice(0, 6).join(', ');
+    const suffix = ids.length > 6 ? ` ... +${ids.length - 6}` : '';
+    return `清洗点 ${visible}${suffix}`;
+  }
+  return '清洗#-';
+}
+
+function formatScenarioRawRange(range) {
+  if (Number.isFinite(range?.startRawPointId) && Number.isFinite(range?.endRawPointId)) {
+    return `Raw#${range.startRawPointId}-${range.endRawPointId}`;
+  }
+  return 'Raw#-';
+}
+
+function adaptiveShadowSummaryRows(dataset) {
+  const shadows = selectedAdaptiveShadowsForDataset(dataset);
+  if (shadows.length === 0) return ['导入 evidence.jsonl 后显示固定阈值和多套自适应阈值的旁路对比'];
+  const rows = ['读法：每套影子只做旁路对比，不改变当前成品轨迹'];
+  for (const shadow of shadows) {
+    rows.push(`${shadow.label || shadow.id || '自适应影子'}：${shadow.assessment?.label || '-'}；${shadow.assessment?.summary || '-'}`);
+    if (shadow.mode === 'diagnostic_only') {
+      rows.push(...weakSignalDirectionHoldRows(shadow));
+      rows.push(`阈值变化：${adaptiveShadowThresholdChangeText(shadow)}`);
+      rows.push(...adaptiveShadowAssessmentReasonRows(shadow.assessment));
+      continue;
+    }
+    rows.push(...adaptiveShadowImpactRows(shadow.impact));
+    rows.push(`阈值变化：${adaptiveShadowThresholdChangeText(shadow)}`);
+    rows.push(...weakSignalDirectionHoldRows(shadow));
+    rows.push(`判点分歧：${shadow.summary.changedCount} / ${shadow.summary.rawPointCount}；可能救回 ${shadow.summary.promotedToTrustedCount}，可能降级 ${shadow.summary.demotedFromTrustedCount}，原因变化 ${shadow.summary.reasonChangedCount}`);
+    for (const difference of (shadow.differences || []).slice(0, 2)) {
+      rows.push(`例：${shadow.label || shadow.id} raw#${difference.rawPointId} ${shadowDecisionLabel(difference.fixed)} -> ${shadowDecisionLabel(difference.adaptive)}`);
+    }
+    if (shadow.summary.truncated) {
+      rows.push(`${shadow.label || shadow.id} 仅显示前 ${shadow.summary.reportedDifferenceCount} 个分歧`);
+    }
+    rows.push(...adaptiveShadowAssessmentReasonRows(shadow.assessment));
+  }
+  return rows;
+}
+
+function weakSignalDirectionHoldRows(shadow) {
+  const hold = shadow?.weakSignalDirectionHold;
+  if (!hold) return [];
+  if ((hold.hintCount || 0) === 0) {
+    return [
+      `方向保持：未生成方向提示；候选段 ${hold.candidateRunCount || 0}，缺少稳定历史 ${hold.skippedNoHistoryCount || 0}`
+    ];
+  }
+  const rows = [
+    `方向保持：${hold.hintCount} 段；只给下一步主方向线索，不改轨迹、里程或判点`
+  ];
+  for (const hint of (hold.hints || []).slice(0, 2)) {
+    rows.push(`方向提示：raw#${hint.startRawPointId}-${hint.endRawPointId}；航向 ${formatHeading(hint.headingDegrees)}；置信 ${directionHoldConfidenceLabel(hint.confidence)}；状态 ${directionHoldStatusLabel(hint.status)}`);
+  }
+  if ((hold.hints || []).length > 2) {
+    rows.push(`还有 ${hold.hints.length - 2} 段方向提示未展开`);
   }
   return rows;
 }
 
 function adaptiveShadowNavigatorMarkup(dataset) {
   if (!dataset) return '';
-  const differences = dataset.targetProduct.adaptiveShadow?.differences || [];
+  const differences = adaptiveShadowDifferencesForDataset(dataset);
   if (differences.length === 0) {
     return '<span>当前选中文件没有影子分歧点</span>';
   }
@@ -718,6 +975,7 @@ function adaptiveShadowNavigatorMarkup(dataset) {
       data-shadow-change-type="${escapeHtml(difference.changeType)}"
     >
       raw#${escapeHtml(String(difference.rawPointId))}
+      ${escapeHtml(difference.shadowLabel || '')}
       ${escapeHtml(adaptiveShadowChangeLabel(difference.changeType))}
       ${escapeHtml(shadowDecisionLabel(difference.fixed))} -> ${escapeHtml(shadowDecisionLabel(difference.adaptive))}
     </button>
@@ -731,10 +989,16 @@ function adaptiveShadowNavigatorMarkup(dataset) {
 function adaptiveShadowAssessmentRows(assessment) {
   if (!assessment) return [];
   const rows = [`启用前判断：${assessment.label}；${assessment.summary}`];
-  for (const reason of (assessment.reasons || []).slice(0, 3)) {
+  rows.push(...adaptiveShadowAssessmentReasonRows(assessment));
+  return rows;
+}
+
+function adaptiveShadowAssessmentReasonRows(assessment) {
+  const rows = [];
+  for (const reason of (assessment?.reasons || []).slice(0, 3)) {
     rows.push(`复核原因：${reason.message}`);
   }
-  if ((assessment.reasons || []).length > 3) {
+  if ((assessment?.reasons || []).length > 3) {
     rows.push(`还有 ${assessment.reasons.length - 3} 个复核原因未展开`);
   }
   return rows;
@@ -742,16 +1006,19 @@ function adaptiveShadowAssessmentRows(assessment) {
 
 function adaptiveShadowBatchSummaryRows(datasets) {
   if (!Array.isArray(datasets) || datasets.length === 0) {
-    return ['导入多个 evidence.jsonl 后显示影子一致、继续观察、需要复核和暂不适合启用的文件分布'];
+    return ['导入多个 evidence.jsonl 后显示多套影子候选的一致、继续观察、需要复核和暂不适合启用分布'];
   }
   const batch = adaptiveShadowBatchSummary(datasets);
   const rows = [
-    `文件分布：影子一致 ${batch.levelCounts.same}；继续观察 ${batch.levelCounts.observe}；需要复核 ${batch.levelCounts.review}；暂不适合 ${batch.levelCounts.blocked}`,
+    `候选分布：影子一致 ${batch.levelCounts.same}；继续观察 ${batch.levelCounts.observe}；需要复核 ${batch.levelCounts.review}；暂不适合 ${batch.levelCounts.blocked}`,
     `总分歧：${batch.changedCount} / ${batch.rawPointCount}；可能救回 ${batch.promotedToTrustedCount}，可能降级 ${batch.demotedFromTrustedCount}，原因变化 ${batch.reasonChangedCount}`,
     `累计影响：可信点 ${formatSignedCount(batch.delta.trustedPointCount)}；地图连线 ${formatSignedMeters(batch.delta.routeDistanceMeters)}；运动里程 ${formatSignedMeters(batch.delta.totalDistanceMeters)}；断点 ${formatSignedCount(batch.delta.gapCount)}；疑似交通点 ${formatSignedCount(batch.delta.transportCount)}`
   ];
-  const reviewTargets = batch.files
-    .filter((file) => file.level !== 'same' && file.level !== 'unknown')
+  for (const candidate of batch.candidates) {
+    rows.push(`候选方向：${candidate.label}；文件 ${candidate.fileCount}；一致/观察/复核/暂缓 ${candidate.levelCounts.same}/${candidate.levelCounts.observe}/${candidate.levelCounts.review}/${candidate.levelCounts.blocked}；分歧 ${candidate.changedCount}/${candidate.rawPointCount}；降级 ${candidate.demotedFromTrustedCount}；运动里程 ${formatSignedMeters(candidate.delta.totalDistanceMeters)}；断点 ${formatSignedCount(candidate.delta.gapCount)}`);
+  }
+  const reviewTargets = batch.items
+    .filter((item) => item.level !== 'same' && item.level !== 'unknown')
     .sort((left, right) =>
       adaptiveShadowLevelPriority(right.level) - adaptiveShadowLevelPriority(left.level)
       || right.changedCount - left.changedCount);
@@ -759,11 +1026,11 @@ function adaptiveShadowBatchSummaryRows(datasets) {
     rows.push('当前批量没有发现需要复核的自适应差异');
     return rows;
   }
-  for (const file of reviewTargets.slice(0, 3)) {
-    rows.push(`复核文件：${file.fileName}；${file.label}；分歧 ${file.changedCount}；运动里程 ${formatSignedMeters(file.delta.totalDistanceMeters)}；断点 ${formatSignedCount(file.delta.gapCount)}`);
+  for (const item of reviewTargets.slice(0, 3)) {
+    rows.push(`复核候选：${item.fileName} / ${item.shadowLabel}；${item.label}；分歧 ${item.changedCount}；运动里程 ${formatSignedMeters(item.delta.totalDistanceMeters)}；断点 ${formatSignedCount(item.delta.gapCount)}`);
   }
   if (reviewTargets.length > 3) {
-    rows.push(`还有 ${reviewTargets.length - 3} 个有差异文件未展开`);
+    rows.push(`还有 ${reviewTargets.length - 3} 个有差异候选未展开`);
   }
   return rows;
 }
@@ -777,7 +1044,8 @@ function adaptiveShadowBatchSummary(datasets) {
     gapCount: 0,
     transportCount: 0
   };
-  const files = [];
+  const items = [];
+  const candidatesById = new Map();
   let rawPointCount = 0;
   let changedCount = 0;
   let promotedToTrustedCount = 0;
@@ -785,27 +1053,35 @@ function adaptiveShadowBatchSummary(datasets) {
   let reasonChangedCount = 0;
 
   for (const dataset of datasets) {
-    const shadow = dataset?.targetProduct?.adaptiveShadow;
-    const level = knownAdaptiveShadowLevel(shadow?.assessment?.level);
-    levelCounts[level]++;
-    rawPointCount += numberOrZero(shadow?.summary?.rawPointCount);
-    changedCount += numberOrZero(shadow?.summary?.changedCount);
-    promotedToTrustedCount += numberOrZero(shadow?.summary?.promotedToTrustedCount);
-    demotedFromTrustedCount += numberOrZero(shadow?.summary?.demotedFromTrustedCount);
-    reasonChangedCount += numberOrZero(shadow?.summary?.reasonChangedCount);
-    for (const key of Object.keys(delta)) {
-      delta[key] += numberOrZero(shadow?.impact?.delta?.[key]);
+    const shadows = selectedAdaptiveShadowsForDataset(dataset);
+    if (shadows.length === 0) {
+      levelCounts.unknown++;
+      continue;
     }
-    files.push({
-      fileName: dataset?.fileName || dataset?.filePath || '-',
-      level,
-      label: shadow?.assessment?.label || '无影子判断',
-      changedCount: numberOrZero(shadow?.summary?.changedCount),
-      delta: {
-        totalDistanceMeters: numberOrZero(shadow?.impact?.delta?.totalDistanceMeters),
-        gapCount: numberOrZero(shadow?.impact?.delta?.gapCount)
+    for (const shadow of shadows) {
+      const level = knownAdaptiveShadowLevel(shadow?.assessment?.level);
+      levelCounts[level]++;
+      rawPointCount += numberOrZero(shadow?.summary?.rawPointCount);
+      changedCount += numberOrZero(shadow?.summary?.changedCount);
+      promotedToTrustedCount += numberOrZero(shadow?.summary?.promotedToTrustedCount);
+      demotedFromTrustedCount += numberOrZero(shadow?.summary?.demotedFromTrustedCount);
+      reasonChangedCount += numberOrZero(shadow?.summary?.reasonChangedCount);
+      for (const key of Object.keys(delta)) {
+        delta[key] += numberOrZero(shadow?.impact?.delta?.[key]);
       }
-    });
+      accumulateAdaptiveShadowCandidateSummary(candidatesById, shadow, level);
+      items.push({
+        fileName: dataset?.fileName || dataset?.filePath || '-',
+        shadowLabel: shadow?.label || shadow?.id || '自适应影子',
+        level,
+        label: shadow?.assessment?.label || '无影子判断',
+        changedCount: numberOrZero(shadow?.summary?.changedCount),
+        delta: {
+          totalDistanceMeters: numberOrZero(shadow?.impact?.delta?.totalDistanceMeters),
+          gapCount: numberOrZero(shadow?.impact?.delta?.gapCount)
+        }
+      });
+    }
   }
 
   return {
@@ -816,8 +1092,44 @@ function adaptiveShadowBatchSummary(datasets) {
     demotedFromTrustedCount,
     reasonChangedCount,
     delta,
-    files
+    candidates: Array.from(candidatesById.values()),
+    items
   };
+}
+
+function accumulateAdaptiveShadowCandidateSummary(candidatesById, shadow, level) {
+  const id = shadow?.id || 'adaptive-shadow';
+  if (!candidatesById.has(id)) {
+    candidatesById.set(id, {
+      id,
+      label: shadow?.label || id,
+      fileCount: 0,
+      levelCounts: { same: 0, observe: 0, review: 0, blocked: 0, unknown: 0 },
+      delta: {
+        routeDistanceMeters: 0,
+        totalDistanceMeters: 0,
+        trustedPointCount: 0,
+        gapCount: 0,
+        transportCount: 0
+      },
+      rawPointCount: 0,
+      changedCount: 0,
+      promotedToTrustedCount: 0,
+      demotedFromTrustedCount: 0,
+      reasonChangedCount: 0
+    });
+  }
+  const summary = candidatesById.get(id);
+  summary.fileCount++;
+  summary.levelCounts[level]++;
+  summary.rawPointCount += numberOrZero(shadow?.summary?.rawPointCount);
+  summary.changedCount += numberOrZero(shadow?.summary?.changedCount);
+  summary.promotedToTrustedCount += numberOrZero(shadow?.summary?.promotedToTrustedCount);
+  summary.demotedFromTrustedCount += numberOrZero(shadow?.summary?.demotedFromTrustedCount);
+  summary.reasonChangedCount += numberOrZero(shadow?.summary?.reasonChangedCount);
+  for (const key of Object.keys(summary.delta)) {
+    summary.delta[key] += numberOrZero(shadow?.impact?.delta?.[key]);
+  }
 }
 
 function knownAdaptiveShadowLevel(level) {
@@ -845,22 +1157,58 @@ function adaptiveShadowImpactRows(impact) {
   ];
 }
 
+function adaptiveShadowThresholdChangeText(shadow) {
+  const fixed = shadow?.thresholds?.fixed || {};
+  const adaptive = shadow?.thresholds?.adaptive || {};
+  const fields = shadow?.changedFields || [];
+  const labels = {
+    weakCloudAccuracyMeters: '弱点云',
+    gapSeconds: 'GAP',
+    stationaryDistanceMeters: '静止基础距离',
+    transportSpeedMetersPerSecond: '交通速度',
+    transportMinDistanceMeters: '交通最小距离',
+    continuityRescueMaxSpeedMetersPerSecond: '连续救回速度',
+    lowAccuracyRescueMaxAccuracyMeters: '低精度救回 accuracy',
+    lowAccuracyRescueMinDistanceMeters: '低精度救回最小距离',
+    weakSignalDirectionHoldEnabled: '弱信号方向保持'
+  };
+  const formatters = {
+    weakCloudAccuracyMeters: formatThresholdMeters,
+    gapSeconds: formatThresholdDuration,
+    stationaryDistanceMeters: formatThresholdMeters,
+    transportSpeedMetersPerSecond: formatThresholdSpeed,
+    transportMinDistanceMeters: formatThresholdMeters,
+    continuityRescueMaxSpeedMetersPerSecond: formatThresholdSpeed,
+    lowAccuracyRescueMaxAccuracyMeters: formatThresholdMeters,
+    lowAccuracyRescueMinDistanceMeters: formatThresholdMeters,
+    weakSignalDirectionHoldEnabled: formatThresholdToggle
+  };
+  return fields.map((field) => {
+    const formatter = formatters[field] || formatPlainNumber;
+    return `${labels[field] || field} ${formatter(fixed[field])} -> ${formatter(adaptive[field])}`;
+  }).join('；') || '无阈值变化';
+}
+
+function formatThresholdToggle(value) {
+  return value ? '开启' : '关闭';
+}
+
 function shadowDecisionLabel(decision) {
   if (!decision) return 'missing';
   return `${decision.result}/${decision.reason}`;
 }
 
 function adaptiveShadowRowsForRawPoint(dataset, rawPointId) {
-  const difference = adaptiveShadowDifference(dataset, rawPointId);
-  if (!difference) {
+  const differences = adaptiveShadowDifferences(dataset, rawPointId);
+  if (differences.length === 0) {
     return ['该 raw 点固定阈值和自适应影子判断一致，或未进入影子对比样本'];
   }
   return [
-    `变化 ${adaptiveShadowChangeLabel(difference.changeType)}`,
-    `固定阈值 ${shadowDecisionLabel(difference.fixed)}`,
-    `自适应影子 ${shadowDecisionLabel(difference.adaptive)}`,
+    ...differences.slice(0, 5).map((difference) =>
+      `${difference.shadowLabel || '自适应影子'} ${adaptiveShadowChangeLabel(difference.changeType)}：固定 ${shadowDecisionLabel(difference.fixed)} -> 影子 ${shadowDecisionLabel(difference.adaptive)}`),
+    differences.length > 5 ? `还有 ${differences.length - 5} 套候选分歧未展开` : null,
     '说明 影子结果只做旁路对比，不改变当前成品轨迹'
-  ];
+  ].filter(Boolean);
 }
 
 function adaptiveShadowRowsForCleanedPoint(dataset, point) {
@@ -869,15 +1217,14 @@ function adaptiveShadowRowsForCleanedPoint(dataset, point) {
     ...(point.contributingRawPointIds || [])
   ].filter((value, index, values) => Number.isFinite(value) && values.indexOf(value) === index);
   const differences = rawPointIds
-    .map((rawPointId) => adaptiveShadowDifference(dataset, rawPointId))
-    .filter(Boolean);
+    .flatMap((rawPointId) => adaptiveShadowDifferences(dataset, rawPointId));
   if (differences.length === 0) {
     return ['该清洗点覆盖的 raw 点固定阈值和自适应影子判断一致，或未进入影子对比样本'];
   }
   return [
-    `相关分歧 ${differences.length} 个 raw 点`,
+    `相关候选分歧 ${differences.length} 条`,
     ...differences.slice(0, 4).map((difference) =>
-      `raw#${difference.rawPointId} ${adaptiveShadowChangeLabel(difference.changeType)}：${shadowDecisionLabel(difference.fixed)} -> ${shadowDecisionLabel(difference.adaptive)}`),
+      `${difference.shadowLabel || '自适应影子'} raw#${difference.rawPointId} ${adaptiveShadowChangeLabel(difference.changeType)}：${shadowDecisionLabel(difference.fixed)} -> ${shadowDecisionLabel(difference.adaptive)}`),
     differences.length > 4 ? '仅显示前 4 个相关分歧' : null,
     '说明 影子结果只做旁路对比，不改变当前成品轨迹'
   ].filter(Boolean);
@@ -885,7 +1232,15 @@ function adaptiveShadowRowsForCleanedPoint(dataset, point) {
 
 function adaptiveShadowDifference(dataset, rawPointId) {
   if (!Number.isFinite(rawPointId)) return null;
-  return dataset?.shadowDifferenceByRawId?.get(rawPointId) || null;
+  return adaptiveShadowDifferences(dataset, rawPointId)[0] || null;
+}
+
+function adaptiveShadowDifferences(dataset, rawPointId) {
+  if (!Number.isFinite(rawPointId)) return [];
+  const differences = dataset?.shadowDifferencesByRawId?.get(rawPointId) || [];
+  if (state.selectedShadowIds.length === 0) return differences;
+  const selectedIds = new Set(state.selectedShadowIds);
+  return differences.filter((difference) => selectedIds.has(difference.shadowId));
 }
 
 function adaptiveShadowChangeLabel(changeType) {
@@ -918,14 +1273,58 @@ function formatSignedCount(value) {
   return `${value > 0 ? '+' : ''}${formatPlainNumber(value)}`;
 }
 
-function displayAscent(dataset) {
+function formatHeading(value) {
+  return Number.isFinite(value) ? `${value.toFixed(0)}deg` : '-';
+}
+
+function directionHoldConfidenceLabel(confidence) {
+  if (confidence === 'high') return '高';
+  if (confidence === 'medium') return '中';
+  return '低';
+}
+
+function directionHoldStatusLabel(status) {
+  if (status === 'confirmed_by_exit') return '出口确认';
+  if (status === 'exit_deviates_from_held_direction') return '出口偏离';
+  if (status === 'weak_region_has_little_forward_progress') return '前进不足';
+  if (status === 'weak_region_lateral_noise_high') return '横向噪声高';
+  return '仅历史方向';
+}
+
+function adaptiveShadowColor(index) {
+  return ['#38bdf8', '#a78bfa', '#22c55e', '#f97316', '#eab308'][index % 5];
+}
+
+function adaptiveShadowColorById(id, fallbackIndex = 0) {
+  const order = shadowFilterOptions()
+    .filter((option) => option.id !== 'all')
+    .map((option) => option.id);
+  const index = order.indexOf(id);
+  return adaptiveShadowColor(index >= 0 ? index : fallbackIndex);
+}
+
+function ascentBreakdown(dataset) {
+  const stats = dataset?.targetProduct?.stats || {};
   return {
-    totalMeters: dataset.targetOutput?.selectedTotalAscentMeters
-      ?? dataset.targetProduct.stats.selectedTotalAscentMeters,
-    source: dataset.targetOutput?.selectedAscentSource
-      || dataset.targetProduct.stats.selectedAscentSource
-      || 'NONE'
+    barometer: {
+      totalMeters: stats.barometerTotalAscentMeters,
+      sampleCount: stats.barometerAscentSampleCount,
+      rejectedSampleCount: stats.barometerAscentRejectedSampleCount
+    },
+    locationAltitude: {
+      totalMeters: stats.locationAltitudeTotalAscentMeters,
+      sampleCount: stats.locationAltitudeAscentSampleCount,
+      rejectedSampleCount: stats.locationAltitudeAscentRejectedSampleCount
+    }
   };
+}
+
+function ascentSummaryRows(dataset) {
+  const ascent = ascentBreakdown(dataset);
+  return [
+    `气压累计爬升 ${formatAscent(ascent.barometer.totalMeters)}（样本 ${formatPlainNumber(ascent.barometer.sampleCount || 0)}，拒绝 ${formatPlainNumber(ascent.barometer.rejectedSampleCount || 0)}）`,
+    `Location海拔累计爬升 ${formatAscent(ascent.locationAltitude.totalMeters)}（样本 ${formatPlainNumber(ascent.locationAltitude.sampleCount || 0)}，拒绝 ${formatPlainNumber(ascent.locationAltitude.rejectedSampleCount || 0)}）`
+  ];
 }
 
 function renderAlgorithmDialog() {
@@ -935,14 +1334,15 @@ function renderAlgorithmDialog() {
 }
 
 function fullAlgorithmMarkup() {
-  const config = state.cleaningConfig;
+  const config = FIXED_CLEANING_CONFIG;
   return `
     <section class="summary-block algorithm-block">
       <div class="algorithm-section">
-        <b>当前参数</b>
+        <b>固定策略口径</b>
+        <span>Web UI 不提供手动参数覆盖；导入后始终使用六层算法默认配置复算</span>
         <span>弱点云 ${formatPlainNumber(config.weakCloudAccuracyMeters)}m；GAP ${formatPlainNumber(config.gapSeconds)}s；静止基础距离 ${formatPlainNumber(config.stationaryDistanceMeters)}m</span>
-        <span>accuracy 上限 ${formatPlainNumber(config.maxIntakeAccuracyMeters)}m；气压阻止静止整段压缩 ${config.barometerCleaningEnabled ? '开启' : '关闭'}</span>
-        <span>低质量运动重建进入轨迹 ${config.lowQualityMotionRebuildEnabled ? '开启' : '关闭'}</span>
+        <span>accuracy 上限 ${formatPlainNumber(config.maxIntakeAccuracyMeters)}m；低精度连续救回 <= ${formatPlainNumber(config.lowAccuracyRescueMaxAccuracyMeters)}m</span>
+        <span>交通风险 ${formatPlainNumber(config.transportSpeedMetersPerSecond)}m/s + ${formatPlainNumber(config.transportMinDistanceMeters)}m；只做诊断，不进徒步真值</span>
       </div>
       ${CLEANING_ALGORITHM_SECTIONS.map((section) => {
     const rows = typeof section.rows === 'function' ? section.rows(config) : section.rows;
@@ -954,7 +1354,7 @@ function fullAlgorithmMarkup() {
         `;
   }).join('')}
       <details class="algorithm-source">
-        <summary>可直接运行的清洗算法模块：acceptance-web/src/targetProduct.mjs</summary>
+        <summary>可直接运行的清洗算法模块：acceptance-web/src/sixLayerTrackProduct.mjs</summary>
         <pre><code>${escapeHtml(state.algorithmSourceText)}</code></pre>
       </details>
     </section>
@@ -985,9 +1385,9 @@ function renderPointDetails() {
 }
 
 function cleanedPointDetailsMarkup(dataset, point) {
-  const ascent = displayAscent(dataset);
-  const shadowRows = adaptiveShadowRowsForCleanedPoint(dataset, point);
-  const lowQualityRows = lowQualityRowsForCleanedPoint(dataset, point);
+  const explanationRows = explanationDetailRows(point.primaryExplanation, point.primitiveFacts);
+  const scenarioRows = scenarioContextDetailRows(point.scenarioContexts,
+    point.primaryExplanation);
   return `
     ${detailBlock('清洗点', [
       `trackPointId ${point.trackPointId}`,
@@ -1001,6 +1401,8 @@ function cleanedPointDetailsMarkup(dataset, point) {
       `distanceDelta ${formatMeters(point.distanceDeltaMeters)}`,
       `movingTimeDelta ${formatDuration(point.movingTimeDeltaSeconds)}`
     ])}
+    ${explanationRows.length > 0 ? detailBlock('主解释', explanationRows) : ''}
+    ${scenarioRows.length > 0 ? detailBlock('关联情景', scenarioRows) : ''}
     ${detailBlock('点云证据', [
       `cloudType ${point.cloudType || '-'}`,
       `cloudId ${valueOrDash(point.cloudId)}`,
@@ -1016,10 +1418,8 @@ function cleanedPointDetailsMarkup(dataset, point) {
       `里程 ${formatMeters(dataset.targetProduct.stats.routeDistanceMeters)}`,
       `运动里程 ${formatMeters(dataset.targetProduct.stats.totalDistanceMeters)}`,
       `疑似交通里程 ${formatMeters(dataset.targetProduct.stats.suspectedDistanceMeters)}`,
-      `累计爬升 ${formatAscent(ascent.totalMeters)}（${formatAscentSource(ascent.source)}）`
+      ...ascentSummaryRows(dataset)
 	    ])}
-	    ${lowQualityRows.length > 0 ? detailBlock('低质量重建反馈', lowQualityRows) : ''}
-	    ${shadowRows.length > 0 ? detailBlock('自适应影子对比', shadowRows) : ''}
 	  `;
 }
 
@@ -1027,8 +1427,10 @@ function pointDetailsMarkup(dataset, point) {
   const recomputedDecision = rawPointDecision(dataset, point);
   const decision = recomputedDecision || point.decision || {};
   const context = point.diagnosticContext || {};
-  const shadowRows = adaptiveShadowRowsForRawPoint(dataset, point.rawPointId);
-  const lowQualityRows = lowQualityRowsForRawPoint(dataset, point.rawPointId);
+  const explanationRows = explanationDetailRows(decision.primaryExplanation,
+    decision.primitiveFacts);
+  const scenarioRows = scenarioContextDetailRows(decision.scenarioContexts,
+    decision.primaryExplanation);
   return `
     ${detailBlock('raw 字段', [
       `rawPointId ${point.rawPointId}`,
@@ -1058,10 +1460,10 @@ function pointDetailsMarkup(dataset, point) {
       `cloudType ${decision.cloudType || '-'}`,
       `distanceDelta ${formatMeters(decision.distanceDeltaMeters)}`,
       `movingTimeDelta ${formatDuration(decision.movingTimeDeltaSeconds)}`
-	    ]) : ''}
-	    ${lowQualityRows.length > 0 ? detailBlock('低质量重建反馈', lowQualityRows) : ''}
-	    ${shadowRows.length > 0 ? detailBlock('自适应影子对比', shadowRows) : ''}
-	  `;
+		    ]) : ''}
+		    ${explanationRows.length > 0 ? detailBlock('主解释', explanationRows) : ''}
+		    ${scenarioRows.length > 0 ? detailBlock('关联情景', scenarioRows) : ''}
+		  `;
 }
 
 function lowQualityRowsForCleanedPoint(dataset, point) {
@@ -1107,7 +1509,7 @@ function lowQualityCandidateDetailRows(candidate, dataset) {
     `${isRawInterval ? '广义 raw 区间' : '可入轨候选'} raw#${candidateRawRange(candidate)}；结构点 ${structureIds.length > 0 ? structureIds.join(', ') : '-'}`,
     `证据：时长 ${formatDuration(candidate.summary?.durationSeconds)}；active ${formatPercent(candidate.summary?.activeRatio)}；合理步距 ${formatMeters(candidate.summary?.plausibleDistanceMeters)}；移动步数 ${valueOrDash(candidate.summary?.movingStepCount)}；bbox ${formatMeters(candidate.summary?.bboxDiagonalMeters)}`,
     candidate.decisionMix
-      ? `区间状态：可信 ${candidate.decisionMix.trustedCount}；weak ${candidate.decisionMix.weakCount}；reject ${candidate.decisionMix.rejectedCount}；未解释 ${candidate.decisionMix.unexplainedCount}`
+      ? `区间状态：可信 ${candidate.decisionMix.trustedCount}；weak ${candidate.decisionMix.weakCount}；reject ${candidate.decisionMix.rejectedCount}；weak/reject 占比 ${formatPercent(candidate.decisionMix.lowQualityRatio)}；未解释 ${candidate.decisionMix.unexplainedCount}`
       : '',
     isRawInterval
       ? '当前模式：广义 raw 区间只做复核提示，不会直接进入成品轨迹。'
@@ -1126,6 +1528,265 @@ function detailBlock(title, rows) {
   `;
 }
 
+function explanationDetailRows(explanation, primitiveFacts = []) {
+  if (!explanation) return [];
+  const rows = [];
+  if (explanation.source === 'scenario') {
+    rows.push(`场景 ${explanation.scenarioLabel || scenarioNameLabel(explanation.scenario)}`);
+    rows.push(`动作 ${explanation.actionLabel || explanation.action || '-'} / ${explanation.localRebuildLabel || explanation.localRebuild || '-'}`);
+    rows.push(`说明 ${explanation.summary || '-'}`);
+    const range = explanation.rawRange;
+    if (Number.isFinite(range?.startRawPointId) && Number.isFinite(range?.endRawPointId)) {
+      rows.push(`覆盖 Raw#${range.startRawPointId}-${range.endRawPointId}`);
+    }
+  } else {
+    rows.push(`基础事实 ${explanation.reason || '-'}`);
+    rows.push(`说明 ${explanation.summary || '-'}`);
+  }
+  if (primitiveFacts.length > 0) {
+    rows.push(`primitive ${primitiveFacts.slice(0, 8).join(', ')}`);
+  }
+  return rows;
+}
+
+function scenarioContextDetailRows(contexts = [], primaryExplanation = null) {
+  if (!Array.isArray(contexts) || contexts.length === 0) return [];
+  const primaryScenarioId = primaryExplanation?.source === 'scenario'
+    ? primaryExplanation.scenarioId
+    : null;
+  return contexts.map((context) => {
+    const marker = context.scenarioId === primaryScenarioId ? '主' : '关联';
+    const range = context.rawRange;
+    const rawRange = Number.isFinite(range?.startRawPointId)
+      && Number.isFinite(range?.endRawPointId)
+      ? `Raw#${range.startRawPointId}-${range.endRawPointId}`
+      : 'Raw#-';
+    return `${marker} ${context.scenarioLabel || scenarioNameLabel(context.scenario)} ${rawRange}；${context.summary || context.localRebuildLabel || context.localRebuild || '-'}`;
+  });
+}
+
+function buildMapStyle() {
+  setupContourDemSource();
+  const sources = {
+    googleSatellite: {
+      type: 'raster',
+      tiles: ['https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'],
+      tileSize: 256,
+      attribution: 'Imagery © Google'
+    },
+    terrainElevation: terrainDemRasterSource(),
+    terrainHillshade: terrainDemRasterSource()
+  };
+  const layers = [
+    { id: 'google-satellite', type: 'raster', source: 'googleSatellite' },
+    {
+      id: 'terrain-hillshade',
+      type: 'hillshade',
+      source: 'terrainHillshade',
+      layout: { visibility: 'visible' },
+      paint: {
+        'hillshade-exaggeration': 0.72,
+        'hillshade-shadow-color': 'rgba(0, 0, 0, 0.56)',
+        'hillshade-highlight-color': 'rgba(255, 255, 255, 0.22)',
+        'hillshade-accent-color': 'rgba(45, 212, 191, 0.12)'
+      }
+    }
+  ];
+  if (state.contoursAvailable) {
+    sources.terrainContours = terrainContourSource();
+    layers.push(...terrainContourLayers());
+  }
+  return {
+    version: 8,
+    sources,
+    layers,
+    terrain: {
+      source: 'terrainElevation',
+      exaggeration: TERRAIN_EXAGGERATION
+    }
+  };
+}
+
+function setupContourDemSource() {
+  state.contoursAvailable = false;
+  state.contourDemSource = null;
+  if (!window.mlcontour?.DemSource) return;
+  try {
+    state.contourDemSource = new window.mlcontour.DemSource({
+      url: TERRAIN_TILE_TEMPLATE,
+      encoding: 'terrarium',
+      maxzoom: TERRAIN_DEM_MAX_ZOOM,
+      cacheSize: 80,
+      worker: true,
+      timeoutMs: 12_000
+    });
+    state.contourDemSource.setupMaplibre(maplibregl);
+    state.contoursAvailable = true;
+  } catch (error) {
+    console.warn('等高线 DEM 协议初始化失败', error);
+  }
+}
+
+function terrainDemRasterSource() {
+  if (!state.contourDemSource) {
+    return { type: 'raster-dem', url: TERRAIN_TILEJSON_URL };
+  }
+  return {
+    type: 'raster-dem',
+    tiles: [state.contourDemSource.sharedDemProtocolUrl],
+    encoding: 'terrarium',
+    tileSize: TERRAIN_TILE_SIZE,
+    maxzoom: TERRAIN_DEM_MAX_ZOOM,
+    attribution: "<a href='https://mapterhorn.com/attribution'>© Mapterhorn</a>"
+  };
+}
+
+function terrainContourSource() {
+  return {
+    type: 'vector',
+    tiles: [state.contourDemSource.contourProtocolUrl({
+      thresholds: CONTOUR_THRESHOLDS_METERS,
+      elevationKey: 'ele',
+      levelKey: 'level',
+      contourLayer: 'contours',
+      overzoom: 1,
+      subsampleBelow: 512
+    })],
+    maxzoom: 15,
+    attribution: "<a href='https://mapterhorn.com/attribution'>© Mapterhorn</a>"
+  };
+}
+
+function terrainContourLayers() {
+  return [
+    {
+      id: 'terrain-contours-minor',
+      type: 'line',
+      source: 'terrainContours',
+      'source-layer': 'contours',
+      minzoom: 10,
+      filter: ['==', ['get', 'level'], 0],
+      layout: { visibility: 'visible' },
+      paint: {
+        'line-color': 'rgba(255, 244, 194, 0.68)',
+        'line-width': [
+          'interpolate', ['linear'], ['zoom'],
+          10, 0.45,
+          14, 0.85,
+          18, 1.35
+        ],
+        'line-opacity': [
+          'interpolate', ['linear'], ['zoom'],
+          10, 0.36,
+          13, 0.56,
+          18, 0.72
+        ]
+      }
+    },
+    {
+      id: 'terrain-contours-major',
+      type: 'line',
+      source: 'terrainContours',
+      'source-layer': 'contours',
+      minzoom: 10,
+      filter: ['>', ['get', 'level'], 0],
+      layout: { visibility: 'visible' },
+      paint: {
+        'line-color': 'rgba(255, 255, 224, 0.88)',
+        'line-width': [
+          'interpolate', ['linear'], ['zoom'],
+          10, 0.95,
+          14, 1.55,
+          18, 2.2
+        ],
+        'line-opacity': [
+          'interpolate', ['linear'], ['zoom'],
+          10, 0.52,
+          13, 0.74,
+          18, 0.9
+        ]
+      }
+    },
+    contourLabelLayer({
+      id: 'terrain-contour-major-labels',
+      minzoom: 10,
+      filter: ['>', ['get', 'level'], 0],
+      textColor: '#fff7c2',
+      haloWidth: 1.6,
+      textSizeStops: [10, 11.5, 14, 13, 18, 15],
+      allowOverlap: true
+    }),
+    contourLabelLayer({
+      id: 'terrain-contour-minor-labels',
+      minzoom: 14,
+      filter: ['==', ['get', 'level'], 0],
+      textColor: 'rgba(255, 244, 194, 0.76)',
+      haloWidth: 1.2,
+      textSizeStops: [14, 10, 17, 11.5, 20, 13],
+      allowOverlap: false
+    })
+  ];
+}
+
+function contourLabelLayer({
+  id,
+  minzoom,
+  filter,
+  textColor,
+  haloWidth,
+  textSizeStops,
+  allowOverlap
+}) {
+  return {
+    id,
+    type: 'symbol',
+    source: 'terrainContours',
+    'source-layer': 'contours',
+    minzoom,
+    filter,
+    layout: {
+      visibility: 'visible',
+      'symbol-placement': 'line',
+      'symbol-spacing': [
+        'interpolate', ['linear'], ['zoom'],
+        10, 240,
+        12, 190,
+        14, 150,
+        16, 112,
+        18, 82,
+        20, 60
+      ],
+      'text-field': ['concat', ['to-string', ['get', 'ele']], ' m'],
+      'text-font': [
+        'Arial',
+        'Helvetica Neue',
+        'PingFang SC',
+        'Microsoft YaHei',
+        'Noto Sans CJK SC',
+        'sans-serif'
+      ],
+      'text-size': ['interpolate', ['linear'], ['zoom'], ...textSizeStops],
+      'text-rotation-alignment': 'map',
+      'text-pitch-alignment': 'map',
+      'text-keep-upright': true,
+      'text-max-angle': 180,
+      'text-padding': 0,
+      'text-allow-overlap': allowOverlap,
+      'text-ignore-placement': allowOverlap
+    },
+    paint: {
+      'text-color': textColor,
+      'text-halo-color': 'rgba(2, 8, 10, 0.88)',
+      'text-halo-width': haloWidth,
+      'text-opacity': [
+        'interpolate', ['linear'], ['zoom'],
+        minzoom, 0.72,
+        minzoom + 2, 0.94
+      ]
+    }
+  };
+}
+
 function initMap() {
   if (!window.maplibregl) {
     elements.mapView.innerHTML = '<div class="map-fallback">MapLibre 加载失败，请检查网络</div>';
@@ -1136,27 +1797,101 @@ function initMap() {
     center: [104.06, 30.65],
     zoom: 12,
     maxZoom: 21,
-    style: {
-      version: 8,
-      sources: {
-        googleSatellite: {
-          type: 'raster',
-          tiles: ['https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'],
-          tileSize: 256,
-          attribution: 'Imagery © Google'
-        }
-      },
-      layers: [{ id: 'google-satellite', type: 'raster', source: 'googleSatellite' }]
-    }
+    maxPitch: 85,
+    style: buildMapStyle()
   });
+  renderContourControlState();
   state.map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
   state.popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false, maxWidth: '320px' });
   state.map.on('load', () => {
     state.mapLoaded = true;
+    renderTerrain();
+    renderContours();
+    renderContourDataPanel();
     addMapLayers();
     bindMapEvents();
     renderMap();
   });
+  state.map.on('zoomend', () => {
+    renderContourDataPanel();
+  });
+}
+
+function renderTerrain() {
+  if (!state.mapLoaded) return;
+  const enabled = elements.showTerrain.checked;
+  if (state.map.getLayer('terrain-hillshade')) {
+    state.map.setLayoutProperty('terrain-hillshade', 'visibility', enabled ? 'visible' : 'none');
+  }
+  state.map.setTerrain(enabled
+    ? { source: 'terrainElevation', exaggeration: TERRAIN_EXAGGERATION }
+    : null);
+}
+
+function renderContourControlState() {
+  elements.showContours.disabled = !state.contoursAvailable;
+  const toggle = elements.showContours.closest('.toggle');
+  if (toggle) {
+    toggle.classList.toggle('disabled', !state.contoursAvailable);
+    toggle.title = state.contoursAvailable
+      ? '叠加由地形 DEM 生成的等高线'
+      : '等高线插件未加载，当前只显示地形阴影';
+  }
+  renderContourDataPanel();
+}
+
+function renderContours() {
+  if (!state.mapLoaded) return;
+  const visibility = state.contoursAvailable && elements.showContours.checked ? 'visible' : 'none';
+  for (const layerId of CONTOUR_LAYER_IDS) {
+    if (state.map.getLayer(layerId)) {
+      state.map.setLayoutProperty(layerId, 'visibility', visibility);
+    }
+  }
+  renderContourDataPanel();
+}
+
+function renderContourDataPanel() {
+  if (!elements.contourDataPanel) return;
+  const checked = elements.showContours.checked;
+  elements.contourDataPanel.classList.toggle('disabled', !state.contoursAvailable || !checked);
+  if (!state.contoursAvailable) {
+    elements.contourDataStatus.textContent = '等高线插件未加载';
+    elements.contourDataSelected.textContent = '当前只能显示地形阴影';
+    return;
+  }
+  const zoom = state.mapLoaded ? state.map.getZoom() : 12;
+  const threshold = contourThresholdForZoom(zoom);
+  const statusPrefix = checked ? '已显示' : '已隐藏';
+  elements.contourDataStatus.textContent =
+    `${statusPrefix} | DEM Mapterhorn | zoom ${zoom.toFixed(1)} | 次曲线 ${threshold.minor}m / 主曲线 ${threshold.major}m`;
+  if (!state.selectedContour) {
+    elements.contourDataSelected.textContent = '点击等高线查看该线海拔、级别和经纬度';
+    return;
+  }
+  const contour = state.selectedContour;
+  elements.contourDataSelected.textContent =
+    `${contour.lineType} ${formatPlainNumber(contour.elevationMeters)}m | 间距 ${contour.intervalMeters}m | ${formatLngLatText(contour.lng, contour.lat)}`;
+}
+
+function contourThresholdForZoom(zoom) {
+  const zoomLevel = Math.floor(Number.isFinite(zoom) ? zoom : 12);
+  let selected = null;
+  for (const [key, value] of Object.entries(CONTOUR_THRESHOLDS_METERS)
+    .map(([key, value]) => [Number(key), value])
+    .sort((left, right) => left[0] - right[0])) {
+    if (key <= zoomLevel) selected = value;
+  }
+  const fallback = selected || Object.values(CONTOUR_THRESHOLDS_METERS)[0];
+  return {
+    minor: Array.isArray(fallback) ? fallback[0] : fallback,
+    major: Array.isArray(fallback) ? fallback[fallback.length - 1] : fallback
+  };
+}
+
+function contourIntervalForLevel(level, zoom) {
+  const threshold = contourThresholdForZoom(zoom);
+  return level > 0 ? threshold.major : threshold.minor;
 }
 
 function addMapLayers() {
@@ -1165,6 +1900,7 @@ function addMapLayers() {
   state.map.addSource('trusted-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('cleaned-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('shadow-lines', { type: 'geojson', data: emptyFeatureCollection() });
+  state.map.addSource('weak-direction-hints', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('low-quality-candidate-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('direction-arrows', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('cleaned-points', { type: 'geojson', data: emptyFeatureCollection() });
@@ -1206,10 +1942,26 @@ function addMapLayers() {
     type: 'line',
     source: 'shadow-lines',
     paint: {
-      'line-color': '#38bdf8',
+      'line-color': ['coalesce', ['get', 'shadowColor'], '#38bdf8'],
       'line-width': 4,
       'line-opacity': 0.92,
       'line-dasharray': [1.2, 1.2]
+    }
+  });
+  state.map.addLayer({
+    id: 'weak-direction-hints',
+    type: 'line',
+    source: 'weak-direction-hints',
+    paint: {
+      'line-color': ['coalesce', ['get', 'shadowColor'], '#22c55e'],
+      'line-width': [
+        'interpolate', ['linear'], ['zoom'],
+        10, 4,
+        16, 6,
+        20, 8
+      ],
+      'line-opacity': 0.94,
+      'line-dasharray': [0.4, 1.2]
     }
   });
   state.map.addLayer({
@@ -1385,6 +2137,20 @@ function bindMapEvents() {
     if (!feature) return;
     selectLowQualityCandidate(feature);
   });
+  for (const layerId of CONTOUR_LINE_LAYER_IDS) {
+    if (!state.map.getLayer(layerId)) continue;
+    state.map.on('click', layerId, (event) => {
+      const feature = event.features?.[0];
+      if (!feature) return;
+      selectContourLine(feature, event.lngLat);
+    });
+    state.map.on('mouseenter', layerId, () => {
+      state.map.getCanvas().style.cursor = 'pointer';
+    });
+    state.map.on('mouseleave', layerId, () => {
+      state.map.getCanvas().style.cursor = '';
+    });
+  }
   state.map.on('mouseenter', 'points', () => {
     state.map.getCanvas().style.cursor = 'pointer';
   });
@@ -1418,6 +2184,8 @@ function renderMap() {
   state.map.getSource('trusted-lines').setData(elements.showTrusted.checked ? trustedFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('cleaned-lines').setData(elements.showCleaned.checked ? cleanedFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('shadow-lines').setData(elements.showShadow.checked ? shadowFeatureCollection(visible) : emptyFeatureCollection());
+  state.map.getSource('weak-direction-hints').setData(
+    elements.showShadow.checked ? weakDirectionHintFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('low-quality-candidate-lines').setData(
     elements.showLowQualityCandidates.checked
       ? lowQualityCandidateFeatureCollection(visible)
@@ -1477,10 +2245,49 @@ function shadowFeatureCollection(datasets) {
   return {
     type: 'FeatureCollection',
     features: datasets
-      .map((dataset) => lineFeature(dataset,
-        pointsFromIds(dataset.shadowTrackPointById,
-          dataset.mapRender?.shadowLineTrackPointIds), 'shadow'))
+      .flatMap((dataset) => selectedAdaptiveShadowsForDataset(dataset).map((shadow, shadowIndex) =>
+        lineFeature(dataset, shadow.track || [], 'shadow', shadow.id || null, {
+          shadowId: shadow.id || '',
+          shadowLabel: shadow.label || '自适应影子',
+          shadowColor: adaptiveShadowColorById(shadow.id, shadowIndex)
+        })))
       .filter((feature) => feature.geometry.coordinates.length > 1)
+  };
+}
+
+function weakDirectionHintFeatureCollection(datasets) {
+  return {
+    type: 'FeatureCollection',
+    features: datasets
+      .flatMap((dataset) => selectedAdaptiveShadowsForDataset(dataset)
+        .flatMap((shadow, shadowIndex) =>
+          (shadow.weakSignalDirectionHold?.hints || []).map((hint) =>
+            weakDirectionHintFeature(dataset, shadow, shadowIndex, hint))))
+      .filter((feature) => feature.geometry.coordinates.length > 1)
+  };
+}
+
+function weakDirectionHintFeature(dataset, shadow, shadowIndex, hint) {
+  return {
+    type: 'Feature',
+    properties: {
+      datasetId: dataset.id,
+      shadowId: shadow.id || '',
+      shadowLabel: shadow.label || '自适应影子',
+      shadowColor: adaptiveShadowColorById(shadow.id, shadowIndex),
+      kind: hint.kind || 'weak_signal_direction_hold',
+      startRawPointId: hint.startRawPointId ?? null,
+      endRawPointId: hint.endRawPointId ?? null,
+      confidence: hint.confidence || 'low',
+      status: hint.status || ''
+    },
+    geometry: {
+      type: 'LineString',
+      coordinates: [
+        [hint.startLng, hint.startLat],
+        [hint.endLng, hint.endLat]
+      ].filter(([lng, lat]) => Number.isFinite(lng) && Number.isFinite(lat))
+    }
   };
 }
 
@@ -1557,11 +2364,13 @@ function directionArrowFeaturesForDataset(dataset) {
     });
   }
   if (elements.showShadow.checked) {
-    lines.push({
-      kind: 'shadow',
-      points: pointsFromIds(dataset.shadowTrackPointById,
-        dataset.mapRender?.shadowLineTrackPointIds)
-    });
+    for (const shadow of selectedAdaptiveShadowsForDataset(dataset)) {
+      lines.push({
+        kind: 'shadow',
+        points: shadow.track || [],
+        segmentId: shadow.id || null
+      });
+    }
   }
 
   const visibleLines = lines.filter((line) => (line.points || []).length > 1);
@@ -1584,7 +2393,7 @@ function directionArrowLineFeature(dataset, points, kind, segmentId) {
 function shadowDiffPointFeatureCollection(datasets) {
   return {
     type: 'FeatureCollection',
-    features: datasets.flatMap((dataset) => (dataset.targetProduct.adaptiveShadow?.differences || [])
+    features: datasets.flatMap((dataset) => adaptiveShadowDifferencesForDataset(dataset)
       .map((difference) => {
         const point = dataset.rawPointById?.get(difference.rawPointId);
         if (!point) return null;
@@ -1593,6 +2402,8 @@ function shadowDiffPointFeatureCollection(datasets) {
           properties: {
             datasetId: dataset.id,
             rawPointId: point.rawPointId,
+            shadowId: difference.shadowId || '',
+            shadowLabel: difference.shadowLabel || '自适应影子',
             changeType: difference.changeType,
             fixed: shadowDecisionLabel(difference.fixed),
             adaptive: shadowDecisionLabel(difference.adaptive),
@@ -1676,13 +2487,13 @@ function mapCleanedPointsForDataset(dataset) {
   return pointsFromIds(dataset.targetTrackPointById, ids);
 }
 
-function lineFeature(dataset, points, kind, segmentId = null) {
+function lineFeature(dataset, points, kind, segmentId = null, extraProperties = {}) {
   const linePoints = points.length > MAP_LINE_POINT_LIMIT
     ? samplePointsForLine(points, MAP_LINE_POINT_LIMIT)
     : points;
   return {
     type: 'Feature',
-    properties: { datasetId: dataset.id, kind, color: dataset.color, segmentId },
+    properties: { datasetId: dataset.id, kind, color: dataset.color, segmentId, ...extraProperties },
     geometry: { type: 'LineString', coordinates: linePoints.map(lngLat) }
   };
 }
@@ -1695,6 +2506,35 @@ function samplePointsForLine(points, limit) {
     sampled.push(points[Math.round((sampleIndex / Math.max(limit - 1, 1)) * lastIndex)]);
   }
   return sampled;
+}
+
+function selectContourLine(feature, lngLat) {
+  const elevationMeters = Number(feature.properties?.ele);
+  const level = Number(feature.properties?.level);
+  const zoom = state.mapLoaded ? state.map.getZoom() : 12;
+  const lineType = level > 0 ? '主等高线' : '次等高线';
+  const lng = Number(lngLat?.lng);
+  const lat = Number(lngLat?.lat);
+  state.selectedContour = {
+    elevationMeters,
+    level: Number.isFinite(level) ? level : 0,
+    lineType,
+    intervalMeters: contourIntervalForLevel(level, zoom),
+    lng,
+    lat
+  };
+  renderContourDataPanel();
+  if (!state.popup) return;
+  state.popup
+    .setLngLat([lng, lat])
+    .setHTML([
+      '<strong>等高线数据</strong>',
+      `${escapeHtml(lineType)} ${escapeHtml(formatPlainNumber(elevationMeters))} m`,
+      `级别 ${escapeHtml(String(Number.isFinite(level) ? level : '-'))}；当前间距 ${escapeHtml(String(state.selectedContour.intervalMeters))} m`,
+      escapeHtml(formatLngLatText(lng, lat)),
+      '数据源 Mapterhorn DEM / 浏览器端 contour tile'
+    ].join('<br/>'))
+    .addTo(state.map);
 }
 
 function selectPoint(datasetId, rawPointId, showPopup = false) {
@@ -1868,6 +2708,10 @@ function formatPercent(value) {
   return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '-';
 }
 
+function formatBoolean(value) {
+  return value === true ? '开启' : '关闭';
+}
+
 function formatProfileDuration(value) {
   return Number.isFinite(value) && value > 0 ? formatDuration(value) : '暂无数据';
 }
@@ -1883,6 +2727,11 @@ function formatNanoRange(start, end) {
 
 function formatLatLng(point) {
   return `${point.lat.toFixed(7)}, ${point.lng.toFixed(7)}`;
+}
+
+function formatLngLatText(lng, lat) {
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return '经纬度 -';
+  return `lat ${lat.toFixed(6)}, lng ${lng.toFixed(6)}`;
 }
 
 function valueOrDash(value) {

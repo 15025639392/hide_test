@@ -14,7 +14,7 @@ Authoritative recording chain:
 ```text
 RecordingForegroundService
   -> LocationManager.GPS_PROVIDER
-  -> RawPoint / GnssQualitySnapshot / evidence.jsonl
+  -> RawPoint / raw_location / optional GNSS diagnostics / evidence.jsonl
   -> SamplingEpoch / SamplingIntake
   -> TrackTrustEngine / TrackCloudWindow
   -> TrackPoint / session.json
@@ -335,9 +335,10 @@ gradle testDebugUnitTest
 gradle :app:runReplay
 ```
 
-### Phase 6: Weak GNSS Diagnostics
+### Phase 6: Optional Weak GNSS Diagnostics
 
-Goal: improve explainability without changing trusted track policy.
+Goal: improve Android-side explainability, when enabled, without changing
+trusted track policy or Web target-product decisions.
 
 Candidate fields:
 
@@ -350,7 +351,8 @@ Candidate fields:
 
 Rules:
 
-- GNSS quality remains diagnostic only.
+- GNSS quality remains optional diagnostic only.
+- GNSS quality is not a Web target-product cleaning input.
 - Do not make C/N0 or satellite count a hard reject rule in this phase.
 - Keep old session reading backward compatible.
 
@@ -386,10 +388,11 @@ gradle testDebugUnitTest
 gradle :app:runReplay
 ```
 
-### Phase 8: Sample Report GNSS Explainability
+### Phase 8: Optional Sample Report GNSS Explainability
 
-Goal: make Phase 6 GNSS diagnostic metrics visible in generated sample reports
-without changing trusted track policy.
+Goal: make Phase 6 GNSS diagnostic metrics visible in generated sample reports,
+when present, without changing trusted track policy or Web target-product
+decisions.
 
 Suggested extraction order:
 
@@ -402,7 +405,8 @@ Suggested extraction order:
 Rules:
 
 - Missing Phase 6 fields must not fail report generation.
-- GNSS quality metrics remain explanatory only.
+- GNSS quality metrics remain optional and explanatory only.
+- Target algorithms must not depend on these fields.
 - Do not alter decision, distance, moving-time, segment, GPX, or replay
   expectations.
 
@@ -413,24 +417,26 @@ gradle testDebugUnitTest
 gradle :app:runReplay
 ```
 
-### Phase 9: Weak/Reject GNSS Correlation In Reports
+### Phase 9: Optional Weak/Reject GNSS Correlation In Reports
 
 Goal: make generated sample reports explain weak and rejected decisions with
-their linked GNSS snapshot metrics, without changing trusted track policy.
+their linked GNSS snapshot metrics when those optional diagnostics exist,
+without changing trusted track policy or Web target-product decisions.
 
 Suggested extraction order:
 
-1. Correlate `decision.sourceGnssSnapshotId` with Phase 6 `gnss_snapshot`
-   metrics inside `HikingSampleReportGenerator`.
+1. If legacy or optional `decision.sourceGnssSnapshotId` exists, correlate it
+   with Phase 6 `gnss_snapshot` metrics inside `HikingSampleReportGenerator`.
 2. Add report JSON and text output for weak/reject decision GNSS averages.
 3. Add compatibility tests for decisions without `sourceGnssSnapshotId` and old
    `gnss_snapshot` events that do not contain Phase 6 fields.
 
 Rules:
 
-- Missing `sourceGnssSnapshotId` must not fail report generation.
+- Missing `sourceGnssSnapshotId` is normal when optional GNSS diagnostics are
+  disabled and must not fail report generation.
 - Missing Phase 6 fields must not fail report generation.
-- GNSS quality metrics remain explanatory only.
+- GNSS quality metrics remain optional and explanatory only.
 - Do not alter decision, distance, moving-time, segment, GPX, or replay
   expectations.
 
@@ -441,10 +447,11 @@ gradle testDebugUnitTest
 gradle :app:runReplay
 ```
 
-### Phase 10: Standalone Weak GNSS Report
+### Phase 10: Optional Standalone Weak GNSS Report
 
-Goal: create an offline weak GNSS report that answers why a session had weak,
-rejected, GAP, or stale-GNSS evidence without changing trusted track policy.
+Goal: create an offline weak GNSS report, when optional diagnostics are present,
+that can help explain weak, rejected, GAP, or stale-GNSS evidence without
+changing trusted track policy or Web target-product decisions.
 
 Suggested extraction order:
 
@@ -458,8 +465,9 @@ Suggested extraction order:
 Rules:
 
 - Missing Phase 6 fields must not fail report generation.
-- Missing `sourceGnssSnapshotId` must be reported as an explainability gap, not
-  a policy failure.
+- Missing `sourceGnssSnapshotId` is normal when optional GNSS diagnostics are
+  disabled; reports may mention it as an explainability gap, not a policy
+  failure.
 - The standalone report remains diagnostic/export only.
 - Do not alter decision, distance, moving-time, segment, GPX, or replay
   expectations.
@@ -562,8 +570,8 @@ Completed:
   - `source scripts/use-jdk17.sh && ./gradlew :app:runReplay`
 - Phase 7 / Task 1: documented diagnostic JSONL schema in
   `docs/diagnostic-jsonl-schema.md`.
-- Phase 7 / Task 2: centralized `gnss_snapshot` field names and event
-  construction in `GnssSnapshotDiagnosticFields`.
+- Phase 7 / Task 2: centralized legacy optional `gnss_snapshot` field names and
+  event construction.
 - Phase 7 / Task 3: added a focused contract test for legacy and Phase 6
   `gnss_snapshot` fields; validation passed:
   - `source scripts/use-jdk17.sh && ./gradlew testDebugUnitTest`

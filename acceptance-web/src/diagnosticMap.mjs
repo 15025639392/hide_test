@@ -241,7 +241,8 @@ export function buildTargetOutput(model, targetProduct = null) {
       pressure: pressureSummary(model, ascent),
       motion: motionSummary(model),
       sessionProfile: targetProduct?.sessionProfile ?? null,
-      adaptiveShadow: targetProduct?.adaptiveShadow ?? null
+      adaptiveShadow: targetProduct?.adaptiveShadow ?? null,
+      adaptiveShadows: targetProduct?.adaptiveShadows ?? []
     },
     findings
   };

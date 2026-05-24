@@ -1,7 +1,5 @@
 package com.example.gnsssatdemo.track.export;
 
-import com.example.gnsssatdemo.track.model.GnssSnapshotDiagnosticFields;
-
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -17,8 +15,6 @@ import java.util.List;
 import java.util.Map;
 
 public class WeakGnssReportGenerator {
-    private static final long GAP_WINDOW_NANOS = 30_000_000_000L;
-
     public WeakGnssReport generate(SessionManifest manifest) throws IOException, JSONException {
         Accumulator accumulator = readDiagnostic(
                 new File(manifest.sessionDir, manifest.diagnosticLogFileName));
@@ -44,7 +40,7 @@ public class WeakGnssReportGenerator {
         try {
             accumulator.applyTrackProduct(new EvidenceTrackProductBuilder().build(diagnosticFile));
         } catch (IOException | JSONException ignored) {
-            // The report can still describe raw GNSS evidence when product rebuild fails.
+                // The report can still describe weak/reject decisions when product rebuild fails.
         }
         accumulator.finish();
         return accumulator;
@@ -61,7 +57,6 @@ public class WeakGnssReportGenerator {
         int noLocationTimeoutCount;
         double maxNoLocationTimeoutSeconds;
         final Map<Long, RawSummary> rawById = new LinkedHashMap<>();
-        final Map<Long, GnssMetricSnapshot> gnssById = new LinkedHashMap<>();
         final GnssDecisionMetrics weakMetrics = new GnssDecisionMetrics();
         final GnssDecisionMetrics rejectMetrics = new GnssDecisionMetrics();
         final GnssDecisionMetrics transportMetrics = new GnssDecisionMetrics();
@@ -73,8 +68,6 @@ public class WeakGnssReportGenerator {
             String eventName = event.optString("event", "");
             if ("raw_location".equals(eventName)) {
                 onRawLocation(event);
-            } else if ("gnss_snapshot".equals(eventName)) {
-                onGnssSnapshot(event);
             } else if ("session_event".equals(eventName)) {
                 onSessionEvent(event);
             }
@@ -82,24 +75,8 @@ public class WeakGnssReportGenerator {
 
         void onRawLocation(JSONObject event) {
             rawLocationCount++;
-            if (event.optBoolean("gnssQualityStale", false)) {
-                staleRawLocationCount++;
-            }
-            Long sourceGnssSnapshotId = event.has("sourceGnssSnapshotId")
-                    ? event.optLong("sourceGnssSnapshotId") : null;
             rawById.put(event.optLong("rawPointId"),
-                    new RawSummary(event.optDouble("accuracy", 0.0), sourceGnssSnapshotId));
-        }
-
-        void onGnssSnapshot(JSONObject event) {
-            gnssSnapshotCount++;
-            if (!event.has(GnssSnapshotDiagnosticFields.ALL_AVG_CN0)
-                    || !event.has(GnssSnapshotDiagnosticFields.TOP4_AVG_CN0)) {
-                return;
-            }
-            explainableGnssSnapshotCount++;
-            GnssMetricSnapshot snapshot = GnssMetricSnapshot.fromEvent(event);
-            gnssById.put(event.optLong(GnssSnapshotDiagnosticFields.SNAPSHOT_ID), snapshot);
+                    new RawSummary(event.optDouble("accuracy", 0.0)));
         }
 
         void applyTrackProduct(EvidenceTrackProductBuilder.Result product) {
@@ -117,17 +94,16 @@ public class WeakGnssReportGenerator {
 
         void onDecisionRecord(EvidenceTrackProductBuilder.DecisionRecord decision) {
             RawSummary raw = rawById.get(decision.rawPointId);
-            GnssMetricSnapshot snapshot = snapshotFor(decision.sourceGnssSnapshotId, raw);
             if ("weak".equals(decision.result)) {
                 weakDecisionCount++;
-                weakMetrics.add(raw, snapshot);
+                weakMetrics.add(raw);
             } else if ("reject".equals(decision.result)
                     || "intake_rejected".equals(decision.result)) {
                 rejectDecisionCount++;
-                rejectMetrics.add(raw, snapshot);
+                rejectMetrics.add(raw);
             }
             if (isTransportRiskReason(decision.reason)) {
-                transportMetrics.add(raw, snapshot);
+                transportMetrics.add(raw);
             }
             if (isGapRecoveryReason(decision.reason)) {
                 gapRecoveryCount++;
@@ -157,42 +133,7 @@ public class WeakGnssReportGenerator {
             }
         }
 
-        GnssMetricSnapshot snapshotFor(Long sourceGnssSnapshotId, RawSummary raw) {
-            if (sourceGnssSnapshotId != null) {
-                return gnssById.get(sourceGnssSnapshotId);
-            }
-            if (raw != null && raw.sourceGnssSnapshotId != null) {
-                return gnssById.get(raw.sourceGnssSnapshotId);
-            }
-            return null;
-        }
-
-        void addGapWindowMetrics(long gapElapsedRealtimeNanos) {
-            if (gapElapsedRealtimeNanos <= 0L) {
-                return;
-            }
-            GnssMetricSnapshot before = null;
-            GnssMetricSnapshot after = null;
-            long bestBeforeAge = Long.MAX_VALUE;
-            long bestAfterAge = Long.MAX_VALUE;
-            for (GnssMetricSnapshot snapshot : gnssById.values()) {
-                long delta = gapElapsedRealtimeNanos - snapshot.elapsedRealtimeNanos;
-                if (delta >= 0L && delta <= GAP_WINDOW_NANOS && delta < bestBeforeAge) {
-                    before = snapshot;
-                    bestBeforeAge = delta;
-                } else if (delta < 0L && -delta <= GAP_WINDOW_NANOS && -delta < bestAfterAge) {
-                    after = snapshot;
-                    bestAfterAge = -delta;
-                }
-            }
-            gapBeforeMetrics.add(before);
-            gapAfterMetrics.add(after);
-        }
-
         void finish() {
-            for (Long gapElapsedRealtimeNanos : gapRecoveryElapsedTimes) {
-                addGapWindowMetrics(gapElapsedRealtimeNanos);
-            }
         }
 
         WeakGnssReport toReport(String sessionId) {
@@ -238,18 +179,6 @@ public class WeakGnssReportGenerator {
                     && weakMetrics.averageUsedInFixTotal() < 5.0) {
                 findings.add("weak 点参与定位卫星数偏少，可能存在遮挡或星座几何不足");
             }
-            if (rawLocationCount > 0 && staleRawLocationCount / (double) rawLocationCount > 0.20) {
-                findings.add("较多 RawLocation 缺少新鲜 GNSS snapshot，存在诊断解释缺口");
-            }
-            if (weakDecisionCount > weakMetrics.linkedGnssCount) {
-                findings.add("部分 weak 决策缺少可关联 GNSS snapshot，弱信号原因存在解释缺口");
-            }
-            if (rejectDecisionCount > rejectMetrics.linkedGnssCount) {
-                findings.add("部分 reject 决策缺少可关联 GNSS snapshot，拒绝原因缺少卫星质量佐证");
-            }
-            if (transportMetrics.decisionCount > transportMetrics.linkedGnssCount) {
-                findings.add("部分交通工具混入决策缺少可关联 GNSS snapshot，运动模式解释不完整");
-            }
             if (gapRecoveryCount > 0 || noLocationTimeoutCount > 0) {
                 findings.add("存在 GAP 或无定位回调，需结合系统后台/省电行为复核");
             }
@@ -266,35 +195,9 @@ public class WeakGnssReportGenerator {
 
     private static class RawSummary {
         final double accuracyMeters;
-        final Long sourceGnssSnapshotId;
 
-        RawSummary(double accuracyMeters, Long sourceGnssSnapshotId) {
+        RawSummary(double accuracyMeters) {
             this.accuracyMeters = accuracyMeters;
-            this.sourceGnssSnapshotId = sourceGnssSnapshotId;
-        }
-    }
-
-    private static class GnssMetricSnapshot {
-        final long elapsedRealtimeNanos;
-        final double usedInFixTotal;
-        final double usedAvgCn0;
-        final double top4AvgCn0;
-
-        GnssMetricSnapshot(long elapsedRealtimeNanos, double usedInFixTotal,
-                           double usedAvgCn0, double top4AvgCn0) {
-            this.elapsedRealtimeNanos = elapsedRealtimeNanos;
-            this.usedInFixTotal = usedInFixTotal;
-            this.usedAvgCn0 = usedAvgCn0;
-            this.top4AvgCn0 = top4AvgCn0;
-        }
-
-        static GnssMetricSnapshot fromEvent(JSONObject event) {
-            return new GnssMetricSnapshot(
-                    event.optLong(GnssSnapshotDiagnosticFields.RECEIVED_ELAPSED_REALTIME_NANOS,
-                            event.optLong("eventElapsedRealtimeNanos", -1L)),
-                    event.optDouble(GnssSnapshotDiagnosticFields.USED_IN_FIX_TOTAL, 0.0),
-                    event.optDouble(GnssSnapshotDiagnosticFields.USED_AVG_CN0, 0.0),
-                    event.optDouble(GnssSnapshotDiagnosticFields.TOP4_AVG_CN0, 0.0));
         }
     }
 
@@ -317,19 +220,12 @@ public class WeakGnssReportGenerator {
             top4AvgCn0Total = 0.0;
         }
 
-        void add(RawSummary raw, GnssMetricSnapshot snapshot) {
+        void add(RawSummary raw) {
             decisionCount++;
             if (raw != null && raw.accuracyMeters > 0.0) {
                 accuracyTotal += raw.accuracyMeters;
                 accuracyCount++;
             }
-            if (snapshot == null) {
-                return;
-            }
-            linkedGnssCount++;
-            usedInFixTotal += snapshot.usedInFixTotal;
-            usedAvgCn0Total += snapshot.usedAvgCn0;
-            top4AvgCn0Total += snapshot.top4AvgCn0;
         }
 
         double averageAccuracyMeters() {
@@ -352,14 +248,6 @@ public class WeakGnssReportGenerator {
     private static class GnssWindowMetrics {
         int count;
         double top4AvgCn0Total;
-
-        void add(GnssMetricSnapshot snapshot) {
-            if (snapshot == null) {
-                return;
-            }
-            count++;
-            top4AvgCn0Total += snapshot.top4AvgCn0;
-        }
 
         double averageTop4AvgCn0() {
             return count == 0 ? 0.0 : top4AvgCn0Total / count;

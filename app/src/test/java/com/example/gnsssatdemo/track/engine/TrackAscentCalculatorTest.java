@@ -156,7 +156,7 @@ public class TrackAscentCalculatorTest {
                 29.0, 106.0, true, 120.0, 5f,
                 false, 0f, false, 0f,
                 1L, 30_000_000_000L, "accept", "moving_good_fix",
-                10.0, 1.0, null);
+                10.0, 1.0);
 
         assertEquals(-1.0, TrackAscentCalculator.totalAscentMeters(Arrays.asList(point)), 0.0);
     }
@@ -177,7 +177,7 @@ public class TrackAscentCalculatorTest {
                 29.0, 106.0, true, 120.0, true, 5f, 40f,
                 false, 0f, false, 0f,
                 1L, 30_000_000_000L, "accept", "moving_good_fix",
-                10.0, 1.0, null);
+                10.0, 1.0);
 
         assertEquals(-1.0, TrackAscentCalculator.totalAscentMeters(Arrays.asList(point)), 0.0);
     }
@@ -196,7 +196,7 @@ public class TrackAscentCalculatorTest {
                 true, altitude, true, 5f, 5f,
                 false, 0f, false, 0f,
                 1L, id * 30_000_000_000L, result, reason,
-                distanceDeltaMeters, 30.0, null);
+                distanceDeltaMeters, 30.0);
     }
 
     private TrackPoint barometerPoint(long id, double rawBarometerAltitudeMeters,
@@ -206,7 +206,7 @@ public class TrackAscentCalculatorTest {
                 false, 0.0, false, 0f, 50f,
                 false, 0f, false, 0f,
                 1L, id * 30_000_000_000L, result, reason,
-                0.0, 30.0, null,
+                0.0, 30.0,
                 true, id * 30_000_000_000L, 1000.0, rawBarometerAltitudeMeters);
     }
 

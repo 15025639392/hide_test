@@ -213,13 +213,13 @@ public class TrackMapStateTest {
                              double distanceDeltaMeters) {
         return new TrackPoint(id, id, id, 1L, latitude, longitude,
                 false, 0.0, 5f, false, 0f, hasBearing, bearingDegrees,
-                1L, id * 1_000_000_000L, result, reason, distanceDeltaMeters, 1.0, null);
+                1L, id * 1_000_000_000L, result, reason, distanceDeltaMeters, 1.0);
     }
 
     private TrackPoint altitudePoint(long id, double latitude, double altitude, String result,
                                      String reason) {
         return new TrackPoint(id, id, id, 1L, latitude, 106.0,
                 true, altitude, true, 5f, 5f, false, 0f, false, 0f,
-                1L, id * 30_000_000_000L, result, reason, 10.0, 0.0, null);
+                1L, id * 30_000_000_000L, result, reason, 10.0, 0.0);
     }
 }

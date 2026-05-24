@@ -1,6 +1,5 @@
 package com.example.gnsssatdemo.track.engine;
 
-import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
 import com.example.gnsssatdemo.track.model.DeviceMotionWindow;
 import com.example.gnsssatdemo.track.model.RawPoint;
 import com.example.gnsssatdemo.track.model.TrackPoint;
@@ -24,7 +23,6 @@ public class TrackTrustEngine {
     public static final double MOTION_SUPPORTED_MAX_SPEED_METERS_PER_SECOND = 3.5;
     public static final double MOTION_SUPPORTED_MIN_DISTANCE_METERS = 2.5;
     public static final float LOW_ACCURACY_RESCUE_MAX_ACCURACY_METERS = 35f;
-    public static final int LOW_ACCURACY_RESCUE_MIN_USED_IN_FIX = 5;
     public static final double LOW_ACCURACY_RESCUE_MIN_DISTANCE_METERS = 2.5;
     private static final long MOTION_WINDOW_NANOS = 5_000_000_000L;
     private long nextCloudId = 1L;
@@ -42,7 +40,6 @@ public class TrackTrustEngine {
     }
 
     public TrackTrustDecision decide(RawPoint rawPoint, SamplingEpoch epoch,
-                                     GnssQualitySnapshot snapshot,
                                      List<DeviceMotionWindow> motionWindows,
                                      TrackPoint previousTrustedTrackPoint) {
         String cloudType = chooseCloudType(rawPoint, epoch, previousTrustedTrackPoint);
@@ -57,7 +54,7 @@ public class TrackTrustEngine {
             }
             recoveryPreviousRawPoint = null;
         }
-        TrackCloudWindow.Snapshot cloud = currentCloud.add(rawPoint, snapshot, motionWindows);
+        TrackCloudWindow.Snapshot cloud = currentCloud.add(rawPoint, motionWindows);
         boolean stable = currentCloud.isStable()
                 || ("RECOVERY_CLOUD".equals(cloudType)
                 && currentCloud.recoveryFastPath()
@@ -99,7 +96,7 @@ public class TrackTrustEngine {
                 grade = "WEAK";
             }
         } else if ("WEAK_CLOUD".equals(cloudType)) {
-            if (isLowAccuracyRescuePoint(rawPoint, previousTrustedTrackPoint, snapshot)) {
+            if (isLowAccuracyRescuePoint(rawPoint, previousTrustedTrackPoint)) {
                 result = "accept";
                 reason = "continuity_rescue_low_accuracy";
                 grade = "TRUSTED";
@@ -254,16 +251,12 @@ public class TrackTrustEngine {
     }
 
     private boolean isLowAccuracyRescuePoint(RawPoint rawPoint,
-                                             TrackPoint previousTrustedTrackPoint,
-                                             GnssQualitySnapshot snapshot) {
+                                             TrackPoint previousTrustedTrackPoint) {
         if (!isContinuityRescuePoint(rawPoint, previousTrustedTrackPoint)) {
             return false;
         }
         if (!Double.isFinite(rawPoint.accuracyMeters)
                 || rawPoint.accuracyMeters > LOW_ACCURACY_RESCUE_MAX_ACCURACY_METERS) {
-            return false;
-        }
-        if (snapshot == null || snapshot.usedInFixTotal < LOW_ACCURACY_RESCUE_MIN_USED_IN_FIX) {
             return false;
         }
         double distance = TrackCloudWindow.distanceMeters(previousTrustedTrackPoint.latitude,
@@ -427,7 +420,7 @@ public class TrackTrustEngine {
                                                        TrackPoint previousTrustedTrackPoint) {
         return new TrackTrustScore(score.accuracyScore, score.samplingContinuityScore,
                 score.timeContinuityScore, score.spatialCohesionScore,
-                score.motionConsistencyScore, score.gnssQualityScore,
+                score.motionConsistencyScore,
                 speedPlausibilityScore(rawPoint, previousTrustedTrackPoint));
     }
 

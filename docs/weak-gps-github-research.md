@@ -12,9 +12,9 @@
 - `accuracy > 80m` 硬拒绝。
 - weak 点进入诊断和 `partial.gpx`，不参与可信距离。
 - 长时间无定位通过 `gap_recovery` 表达，恢复点 delta 为 0。
-- `GnssStatus` 已形成 `GnssQualitySnapshot`，但目前还偏 summary。
+- Android 可选 `gnss_snapshot` 诊断可保留卫星质量 summary。
 
-后续弱 GPS 能力应优先补“诊断证据”，而不是补“自动修复轨迹”。
+后续弱 GPS 能力只作为 Android 可选诊断附录维护，而不是目标算法输入或“自动修复轨迹”。
 
 ## 优先参考项目
 
@@ -33,7 +33,8 @@
 
 ## 对本项目最有用的信号字段
 
-优先补充到 `GnssQualitySnapshot` 或 `evidence.jsonl` summary：
+如果保留 Android 可选 GNSS 诊断附录，优先补充到 `gnss_snapshot`
+或 `evidence.jsonl` summary：
 
 - `visibleTotal`: 可见卫星数。
 - `usedInFixTotal`: 参与定位卫星数。
@@ -68,10 +69,8 @@
 
 ```text
 GnssStatus
-  -> GnssQualitySnapshot summary
-  -> raw_location 关联最近 snapshot
-  -> decision 记录 sourceGnssSnapshotId
-  -> sample_report 汇总弱信号证据
+  -> optional gnss_snapshot diagnostic event
+  -> weak_gnss_report / sample_report 可选汇总
 ```
 
 建议新增报告维度：
@@ -142,7 +141,7 @@ GnssMeasurementsEvent
 
 ## 核心结论
 
-弱 GPS 能力的第一步不是修轨迹，而是让每个 weak、reject、GAP 都能被卫星质量证据解释。
+弱 GPS 能力不是修轨迹，而是在需要真机复盘时让 weak、reject、GAP 有卫星质量解释。
 
 当前项目应继续坚持：
 
@@ -151,5 +150,5 @@ RawPoint 全量保存
 TrackPoint 只接受可信点
 weak 点可诊断但不累计距离
 GAP 恢复点保持连续显示但 delta 为 0
-GNSS 质量用于解释和报告，暂不直接改写可信轨迹
+GNSS 质量仅用于可选解释和报告，不进入 Web 目标算法判点，也不改写可信轨迹
 ```

@@ -6,7 +6,7 @@
     <title>目标轨迹 Evidence 预览</title>
     <link
       rel="stylesheet"
-      href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
+      href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css"
     />
     <link rel="stylesheet" href="./src/styles.css" />
   </head>
@@ -40,29 +40,33 @@
           <div id="mapView" class="map-view"></div>
           <div class="map-filter-panel" aria-label="地图筛选条件">
             <label class="toggle"><input id="showRaw" type="checkbox" checked /> raw</label>
-            <label class="toggle"><input id="showTrusted" type="checkbox" checked /> 可信</label>
             <label class="toggle"><input id="showCleaned" type="checkbox" checked /> 清洗轨迹</label>
-            <label class="toggle"><input id="showShadow" type="checkbox" checked /> 影子轨迹</label>
+            <label class="toggle"><input id="showTerrain" type="checkbox" checked /> 地形</label>
+            <label class="toggle"><input id="showContours" type="checkbox" checked /> 等高线</label>
             <label class="toggle"><input id="showDirection" type="checkbox" checked /> 方向</label>
-            <label class="toggle"><input id="showLowQualityCandidates" type="checkbox" checked /> 低质候选</label>
-            <label class="toggle"><input id="showShadowDiffs" type="checkbox" checked /> 分歧</label>
-            <label class="toggle"><input id="showCleanedPoints" type="checkbox" checked /> 清洗点</label>
-            <label class="toggle"><input id="showPoints" type="checkbox" checked /> 点</label>
+            <label class="toggle"><input id="showCleanedPoints" type="checkbox" /> 清洗点</label>
+            <label class="toggle"><input id="showPoints" type="checkbox" /> 点</label>
+            <input id="showTrusted" type="checkbox" hidden />
+            <input id="showShadow" type="checkbox" hidden />
+            <input id="showLowQualityCandidates" type="checkbox" hidden />
+            <input id="showShadowDiffs" type="checkbox" hidden />
+            <span id="shadowFilterSummary" hidden></span>
+            <div id="shadowFilterOptions" class="shadow-filter-options" hidden></div>
+          </div>
+          <div id="contourDataPanel" class="contour-data-panel" aria-label="等高线数据">
+            <strong>等高线数据</strong>
+            <span id="contourDataStatus">等待地图初始化</span>
+            <span id="contourDataSelected">点击等高线查看海拔</span>
           </div>
           <div class="map-legend">
             <span><i class="line raw"></i>raw 轨迹</span>
-            <span><i class="line trusted"></i>可信轨迹</span>
             <span><i class="line cleaned"></i>算法清洗轨迹</span>
-            <span><i class="line shadow"></i>影子轨迹</span>
-            <span><i class="line low-quality"></i>低质候选</span>
+            <span><i class="terrain-swatch"></i>地形阴影</span>
+            <span><i class="contour-swatch"></i>等高线</span>
             <span><i class="direction-arrow">▲</i>方向</span>
             <span><i class="dot cleaned"></i>清洗点</span>
-            <span><i class="dot trusted"></i>anchor/accept</span>
             <span><i class="dot weak"></i>weak</span>
             <span><i class="dot reject"></i>reject/intake</span>
-            <span><i class="dot shadow-promoted"></i>可能救回</span>
-            <span><i class="dot shadow-demoted"></i>可能降级</span>
-            <span><i class="dot shadow-reason"></i>原因变化</span>
             <span><i class="dot raw"></i>未解释 raw</span>
           </div>
         </section>
@@ -70,25 +74,22 @@
         <aside class="right-panel" aria-label="点详情面板">
           <section class="panel">
             <div class="panel-title">
-              <h2>清洗参数</h2>
-              <span id="configStateText">默认</span>
-            </div>
-            <div class="config-grid">
-              <label>弱点云 accuracy<input id="weakCloudAccuracyMeters" type="number" min="1" step="1" /></label>
-              <label>GAP 秒数<input id="gapSeconds" type="number" min="1" step="1" /></label>
-              <label>静止基础距离<input id="stationaryDistanceMeters" type="number" min="0.1" step="0.1" /></label>
-              <details class="advanced-config">
-                <summary>高级</summary>
-                <div class="advanced-config-grid">
-	                  <label>accuracy 上限<input id="maxIntakeAccuracyMeters" type="number" min="1" step="1" /></label>
-	                  <label class="config-toggle"><input id="barometerCleaningEnabled" type="checkbox" /> 气压阻止静止整段压缩</label>
-	                  <label class="config-toggle"><input id="lowQualityMotionRebuildEnabled" type="checkbox" /> 低质量重建进入轨迹</label>
-	                </div>
-              </details>
-              <button id="applyConfigButton" type="button">应用参数</button>
-              <button id="resetConfigButton" type="button">恢复默认</button>
+              <h2>策略说明</h2>
+              <span>固定默认</span>
             </div>
             <div id="cleaningAlgorithm" class="summary-list algorithm-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-title">
+              <h2>区间复核</h2>
+              <span id="scenarioRangeState">-</span>
+            </div>
+            <div class="scenario-review-controls">
+              <label>清洗点范围<input id="scenarioRangeInput" type="text" placeholder="1836-1919" /></label>
+              <button id="scenarioRangeReviewButton" type="button">复核</button>
+            </div>
+            <div id="scenarioRangeReview" class="summary-list scenario-review-results"></div>
           </section>
 
           <section class="panel details-panel">
@@ -112,7 +113,8 @@
       <div id="algorithmDialogContent" class="algorithm-dialog-content"></div>
     </dialog>
 
-    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+    <script src="https://unpkg.com/maplibre-contour@0.1.0/dist/index.min.js"></script>
     <script type="module" src="./src/main.mjs"></script>
   </body>
 </html>

@@ -10,8 +10,6 @@ import com.example.gnsssatdemo.track.export.GpxExporter;
 import com.example.gnsssatdemo.track.export.EvidenceTrackProductBuilder;
 import com.example.gnsssatdemo.track.export.SessionFileStore;
 import com.example.gnsssatdemo.track.export.TrackExportValidator;
-import com.example.gnsssatdemo.track.model.GnssSnapshotDiagnosticFields;
-import com.example.gnsssatdemo.track.model.GnssQualitySnapshot;
 import com.example.gnsssatdemo.track.model.BarometerWindow;
 import com.example.gnsssatdemo.track.model.DeviceMotionWindow;
 import com.example.gnsssatdemo.track.model.RawPoint;
@@ -52,14 +50,11 @@ public class BasicTrackSession implements Closeable {
     private final Context appContext;
     private final SessionFileStore fileStore;
     private final TrackTrustConfig trustConfig = TrackTrustConfig.defaultV3();
-    private final GnssSnapshotBuffer gnssSnapshotBuffer = new GnssSnapshotBuffer();
     private final TrackStatsAccumulator stats = new TrackStatsAccumulator();
     private final SamplingIntake samplingIntake = new SamplingIntake();
     private final TrackTrustEngine trustEngine = new TrackTrustEngine();
     private final SessionJournalWriter journalWriter;
     private final SessionLifecycleState lifecycle = new SessionLifecycleState();
-    private final GnssSnapshotDiagnosticFields gnssSnapshotDiagnosticFields =
-            new GnssSnapshotDiagnosticFields();
     private final GpxExporter gpxExporter = new GpxExporter();
     private final TrackExportValidator exportValidator = new TrackExportValidator();
 
@@ -73,7 +68,6 @@ public class BasicTrackSession implements Closeable {
     private long trackPointSeq;
     private long weakTrackPointSeq;
     private long transportDisplayPointSeq;
-    private long gnssSnapshotSeq;
     private long samplingPolicySeq;
     private SamplingEpoch activeSamplingEpoch;
     private long pressureSampleSeq;
@@ -90,7 +84,6 @@ public class BasicTrackSession implements Closeable {
     private int outOfOrderFixCount;
     private int recoveryCloudCount;
     private int virtualTrackPointCount;
-    private GnssQualitySnapshot lastGnssSnapshot;
     private boolean pressureSensorAvailable;
     private boolean pressureSummaryWritten;
     private long firstPressureSampleElapsedRealtimeNanos;
@@ -149,7 +142,6 @@ public class BasicTrackSession implements Closeable {
         trackPointSeq = 0L;
         weakTrackPointSeq = 0L;
         transportDisplayPointSeq = 0L;
-        gnssSnapshotSeq = 0L;
         samplingPolicySeq = 0L;
         pressureSampleSeq = 0L;
         barometerCalibrationSeq = 0L;
@@ -168,13 +160,11 @@ public class BasicTrackSession implements Closeable {
         recoveryCloudCount = 0;
         virtualTrackPointCount = 0;
         stats.reset();
-        lastGnssSnapshot = null;
         samplingIntake.reset();
         trustEngine.reset();
         activeSamplingEpoch = new SamplingEpoch(1L, "STARTING",
                 1000L, 0f, recordStartElapsedRealtimeNanos);
         samplingPolicySeq = 1L;
-        gnssSnapshotBuffer.clear();
         trackPoints.clear();
         weakTrackPoints.clear();
         transportTrackPoints.clear();
@@ -221,21 +211,6 @@ public class BasicTrackSession implements Closeable {
         } catch (IOException e) {
             markIntegrityError("trusted_gpx_write_failed", e);
             throw e;
-        }
-    }
-
-    public void onGnssSnapshot(GnssQualitySnapshot snapshot) {
-        lastGnssSnapshot = snapshot;
-        gnssSnapshotBuffer.remember(snapshot);
-        if (!lifecycle.isActive() || !journalWriter.isDiagnosticLoggerOpen()) {
-            return;
-        }
-        try {
-            JSONObject event = gnssSnapshotDiagnosticFields.toEvent(snapshot);
-            appendDiagnostic(event, snapshot.receivedElapsedRealtimeNanos);
-            writeSessionJson();
-        } catch (IOException | JSONException e) {
-            markIntegrityError("diagnostic_log_append_failed", e);
         }
     }
 
@@ -349,13 +324,10 @@ public class BasicTrackSession implements Closeable {
         }
 
         long callbackReceivedElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos();
-        GnssSnapshotBuffer.Match snapshotMatch =
-                gnssSnapshotBuffer.match(location.getElapsedRealtimeNanos());
-        RawPoint rawPoint = new RawPoint(++rawPointSeq, location, snapshotMatch.snapshotId);
+        RawPoint rawPoint = new RawPoint(++rawPointSeq, location);
         lastRawAccuracyMeters = rawPoint.hasAccuracy ? rawPoint.accuracyMeters : -1f;
         try {
-            appendRawLocation(rawPoint, snapshotMatch, samplingEpoch,
-                    callbackReceivedElapsedRealtimeNanos);
+            appendRawLocation(rawPoint, samplingEpoch, callbackReceivedElapsedRealtimeNanos);
             TrackPoint exportedPreviousTrackPoint = trackPoints.isEmpty()
                     ? null : trackPoints.get(trackPoints.size() - 1);
             SamplingIntake.Result intakeResult = samplingIntake.accept(rawPoint,
@@ -376,7 +348,6 @@ public class BasicTrackSession implements Closeable {
                 return;
             }
             TrackTrustDecision decision = trustEngine.decide(rawPoint, samplingEpoch,
-                    gnssSnapshotBuffer.findById(rawPoint.sourceGnssSnapshotId),
                     recentDeviceMotionWindows, exportedPreviousTrackPoint);
             TrackPoint decisionTrackPoint = null;
             if (decision.createsTrustedTrackPoint()) {
@@ -445,7 +416,6 @@ public class BasicTrackSession implements Closeable {
                     rawPoint.hasBearing, rawPoint.bearingDegrees,
                     rawPoint.timeMillis, rawPoint.elapsedRealtimeNanos,
                     result, reason, distanceDeltaMeters, movingTimeDeltaSeconds,
-                    rawPoint.sourceGnssSnapshotId,
                     true, lastPressureSampleElapsedRealtimeNanos,
                     lastPressureHpa, lastRawBarometerAltitudeMeters);
         }
@@ -468,7 +438,6 @@ public class BasicTrackSession implements Closeable {
                 rawPoint.timeMillis, rawPoint.elapsedRealtimeNanos,
                 decision.result, decision.reason,
                 decision.distanceDeltaMeters, decision.movingTimeDeltaSeconds,
-                rawPoint.sourceGnssSnapshotId,
                 decision.trustGrade, decision.cloudId, decision.representativeRawPointId,
                 rawIdsToString(decision.contributingRawPointIds),
                 decision.virtualTrackPointCoordinate,
@@ -733,8 +702,7 @@ public class BasicTrackSession implements Closeable {
         }
     }
 
-    private void appendRawLocation(RawPoint rawPoint, GnssSnapshotBuffer.Match snapshotMatch,
-                                   SamplingEpoch samplingEpoch,
+    private void appendRawLocation(RawPoint rawPoint, SamplingEpoch samplingEpoch,
                                    long callbackReceivedElapsedRealtimeNanos)
             throws IOException, JSONException {
         JSONObject event = new JSONObject();
@@ -768,14 +736,6 @@ public class BasicTrackSession implements Closeable {
         event.put("hasElapsedRealtimeNanos", rawPoint.hasElapsedRealtimeNanos);
         event.put("elapsedRealtimeNanos", rawPoint.elapsedRealtimeNanos);
         event.put("mock", rawPoint.mock);
-        if (rawPoint.sourceGnssSnapshotId != null) {
-            event.put("sourceGnssSnapshotId", rawPoint.sourceGnssSnapshotId);
-        }
-        event.put("gnssQualityStale", snapshotMatch.stale);
-        if (snapshotMatch.snapshotAgeNanos >= 0L) {
-            event.put("sourceGnssSnapshotAgeNanos", snapshotMatch.snapshotAgeNanos);
-            event.put("sourceGnssSnapshotMatchedFromFuture", snapshotMatch.matchedFromFuture);
-        }
         appendDiagnostic(event, rawPoint.hasElapsedRealtimeNanos
                 && rawPoint.elapsedRealtimeNanos > 0L
                 ? rawPoint.elapsedRealtimeNanos : callbackReceivedElapsedRealtimeNanos);
@@ -1044,10 +1004,6 @@ public class BasicTrackSession implements Closeable {
             }
             return new String(bytes, 0, offset, StandardCharsets.UTF_8);
         }
-    }
-
-    public long nextGnssSnapshotId() {
-        return ++gnssSnapshotSeq;
     }
 
     public boolean isActive() {

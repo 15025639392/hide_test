@@ -81,6 +81,9 @@ test('buildTargetTrackProduct exposes adaptive shadow without changing fixed tra
 
   assert.deepEqual(product.track.map((point) => point.sourceRawPointId), [1, 4]);
   assert.equal(product.track.at(-1).reason, 'moving_good_fix');
+  assert.ok(Array.isArray(product.adaptiveShadows));
+  assert.equal(product.adaptiveShadows[0], shadow);
+  assert.equal(shadow.id, 'adaptive-balanced');
   assert.equal(shadow.mode, 'shadow_only');
   assert.equal(shadow.thresholds.fixed.gapSeconds, 120);
   assert.equal(shadow.thresholds.adaptive.gapSeconds, 30);
@@ -103,6 +106,12 @@ test('buildTargetTrackProduct exposes adaptive shadow without changing fixed tra
   const raw4Difference = shadow.differences.find((difference) => difference.rawPointId === 4);
   assert.equal(raw4Difference.fixed.reason, 'moving_good_fix');
   assert.equal(raw4Difference.adaptive.reason, 'gap_recovery');
+  const gapShadow = product.adaptiveShadows.find((candidate) =>
+    candidate.id === 'adaptive-gap-sensitive');
+  const stationaryShadow = product.adaptiveShadows.find((candidate) =>
+    candidate.id === 'adaptive-stationary-noise');
+  assert.equal(gapShadow.thresholds.adaptive.gapSeconds, 30);
+  assert.equal(stationaryShadow.thresholds.adaptive.gapSeconds, 120);
 });
 
 test('buildTargetTrackProduct uses record end minus record start as moving time', () => {
@@ -136,10 +145,47 @@ test('buildTargetTrackProduct computes Location altitude fallback ascent from tr
     config: { collapseStationarySession: false }
   });
 
-  assert.equal(product.stats.selectedAscentSource, 'LOCATION_ALTITUDE');
   assert.equal(product.stats.locationAltitudeAscentSampleCount, 4);
   assert.equal(product.stats.locationAltitudeTotalAscentMeters, 7.5);
-  assert.equal(product.stats.selectedTotalAscentMeters, 7.5);
+});
+
+test('buildTargetTrackProduct computes barometer and Location altitude ascent separately', () => {
+  const model = parseEvidenceJsonl([
+    '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"barometer_window","barometerWindowId":1,"endElapsedRealtimeNanos":1000000000,"avgPressureHpa":1000,"avgRawAltitudeMeters":100}',
+    '{"event":"barometer_window","barometerWindowId":2,"endElapsedRealtimeNanos":31000000000,"avgPressureHpa":999,"avgRawAltitudeMeters":110}',
+    '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":5,"altitude":100,"verticalAccuracy":4,"elapsedRealtimeNanos":1000000000}',
+    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.0001,"lng":120,"accuracy":5,"altitude":130,"verticalAccuracy":4,"elapsedRealtimeNanos":4000000000}'
+  ].join('\n'));
+
+  const product = buildTargetTrackProduct(model, {
+    config: { collapseStationarySession: false }
+  });
+
+  assert.equal(product.stats.barometerAscentSampleCount, 2);
+  assert.equal(product.stats.barometerAscentRejectedSampleCount, 0);
+  assert.equal(product.stats.barometerTotalAscentMeters, 3.5);
+  assert.equal(product.stats.locationAltitudeTotalAscentMeters, 30);
+});
+
+test('buildTargetTrackProduct keeps Location altitude path when barometer is unusable', () => {
+  const model = parseEvidenceJsonl([
+    '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"barometer_window","barometerWindowId":1,"endElapsedRealtimeNanos":1000000000,"avgPressureHpa":0,"avgRawAltitudeMeters":100}',
+    '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":5,"altitude":100,"verticalAccuracy":4,"elapsedRealtimeNanos":1000000000}',
+    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.0001,"lng":120,"accuracy":5,"altitude":104,"verticalAccuracy":4,"elapsedRealtimeNanos":4000000000}'
+  ].join('\n'));
+
+  const product = buildTargetTrackProduct(model, {
+    config: { collapseStationarySession: false }
+  });
+
+  assert.equal(product.stats.barometerTotalAscentMeters, -1);
+  assert.equal(product.stats.barometerAscentSampleCount, 0);
+  assert.equal(product.stats.barometerAscentRejectedSampleCount, 1);
+  assert.equal(product.stats.locationAltitudeTotalAscentMeters, 4);
 });
 
 test('buildTargetTrackProduct excludes poor vertical accuracy from Location altitude ascent', () => {
@@ -678,11 +724,72 @@ test('buildTargetTrackProduct keeps low-quality movement rebuild as review-only 
   assert.equal(product.lowQualityMotionRebuild.mode, 'review_only');
   assert.equal(product.lowQualityMotionRebuild.candidateCount, 1);
   assert.equal(product.lowQualityMotionRebuild.rawIntervalCandidateCount, 1);
+  assert.ok(product.lowQualityMotionRebuild.candidates[0].decisionMix.lowQualityRatio >= 0.7);
   assert.equal(product.track.some((point) => point.reason === 'motion_supported_low_quality'), false);
   assert.ok(product.findings.some((finding) => finding.includes('低质量运动重建候选')));
 });
 
-test('buildTargetTrackProduct reports broad raw interval candidates without stationary boundary', () => {
+test('buildTargetTrackProduct does not flag low-quality candidates for a single reject', () => {
+  const events = [
+    {
+      event: 'session_metadata',
+      sessionId: 'S1',
+      recordStartElapsedRealtimeNanos: 1_000_000_000
+    },
+    {
+      event: 'sampling_policy',
+      samplingEpochId: 1,
+      state: 'MOVING',
+      eventElapsedRealtimeNanos: 1_000_000_000
+    }
+  ];
+  for (let second = 5; second <= 85; second += 5) {
+    events.push({
+      event: 'device_motion_window',
+      startElapsedRealtimeNanos: second * 1_000_000_000,
+      endElapsedRealtimeNanos: (second + 1) * 1_000_000_000,
+      linearAccelerationRmsMps2: 0.9,
+      gyroscopeRmsRadps: 0.2,
+      stepCounterDelta: 0,
+      stepDetectorCount: 0
+    });
+  }
+  events.push({
+    event: 'raw_location',
+    rawPointId: 1,
+    provider: 'gps',
+    lat: 30,
+    lng: 120,
+    accuracy: 5,
+    speed: 1,
+    elapsedRealtimeNanos: 1_000_000_000
+  });
+  for (let index = 2; index <= 11; index++) {
+    events.push({
+      event: 'raw_location',
+      rawPointId: index,
+      provider: 'gps',
+      lat: index === 6
+        ? 30 + (index - 2) * 0.000072 + 0.000001
+        : 30 + (index - 1) * 0.000072,
+      lng: 120,
+      accuracy: 5,
+      speed: index === 6 ? 0.1 : 1,
+      elapsedRealtimeNanos: (10 + (index - 2) * 8) * 1_000_000_000
+    });
+  }
+  const model = parseEvidenceJsonl(events.map((event) => JSON.stringify(event)).join('\n'));
+
+  const product = buildTargetTrackProduct(model, {
+    config: { collapseStationarySession: false }
+  });
+
+  assert.equal(product.excluded.rejected.length, 1);
+  assert.equal(product.lowQualityMotionRebuild.candidateCount, 0);
+  assert.equal(product.lowQualityMotionRebuild.rawIntervalCandidateCount, 0);
+});
+
+test('buildTargetTrackProduct ignores broad low-quality intervals without enabled rebuild impact', () => {
   const events = [
     {
       event: 'session_metadata',
@@ -735,8 +842,7 @@ test('buildTargetTrackProduct reports broad raw interval candidates without stat
   });
 
   assert.equal(product.lowQualityMotionRebuild.candidateCount, 0);
-  assert.equal(product.lowQualityMotionRebuild.rawIntervalCandidateCount, 1);
-  assert.equal(product.lowQualityMotionRebuild.rawIntervalCandidates[0].kind, 'raw_interval_review');
+  assert.equal(product.lowQualityMotionRebuild.rawIntervalCandidateCount, 0);
   assert.equal(product.track.some((point) => point.reason === 'motion_supported_low_quality'), false);
 });
 
@@ -817,6 +923,47 @@ test('buildTargetTrackProduct uses Location continuity for low accuracy rescue',
   assert.equal(product.track[1].reason, 'continuity_rescue_low_accuracy');
   assert.equal(product.track[2].reason, 'continuity_rescue_low_accuracy');
   assert.deepEqual(product.excluded.weak.map((point) => point.rawPointId), [4]);
+  const directionHoldShadow = product.adaptiveShadows.find((shadow) =>
+    shadow.id === 'adaptive-weak-signal-direction-hold');
+  assert.equal(directionHoldShadow.thresholds.fixed.weakSignalDirectionHoldEnabled, false);
+  assert.equal(directionHoldShadow.thresholds.adaptive.weakSignalDirectionHoldEnabled, true);
+  assert.equal(directionHoldShadow.mode, 'diagnostic_only');
+  assert.deepEqual(directionHoldShadow.track, []);
+  assert.equal(directionHoldShadow.weakSignalDirectionHold.mode, 'diagnostic_only');
+});
+
+test('adaptive weak-signal direction hold keeps a navigation hint without rewriting noisy track', () => {
+  const model = parseEvidenceJsonl([
+    '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":5,"elapsedRealtimeNanos":1000000000}',
+    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.00013,"lng":120,"accuracy":5,"elapsedRealtimeNanos":31000000000}',
+    '{"event":"raw_location","rawPointId":3,"provider":"gps","lat":30.00017,"lng":120.00030,"accuracy":32,"elapsedRealtimeNanos":61000000000}',
+    '{"event":"raw_location","rawPointId":4,"provider":"gps","lat":30.00021,"lng":119.99970,"accuracy":32,"elapsedRealtimeNanos":91000000000}',
+    '{"event":"raw_location","rawPointId":5,"provider":"gps","lat":30.00025,"lng":120.00028,"accuracy":32,"elapsedRealtimeNanos":121000000000}',
+    '{"event":"raw_location","rawPointId":6,"provider":"gps","lat":30.00033,"lng":120,"accuracy":5,"elapsedRealtimeNanos":151000000000}'
+  ].join('\n'));
+
+  const product = buildTargetTrackProduct(model, {
+    config: { collapseStationarySession: false }
+  });
+  const directionHoldShadow = product.adaptiveShadows.find((shadow) =>
+    shadow.id === 'adaptive-weak-signal-direction-hold');
+  const hint = directionHoldShadow.weakSignalDirectionHold.hints[0];
+
+  assert.deepEqual(product.track.map((point) => point.sourceRawPointId), [1, 2, 3, 4, 5, 6]);
+  assert.equal(product.track.some((point) => Math.abs(point.lng - 120) > 0.0002), true);
+  assert.equal(directionHoldShadow.mode, 'diagnostic_only');
+  assert.deepEqual(directionHoldShadow.track, []);
+  assert.equal(directionHoldShadow.summary.changedCount, 0);
+  assert.equal(directionHoldShadow.assessment.level, 'observe');
+  assert.equal(directionHoldShadow.assessment.label, '方向提示');
+  assert.equal(directionHoldShadow.weakSignalDirectionHold.hintCount, 1);
+  assert.deepEqual(hint.rawPointIds, [3, 4, 5]);
+  assert.equal(Math.abs(hint.startLng - 120) < 0.000001, true);
+  assert.equal(Math.abs(hint.endLng - 120) < 0.000001, true);
+  assert.equal(hint.confidence, 'high');
+  assert.equal(hint.status, 'confirmed_by_exit');
 });
 
 test('buildTargetTrackProduct prunes low accuracy tail before a stationary anchor', () => {

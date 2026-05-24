@@ -22,9 +22,8 @@ public class RawPoint {
     public final boolean hasElapsedRealtimeNanos;
     public final long elapsedRealtimeNanos;
     public final boolean mock;
-    public final Long sourceGnssSnapshotId;
 
-    public RawPoint(long rawPointId, Location location, Long sourceGnssSnapshotId) {
+    public RawPoint(long rawPointId, Location location) {
         this(rawPointId, location.getProvider(), location.getLatitude(), location.getLongitude(),
                 location.hasAltitude(), location.hasAltitude() ? location.getAltitude() : 0.0,
                 hasVerticalAccuracy(location), verticalAccuracyMeters(location),
@@ -32,7 +31,7 @@ public class RawPoint {
                 location.hasSpeed(), location.hasSpeed() ? location.getSpeed() : 0f,
                 location.hasBearing(), location.hasBearing() ? location.getBearing() : 0f,
                 location.getTime(), location.getElapsedRealtimeNanos() > 0L,
-                location.getElapsedRealtimeNanos(), isMock(location), sourceGnssSnapshotId);
+                location.getElapsedRealtimeNanos(), isMock(location));
     }
 
     public RawPoint(long rawPointId, String provider, double latitude, double longitude,
@@ -41,12 +40,12 @@ public class RawPoint {
                     boolean hasSpeed, float speedMetersPerSecond,
                     boolean hasBearing, float bearingDegrees,
                     long timeMillis, boolean hasElapsedRealtimeNanos, long elapsedRealtimeNanos,
-                    boolean mock, Long sourceGnssSnapshotId) {
+                    boolean mock) {
         this(rawPointId, provider, latitude, longitude,
                 hasAltitude, altitude, false, 0f,
                 hasAccuracy, accuracyMeters, hasSpeed, speedMetersPerSecond,
                 hasBearing, bearingDegrees, timeMillis, hasElapsedRealtimeNanos,
-                elapsedRealtimeNanos, mock, sourceGnssSnapshotId);
+                elapsedRealtimeNanos, mock);
     }
 
     public RawPoint(long rawPointId, String provider, double latitude, double longitude,
@@ -56,7 +55,7 @@ public class RawPoint {
                     boolean hasSpeed, float speedMetersPerSecond,
                     boolean hasBearing, float bearingDegrees,
                     long timeMillis, boolean hasElapsedRealtimeNanos, long elapsedRealtimeNanos,
-                    boolean mock, Long sourceGnssSnapshotId) {
+                    boolean mock) {
         this.rawPointId = rawPointId;
         this.provider = provider;
         this.latitude = latitude;
@@ -75,7 +74,6 @@ public class RawPoint {
         this.hasElapsedRealtimeNanos = hasElapsedRealtimeNanos;
         this.elapsedRealtimeNanos = elapsedRealtimeNanos;
         this.mock = mock;
-        this.sourceGnssSnapshotId = sourceGnssSnapshotId;
     }
 
     private static boolean isMock(Location location) {

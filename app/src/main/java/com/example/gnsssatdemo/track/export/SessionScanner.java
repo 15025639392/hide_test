@@ -19,7 +19,7 @@ public class SessionScanner {
         int cleanedTmpFileCount = 0;
         for (File sessionDir : fileStore.listSessionDirsNewestFirst()) {
             cleanedTmpFileCount += fileStore.cleanupKnownTmpFiles(sessionDir);
-            manifests.add(manifestReader.read(sessionDir));
+            manifests.add(manifestReader.readForListing(sessionDir));
         }
         return new SessionScanResult(manifests, cleanedTmpFileCount);
     }

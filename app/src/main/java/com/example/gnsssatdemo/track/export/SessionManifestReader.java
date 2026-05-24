@@ -18,9 +18,17 @@ public class SessionManifestReader {
     }
 
     public SessionManifest read(File sessionDir) {
+        return read(sessionDir, true);
+    }
+
+    public SessionManifest readForListing(File sessionDir) {
+        return read(sessionDir, false);
+    }
+
+    private SessionManifest read(File sessionDir, boolean scanDiagnosticLog) {
         File sessionJson = fileStore.sessionJson(sessionDir);
         if (!sessionJson.exists()) {
-            return missing(sessionDir);
+            return missing(sessionDir, scanDiagnosticLog);
         }
         try {
             JSONObject json = new JSONObject(readText(sessionJson));
@@ -30,7 +38,8 @@ public class SessionManifestReader {
             File diagnosticFile = new File(sessionDir, diagnosticFileName);
             File trustedGpxFile = new File(sessionDir, trustedGpxFileName);
             File partialGpxFile = new File(sessionDir, partialGpxFileName);
-            DiagnosticLogSummary diagnosticSummary = readDiagnosticLogSummary(diagnosticFile);
+            DiagnosticLogSummary diagnosticSummary = readDiagnosticLogSummary(
+                    diagnosticFile, scanDiagnosticLog);
             return new SessionManifest(
                     SessionManifest.READ_OK,
                     sessionDir,
@@ -79,15 +88,16 @@ public class SessionManifestReader {
                     diagnosticSummary.lastCompleteEventSeq,
                     diagnosticSummary.completeEventCount);
         } catch (IOException | JSONException e) {
-            return invalid(sessionDir);
+            return invalid(sessionDir, scanDiagnosticLog);
         }
     }
 
-    private SessionManifest missing(File sessionDir) {
+    private SessionManifest missing(File sessionDir, boolean scanDiagnosticLog) {
         File diagnosticFile = fileStore.evidenceJsonl(sessionDir);
         File trustedGpxFile = fileStore.trackGpx(sessionDir);
         File partialGpxFile = fileStore.partialGpx(sessionDir);
-        DiagnosticLogSummary diagnosticSummary = readDiagnosticLogSummary(diagnosticFile);
+        DiagnosticLogSummary diagnosticSummary = readDiagnosticLogSummary(
+                diagnosticFile, scanDiagnosticLog);
         return new SessionManifest(SessionManifest.READ_MISSING_SESSION_JSON, sessionDir, sessionDir.getName(),
                 0L, 0L, "", "", 0, "", "", "", "", "", 0,
                 "evidence.jsonl", "track.gpx", "partial.gpx",
@@ -98,11 +108,12 @@ public class SessionManifestReader {
                 diagnosticSummary.lastCompleteEventSeq, diagnosticSummary.completeEventCount);
     }
 
-    private SessionManifest invalid(File sessionDir) {
+    private SessionManifest invalid(File sessionDir, boolean scanDiagnosticLog) {
         File diagnosticFile = fileStore.evidenceJsonl(sessionDir);
         File trustedGpxFile = fileStore.trackGpx(sessionDir);
         File partialGpxFile = fileStore.partialGpx(sessionDir);
-        DiagnosticLogSummary diagnosticSummary = readDiagnosticLogSummary(diagnosticFile);
+        DiagnosticLogSummary diagnosticSummary = readDiagnosticLogSummary(
+                diagnosticFile, scanDiagnosticLog);
         return new SessionManifest(SessionManifest.READ_INVALID_SESSION_JSON, sessionDir, sessionDir.getName(),
                 0L, 0L, "", "", 0, "", "", "", "", "", 0,
                 "evidence.jsonl", "track.gpx", "partial.gpx",
@@ -117,9 +128,13 @@ public class SessionManifestReader {
         return file.exists() ? file.length() : 0L;
     }
 
-    private DiagnosticLogSummary readDiagnosticLogSummary(File diagnosticFile) {
+    private DiagnosticLogSummary readDiagnosticLogSummary(File diagnosticFile,
+                                                         boolean scanDiagnosticLog) {
         if (!diagnosticFile.exists()) {
             return new DiagnosticLogSummary(DiagnosticLogSummary.STATUS_MISSING, 0L, 0);
+        }
+        if (!scanDiagnosticLog) {
+            return new DiagnosticLogSummary(DiagnosticLogSummary.STATUS_NOT_SCANNED, 0L, 0);
         }
         long lastCompleteEventSeq = 0L;
         int completeEventCount = 0;

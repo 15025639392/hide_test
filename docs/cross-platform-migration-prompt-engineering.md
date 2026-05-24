@@ -105,7 +105,7 @@ SDK 不负责：
 - app/src/main/java/com/example/gnsssatdemo/track/engine/TrackTrustEngine.java
 
 请输出一份平台中立 SDK 契约草案，至少包含：
-1. 输入模型：RawPoint、GNSS 质量摘要、运动摘要、气压计样本。
+1. 输入模型：RawPoint、采样归因、运动摘要、气压计样本；GNSS 质量摘要仅作为可选诊断附录。
 2. 输出模型：TrackPoint、decisionResult、decisionReason、segmentId、距离增量、运动时间增量。
 3. 策略阈值：所有默认值、单位和来源文件。
 4. 判点规则：首点、弱信号、静止漂移、GAP、疑似交通工具、休息恢复。
@@ -131,12 +131,12 @@ SDK 不负责：
 重点阅读：
 - docs/diagnostic-jsonl-schema.md
 - app/src/main/java/com/example/gnsssatdemo/track/export/
-- app/src/main/java/com/example/gnsssatdemo/track/model/GnssSnapshotDiagnosticFields.java
+- Android 可选 GNSS 诊断字段（若当前分支仍保留相关实现）
 
 请输出：
 1. evidence.jsonl 必须保留的事件类型和字段。
 2. 可选字段、历史兼容字段和新增字段规则。
-3. 弱 GPS 报告必须保留的统计字段。
+3. 可选弱 GPS 诊断报告的统计字段，以及目标算法不依赖这些字段的边界。
 4. 样本报告必须保留的统计字段。
 5. 鸿蒙 / iOS 无法提供某些传感器字段时的占位和兼容策略。
 6. 跨平台对齐时必须比较的字段清单。
@@ -181,10 +181,10 @@ SDK 不负责：
 
 已知平台中立策略需要输入：
 - RawPoint
-- GNSS 质量摘要
+- 采样归因和等价单调时钟
 - 运动摘要
 - 气压计样本
-- elapsedRealtime 或等价单调时钟
+- 可选 GNSS 质量摘要（仅诊断，不作为目标算法判点输入）
 
 请输出：
 1. 目标平台可用的定位、卫星、气压计、运动传感器 API 映射。

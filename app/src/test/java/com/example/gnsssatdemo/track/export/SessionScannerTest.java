@@ -50,6 +50,23 @@ public class SessionScannerTest {
         assertEquals(SessionManifest.READ_MISSING_SESSION_JSON, result.manifests.get(0).readStatus);
     }
 
+    @Test
+    public void scan_doesNotParseDiagnosticLogContentForListing() throws Exception {
+        File root = Files.createTempDirectory("track-sessions").toFile();
+        SessionFileStore store = new SessionFileStore(root);
+        File dir = store.createSessionDir("session-with-large-diagnostic");
+        writeSessionJson(store, dir, "session-with-large-diagnostic", 2L);
+        Files.write(store.evidenceJsonl(dir).toPath(),
+                "{\"eventSeq\":1}\n{bad json\n".getBytes(StandardCharsets.UTF_8));
+
+        SessionScanResult result = new SessionScanner(store).scan();
+
+        assertEquals(1, result.manifests.size());
+        assertEquals(DiagnosticLogSummary.STATUS_NOT_SCANNED,
+                result.manifests.get(0).diagnosticLogReadStatus);
+        assertTrue(result.manifests.get(0).diagnosticLogExists);
+    }
+
     private void writeSessionJson(SessionFileStore store, File dir, String sessionId,
                                   long lastEventSeq) throws Exception {
         JSONObject json = new JSONObject();

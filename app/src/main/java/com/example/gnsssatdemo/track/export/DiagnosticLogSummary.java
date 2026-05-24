@@ -5,6 +5,7 @@ public class DiagnosticLogSummary {
     public static final String STATUS_OK = "OK";
     public static final String STATUS_INVALID_JSONL = "INVALID_JSONL";
     public static final String STATUS_READ_ERROR = "READ_ERROR";
+    public static final String STATUS_NOT_SCANNED = "NOT_SCANNED";
 
     public final String readStatus;
     public final long lastCompleteEventSeq;

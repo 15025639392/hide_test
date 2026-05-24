@@ -2,14 +2,14 @@ import {
   buildTargetOutput,
   parseEvidenceJsonl
 } from './diagnosticMap.mjs';
-import { buildTargetTrackProduct } from './targetProduct.mjs';
+import { buildSixLayerTrackProduct } from './sixLayerTrackProduct.mjs';
 
 self.onmessage = async (event) => {
   const { file, fileName, filePath, config } = event.data || {};
   try {
     const text = await file.text();
     const model = parseEvidenceJsonl(text, filePath);
-    const targetProduct = buildTargetTrackProduct(model, { config });
+    const targetProduct = buildSixLayerTrackProduct(model, { config });
     const targetOutput = compactTargetOutput(buildTargetOutput(model, targetProduct));
     self.postMessage({
       ok: true,
@@ -36,6 +36,9 @@ function compactTargetOutput(output) {
   return {
     selectedTotalAscentMeters: output?.selectedTotalAscentMeters ?? null,
     selectedAscentSource: output?.selectedAscentSource || 'NONE',
+    barometerTotalAscentMeters: output?.summaries?.pressure?.barometerTotalAscentMeters ?? null,
+    locationAltitudeTotalAscentMeters:
+      output?.summaries?.pressure?.locationAltitudeTotalAscentMeters ?? null,
     findings: output?.findings || []
   };
 }

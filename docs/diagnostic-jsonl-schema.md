@@ -45,6 +45,9 @@ diagnostics.
 GNSS snapshot events are diagnostic evidence only. These fields must not become
 trusted-track accept/reject inputs unless a future strategy phase explicitly
 changes policy and replay fixtures（回放样本） in the same change.
+They are also not inputs to the Web target-product cleaning algorithm; Web uses
+normalized raw locations, sampling attribution, motion summaries, and optional
+barometer windows for target decisions.
 
 Legacy fields:
 
@@ -95,7 +98,8 @@ classification, and final product decisions.
 
 | Line | Events | Purpose |
 | --- | --- | --- |
-| GNSS / Location | `raw_location`, `gnss_snapshot`, `sampling_policy` | System GPS fixes, satellite quality, and request context. |
+| Location / Sampling | `raw_location`, `sampling_policy` | System fixes and request context used by offline cleaning. |
+| Optional GNSS diagnostics | `gnss_snapshot` | Satellite quality evidence for Android reports only; not Web target-product input. |
 | Device motion | `device_motion_window` | Phone motion statistics that can be aligned with raw fixes. |
 | Barometer | `barometer_window` | Pressure and raw barometer altitude changes over sensor time. |
 
