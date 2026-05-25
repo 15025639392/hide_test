@@ -15,6 +15,19 @@
 采样样本，函数能判断哪些点可信、哪些点只能作为诊断证据，并输出符合真实徒步直觉的
 运动结果。
 
+长期目标函数按三层收敛：
+
+```text
+Raw evidence
+  -> 基础安全内核：合法性、采样归因、时间连续性、accuracy、GAP、速度、计距/计时/爬升门控
+  -> 情景识别：停留漂移、同路往返、弱恢复端点、遮挡聚集、交通污染等
+  -> 局部重建 / Settlement：改线、压缩、标注、解释、最终指标
+```
+
+基础安全内核必须长期保留；情景识别和局部重建不能绕过 RawPoint、RawPointDecision、
+距离、运动时间、GPX 和高度门控。复杂产品语义应逐步收敛到六层情景策略和
+Settlement，而不是继续扩散到 Android 实时链路或历史 Web 算法里。
+
 ## 输入
 
 采样样本数据包括：
@@ -131,6 +144,9 @@ RecordingForegroundService
 | 架构、不变量、治理阶段 | `docs/technical-debt-governance-plan.md` |
 | 当前 GNSS 记录策略 | `docs/system-gnss-track-recording-plan.md` |
 | 诊断 JSONL schema | `docs/diagnostic-jsonl-schema.md` |
+| 六层目标函数模型 | `docs/outdoor-track-six-layer-model.md` |
+| 情景识别和局部重建规则 | `docs/outdoor-track-scenario-recognizers.md` |
+| 平台中立函数契约 | `docs/platform-neutral-track-engine-contract.md` |
 | 跨平台迁移提示词工程 | `docs/cross-platform-migration-prompt-engineering.md` |
 | 弱 GPS 研究笔记 | `docs/weak-gps-github-research.md` |
 | 气压计爬升验收目标 | `docs/barometer-ascent-consistency-targets.md` |

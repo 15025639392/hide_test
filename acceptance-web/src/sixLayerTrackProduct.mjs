@@ -107,7 +107,6 @@ export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   barometerPressureJumpMeters: 20,
   collapseStationarySession: false,
   barometerCleaningEnabled: false,
-  lowQualityMotionRebuildEnabled: false,
   cloudTemporalDecaySeconds: 20
 });
 
@@ -459,8 +458,6 @@ function emptyProduct(strategyVersion, sourceFilePath, recordStart, recordEnd) {
     gnssAltitudeResult: null,
     barometerAscentResult: null,
     selectedAscentResult: null,
-    adaptiveShadow: null,
-    adaptiveShadows: [],
     explanationModel: null,
     scenarios: [],
     scenarioCoverage: [],

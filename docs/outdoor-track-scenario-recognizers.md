@@ -3,7 +3,7 @@
 本文记录六层 Web 目标算法中的“场景识别器 + 局部重建器 + 可解释诊断”设计。
 它是 `docs/outdoor-track-six-layer-model.md` 的场景层落地版本，当前只约束
 `acceptance-web/src/sixLayerTrackProduct.mjs`，不改变 Android Java 策略、
-`evidence.jsonl` schema、replay fixture 期望或旧 `targetProduct.mjs`。
+`evidence.jsonl` schema 或 replay fixture 期望。
 
 ## 边界
 
@@ -327,7 +327,7 @@ primitiveFacts:
 | 候选场景 | 设计方向 |
 | --- | --- |
 | `interwoven_corridor` | 多次来回走同一窄路，但不一定有清晰弱恢复折返点；当前代码有默认关闭的抽稀开关，尚未输出 `scenarios[]`。 |
-| `low_quality_movement_rebuild` | 大量 weak/reject 中夹着真实慢速移动；当前旧算法有复核候选，六层算法应先做 review-only 诊断，再决定是否入轨。 |
+| `low_quality_movement_rebuild` | 大量 weak/reject 中夹着真实慢速移动；六层算法应先做 review-only 诊断，再决定是否入轨。 |
 | `valley_or_urban_canyon_bias` | 山谷/城市峡谷表现为单侧偏移或长条点云；算法只能输出可观测的 bias/scatter 形态，不能直接声称外界原因。 |
 | `indoor_outdoor_pressure_jump` | 室内外或天气压力突变影响 BAROMETER altitude；属于垂直高度层，不能反推水平轨迹。 |
 | `water_or_metal_reflection_scatter` | 水面/金属反射造成局部散点或跳点；应先输出散点/跳点形态诊断，等待真实样本校准。 |

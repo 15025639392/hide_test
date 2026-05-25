@@ -7,7 +7,9 @@
 采样样本数据 -> 合理的轨迹 / 累计爬升 / 里程 / 配速 / 运动耗时
 ```
 
-第一版只做预览和人工核验，不修复、不编辑、不回写 Android 原始日志。
+Web 只做离线预览、情景修复复算和人工核验，不编辑、不回写 Android 原始日志。
+“情景修复”指六层算法内的局部重建 / 标注模块，会影响 Web 当前清洗轨迹、统计和线样式；
+它不会改写 `evidence.jsonl`、Android session、Android v3 replay 期望或设备端可信 GPX。
 
 ## 运行
 
@@ -51,17 +53,17 @@ https://tiles.mapterhorn.com/tilejson.json
   面板独立切换；等高线高度会像方向箭头一样沿线重复标注，地图数据面板也会展示当前
   等高距，点击等高线可查看海拔、级别和经纬度。
 - 多 evidence 叠加显示，每个文件分配稳定颜色。
-- raw 轨迹使用细虚线，清洗轨迹使用红色实线；旧的影子候选、低质候选和分歧图层
-  已从当前 UI 移除，避免和当前六层清洗结果混淆。
+- raw 轨迹使用细虚线，清洗轨迹使用红色实线。
 - 点和清洗点图层默认关闭，需要人工复核具体位置时再手动打开。
-- Web UI 不提供手动清洗参数覆盖；导入 evidence 后始终使用六层算法默认配置复算，避免真实样本校准时混入临时参数状态。
+- Web UI 不提供任意阈值编辑；导入 evidence 后默认使用六层算法默认配置复算。
+  地图图层面板的“情景修复”只允许切换稳定的局部修复 / 标注模块，用于人工复核改线影响，
+  不改变采样、accuracy、GAP、交通和爬升等基础安全内核阈值。
 - 点类型区分 `weak / reject / intake_rejected / raw` 等诊断状态。
 - 文件列表展示：文件名、设备、轨迹点数、里程、运动耗时、配速、气压累计爬升和
   Location 海拔累计爬升。
 - 选中文件后展示 Web 清洗结果、raw、pressure、motion 摘要。
 - 点击地图点后展示 raw 证据或 Web 清洗点详情。
-- 当前 Web 清洗入口使用 `src/sixLayerTrackProduct.mjs` 六层算法，旧 `src/targetProduct.mjs`
-  仅作为历史实现保留。
+- 当前 Web 清洗入口只使用 `src/sixLayerTrackProduct.mjs` 六层算法。
 - 六层算法输出 `scenarios[]`，用于解释弱恢复端点、同路往返、整段静止、停留漂移、
   GAP 恢复边界和交通混入等局部重建；文档见
   `../docs/outdoor-track-scenario-recognizers.md`。

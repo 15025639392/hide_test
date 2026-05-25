@@ -797,10 +797,6 @@ function algorithmBlock() {
         ${targetProductSummaryRows(dataset).map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
       </div>
       <div class="algorithm-section">
-        <b>场景画像</b>
-        ${sessionProfileSummaryRows(dataset).map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
-      </div>
-      <div class="algorithm-section">
         <b>情景覆盖</b>
         ${scenarioCoverageSummaryRows(dataset).map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
       </div>
@@ -950,84 +946,6 @@ function targetProductSummaryRows(dataset) {
     rows.push(`地图 raw 点抽样显示 ${dataset.mapRender?.rawPointIds?.length || 0} / ${dataset.model.points.length}；清洗算法仍使用全量 evidence`);
   }
   return rows;
-}
-
-function lowQualityMotionSummaryRows(dataset) {
-  const rebuild = dataset?.targetProduct?.lowQualityMotionRebuild;
-  if (!rebuild) return ['低质量重建：未运行'];
-  const enabled = dataset.targetProduct?.config?.lowQualityMotionRebuildEnabled === true;
-  const candidateCount = rebuild.candidateCount || 0;
-  const rawIntervalCount = rebuild.rawIntervalCandidateCount || 0;
-  const rows = [
-    `低质量重建：${enabled ? '进入轨迹' : '仅复核'}；可入轨候选 ${candidateCount} 段；广义 raw 区间 ${rawIntervalCount} 段；已扫描 moving_good_fix ${rebuild.scannedMovingGoodFixCount || 0} 个`
-  ];
-  if (candidateCount === 0) {
-    rows.push(lowQualityNoCandidateReason(rebuild));
-  } else {
-    const first = rebuild.candidates?.[0];
-    if (first) {
-      rows.push(`可入轨候选示例：raw#${candidateRawRange(first)}；时长 ${formatDuration(first.summary?.durationSeconds)}；active ${formatPercent(first.summary?.activeRatio)}；bbox ${formatMeters(first.summary?.bboxDiagonalMeters)}`);
-    }
-    if (!enabled) {
-      rows.push('当前未改写成品轨迹；开启高级开关后，可入轨候选才会抽稀为 motion_supported_low_quality');
-    } else {
-      rows.push('当前已允许可入轨候选改写成品轨迹；请在地图上核对生成的 motion_supported_low_quality 点');
-    }
-    if (candidateCount > 1) {
-      rows.push(`还有 ${candidateCount - 1} 段可入轨候选未展开，可点 raw 区间内任意点查看详情`);
-    }
-  }
-  if (rawIntervalCount > 0) {
-    const rawCandidate = rebuild.rawIntervalCandidates?.[0];
-    rows.push(`广义 raw 区间示例：raw#${candidateRawRange(rawCandidate)}；时长 ${formatDuration(rawCandidate.summary?.durationSeconds)}；active ${formatPercent(rawCandidate.summary?.activeRatio)}；weak/reject 占比 ${formatPercent(rawCandidate.decisionMix?.lowQualityRatio)}；弱/拒绝/未解释 ${rawCandidate.decisionMix?.weakCount || 0}/${rawCandidate.decisionMix?.rejectedCount || 0}/${rawCandidate.decisionMix?.unexplainedCount || 0}`);
-    rows.push('广义 raw 区间只用于复核可入轨候选周边的连续运动线索，当前不会被“进入轨迹”开关直接写入成品轨迹');
-  }
-  return rows;
-}
-
-function lowQualityNoCandidateReason(rebuild) {
-  const skipped = rebuild?.skipped || {};
-  const parts = [
-    ['缺少后置静止/GAP边界', skipped.missingLowQualityBoundary],
-    ['交通风险边界阻断', skipped.transportBoundary],
-    ['raw 区间不包含源点', skipped.sourceOutsideInterval],
-    ['组合条件不足', skipped.criteriaRejected],
-    ['weak/reject 连续占比不足', skipped.lowQualityMixRejected],
-    ['清洗轨迹已表达', skipped.trackAlreadyExpressed],
-    ['抽稀结构点不足', skipped.structureTooShort]
-  ].filter(([, count]) => count > 0)
-    .map(([label, count]) => `${label} ${count}`);
-  const examples = (rebuild?.rejectedExamples || [])
-    .slice(0, 2)
-    .map((item) => `raw#${item.sourceRawPointId}：${item.message}`);
-  const suffix = examples.length > 0 ? `；例：${examples.join('；')}` : '';
-  if (parts.length === 0) {
-    return '低质量重建：没有发现可扫描的 moving_good_fix，因此开关不会改变这条轨迹';
-  }
-  return `低质量重建：没有候选，开关不会改变这条轨迹；原因统计：${parts.join('，')}${suffix}`;
-}
-
-function candidateRawRange(candidate) {
-  const ids = candidate?.rawPointIds || [];
-  if (ids.length === 0) return '-';
-  if (ids.length === 1) return String(ids[0]);
-  return `${ids[0]}-${ids.at(-1)}`;
-}
-
-function sessionProfileSummaryRows(dataset) {
-  const profile = dataset?.targetProduct?.sessionProfile;
-  const guide = '读法：常见表示中位水平；大多数不超过/偏差端表示约九成样本范围；当前只观察，不参与判点';
-  if (!profile) return [
-    '导入 evidence.jsonl 后显示采样节奏、定位精度、相邻速度和静止噪声',
-    guide
-  ];
-  return [
-    guide,
-    `采样节奏：常见间隔 ${formatProfileDuration(profile.sampleInterval.p50Seconds)}，大多数不超过 ${formatProfileDuration(profile.sampleInterval.p90Seconds)}；长时间断点 ${profile.sampleInterval.longGapCount}`,
-    `定位精度：常见 ${formatProfileMeters(profile.accuracy.p50Meters)}，偏差端约 ${formatProfileMeters(profile.accuracy.p90Meters)}；弱精度点 ${formatPercent(profile.accuracy.weakRatio)}`,
-    `相邻速度：常见 ${formatProfileSpeed(profile.movement.adjacentSpeedP50MetersPerSecond)}，偏快端约 ${formatProfileSpeed(profile.movement.adjacentSpeedP90MetersPerSecond)}；徒步可行上沿 ${formatProfileSpeed(profile.movement.plausibleWalkingSpeedP90MetersPerSecond)}`,
-    `静止噪声：多数半径 ${formatProfileMeters(profile.stationary.radiusP75Meters)}，偏差端约 ${formatProfileMeters(profile.stationary.radiusP90Meters)}；运动/静止窗口 ${formatPercent(profile.motion.activeRatio)} / ${formatPercent(profile.motion.stillRatio)}`
-  ];
 }
 
 function scenarioCoverageSummaryRows(dataset) {
@@ -1259,59 +1177,6 @@ function pointDetailsMarkup(dataset, point) {
 		    ${explanationRows.length > 0 ? detailBlock('主解释', explanationRows) : ''}
 		    ${scenarioRows.length > 0 ? detailBlock('关联情景', scenarioRows) : ''}
 		  `;
-}
-
-function lowQualityRowsForCleanedPoint(dataset, point) {
-  if (point.reason !== 'motion_supported_low_quality') return [];
-  const candidate = lowQualityCandidateForRawPoint(dataset, point.sourceRawPointId);
-  const rows = [
-    '该清洗点由显式开启的低质量重建产生，已进入成品轨迹和里程统计。'
-  ];
-  if (candidate) {
-    rows.push(...lowQualityCandidateDetailRows(candidate, dataset));
-  }
-  return rows;
-}
-
-function lowQualityRowsForRawPoint(dataset, rawPointId) {
-  const candidate = lowQualityCandidateForRawPoint(dataset, rawPointId);
-  if (!candidate) return [];
-  const enabled = dataset.targetProduct?.config?.lowQualityMotionRebuildEnabled === true;
-  return [
-    enabled
-      ? '该 raw 点落在低质量重建候选区间内；当前开关已开启，候选会尝试进入成品轨迹。'
-      : '该 raw 点落在低质量重建候选区间内；当前默认仅复核，不进入成品轨迹。',
-    ...lowQualityCandidateDetailRows(candidate, dataset)
-  ];
-}
-
-function lowQualityCandidateForRawPoint(dataset, rawPointId) {
-  const candidates = dataset?.targetProduct?.lowQualityMotionRebuild?.candidates || [];
-  const boundaryCandidate = candidates.find((candidate) =>
-    (candidate.rawPointIds || []).includes(rawPointId));
-  if (boundaryCandidate) return boundaryCandidate;
-  const rawIntervalCandidates = dataset?.targetProduct?.lowQualityMotionRebuild
-    ?.rawIntervalCandidates || [];
-  return rawIntervalCandidates.find((candidate) =>
-    (candidate.rawPointIds || []).includes(rawPointId)) || null;
-}
-
-function lowQualityCandidateDetailRows(candidate, dataset) {
-  const enabled = dataset.targetProduct?.config?.lowQualityMotionRebuildEnabled === true;
-  const structureIds = candidate.structureRawPointIds || [];
-  const isRawInterval = candidate.kind === 'raw_interval_review';
-  return [
-    `${isRawInterval ? '广义 raw 区间' : '可入轨候选'} raw#${candidateRawRange(candidate)}；结构点 ${structureIds.length > 0 ? structureIds.join(', ') : '-'}`,
-    `证据：时长 ${formatDuration(candidate.summary?.durationSeconds)}；active ${formatPercent(candidate.summary?.activeRatio)}；合理步距 ${formatMeters(candidate.summary?.plausibleDistanceMeters)}；移动步数 ${valueOrDash(candidate.summary?.movingStepCount)}；bbox ${formatMeters(candidate.summary?.bboxDiagonalMeters)}`,
-    candidate.decisionMix
-      ? `区间状态：可信 ${candidate.decisionMix.trustedCount}；weak ${candidate.decisionMix.weakCount}；reject ${candidate.decisionMix.rejectedCount}；weak/reject 占比 ${formatPercent(candidate.decisionMix.lowQualityRatio)}；未解释 ${candidate.decisionMix.unexplainedCount}`
-      : '',
-    isRawInterval
-      ? '当前模式：广义 raw 区间只做复核提示，不会直接进入成品轨迹。'
-      : enabled
-      ? '当前模式：进入轨迹。需要核对这些结构点是否贴合真实路线。'
-      : '当前模式：仅复核。它不会改变里程、运动时间或清洗轨迹。'
-  ].filter(Boolean);
 }
 
 function detailBlock(title, rows) {
@@ -2322,10 +2187,6 @@ function formatAreaMeters2(value) {
   return `${value.toFixed(0)} m2`;
 }
 
-function formatProfileMeters(value) {
-  return Number.isFinite(value) ? formatMeters(value) : '暂无数据';
-}
-
 function formatAscent(value) {
   return Number.isFinite(value) && value >= 0 ? `${value.toFixed(1)}m` : '证据不足';
 }
@@ -2354,10 +2215,6 @@ function formatSpeed(value) {
   return Number.isFinite(value) ? `${value.toFixed(2)} m/s` : '-';
 }
 
-function formatProfileSpeed(value) {
-  return Number.isFinite(value) ? formatSpeed(value) : '暂无数据';
-}
-
 function formatOneDecimal(value) {
   return Number.isFinite(value) ? value.toFixed(1) : '-';
 }
@@ -2373,10 +2230,6 @@ function formatPercent(value) {
 
 function formatBoolean(value) {
   return value === true ? '开启' : '关闭';
-}
-
-function formatProfileDuration(value) {
-  return Number.isFinite(value) && value > 0 ? formatDuration(value) : '暂无数据';
 }
 
 function formatNanos(value) {

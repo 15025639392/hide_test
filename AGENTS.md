@@ -12,6 +12,19 @@
 采样样本数据 -> 合理的轨迹 / 累计爬升 / 里程 / 配速 / 运动耗时
 ```
 
+长期目标函数按三层收敛：
+
+```text
+Raw evidence
+  -> 基础安全内核：合法性、采样归因、时间连续性、accuracy、GAP、速度、计距/计时/爬升门控
+  -> 情景识别：停留漂移、同路往返、弱恢复端点、遮挡聚集、交通污染等
+  -> 局部重建 / Settlement：改线、压缩、标注、解释、最终指标
+```
+
+基础安全内核必须长期保留；情景识别和局部重建不能绕过 RawPoint、RawPointDecision、
+距离、运动时间、GPX 和高度门控。复杂产品语义应逐步收敛到六层情景策略和
+Settlement，而不是继续扩散到 Android 实时链路或历史 Web 算法里。
+
 ## 目标函数
 
 输入是来自真实设备的采样样本数据：
@@ -111,8 +124,11 @@ RecordingForegroundService
 2. `docs/technical-debt-governance-plan.md` - 架构、不变量、已完成阶段和验证规则。
 3. `docs/system-gnss-track-recording-plan.md` - 当前 GNSS 记录策略。
 4. `docs/diagnostic-jsonl-schema.md` - 诊断 JSONL schema。
-5. `docs/cross-platform-migration-prompt-engineering.md` - 跨平台迁移提示词工程。
-6. `docs/` 下的专题文档 - 只在任务涉及对应主题时阅读。
+5. `docs/outdoor-track-six-layer-model.md` - 六层目标函数模型。
+6. `docs/outdoor-track-scenario-recognizers.md` - 情景识别和局部重建规则。
+7. `docs/platform-neutral-track-engine-contract.md` - 平台中立函数契约。
+8. `docs/cross-platform-migration-prompt-engineering.md` - 跨平台迁移提示词工程。
+9. `docs/` 下的专题文档 - 只在任务涉及对应主题时阅读。
 
 ## 关键路径
 

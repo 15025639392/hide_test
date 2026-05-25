@@ -90,11 +90,6 @@ const DECISION_REASON_EXPLANATIONS = {
     meaning: 'GPS 位移较小但近期 motion 显示设备在动，作为低速真实移动保留进成品轨迹。',
     evidence: '重点看 device_motion_window、raw 位移、时间差、速度区间和是否随后形成连续移动。'
   },
-  motion_supported_low_quality: {
-    title: '运动支持低质点',
-    meaning: '低质量定位段里存在持续 motion 和采样步距证据，Web 将主体结构抽稀成少量成品轨迹点。',
-    evidence: '重点看 contributingRawPointIds、相邻 raw 点距离、device_motion_window active 比例、bbox 展开和是否没有交通工具风险。'
-  },
   stationary_low_speed_tail: {
     title: '静止低速尾巴',
     meaning: '低速移动点紧贴后续静止 anchor，说明更像进入静止前的尾部抖动，回收为 reject。',
@@ -167,7 +162,10 @@ export function isEvidenceJsonlPath(path) {
 }
 
 export function isEvidenceCandidatePath(path) {
-  return isEvidenceJsonlPath(path);
+  const normalizedPath = String(path || '');
+  if (isEvidenceJsonlPath(normalizedPath)) return true;
+  const fileName = normalizedPath.split('/').pop() || '';
+  return /evidence[^/]*\.jsonl(?:\.json)?$/i.test(fileName);
 }
 
 export function parseEvidenceJsonl(text, filePath = 'evidence.jsonl') {
@@ -239,10 +237,7 @@ export function buildTargetOutput(model, targetProduct = null) {
       raw: rawSummary(model.points, targetProduct),
       decision: decisionSummary(model, targetProduct),
       pressure: pressureSummary(model, ascent),
-      motion: motionSummary(model),
-      sessionProfile: targetProduct?.sessionProfile ?? null,
-      adaptiveShadow: targetProduct?.adaptiveShadow ?? null,
-      adaptiveShadows: targetProduct?.adaptiveShadows ?? []
+      motion: motionSummary(model)
     },
     findings
   };
