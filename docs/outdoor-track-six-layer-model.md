@@ -163,9 +163,10 @@ V16.1 中 `dense_area_intent` 是上层调度诊断：`forward_motion` 已用于
 强制阻断原有场景识别。`rest_photo_micro_move` 对 2 分钟以上、bbox/path 都很小的
 拍照休息片段，允许把约 12m 内首尾净距视作近静止微移动并塌成休息锚点。
 
-V17 准备方向是冲突感知 settlement 仲裁：情景识别器先提交候选解释，再由统一
-settlement 层决定塌缩、抽稀、保留端点、隔离交通或只输出复盘冲突。V17.0 先做
-review-only 结构和真实样本验收清单，不默认扩大改线范围。计划见
+V17 准备方向是密集区保方向候选仲裁：同一 dense raw 区间可以产生多个主前进骨架候选，
+但同一 raw 子区间最终只能有一个 active 主脊线；一致候选合并，冲突候选 review-only
+或降级为解释上下文。V17.0 先做 review-only 结构和真实样本验收清单，不默认扩大改线范围。
+计划见
 `docs/outdoor-track-v17-conflict-aware-settlement-plan.md`。
 
 详细触发证据、局部重建动作和测试要求见

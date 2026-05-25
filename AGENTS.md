@@ -126,7 +126,7 @@ RecordingForegroundService
 4. `docs/diagnostic-jsonl-schema.md` - 诊断 JSONL schema。
 5. `docs/outdoor-track-six-layer-model.md` - 六层目标函数模型。
 6. `docs/outdoor-track-scenario-recognizers.md` - 情景识别和局部重建规则。
-7. `docs/outdoor-track-v17-conflict-aware-settlement-plan.md` - V17 冲突感知 Settlement 启动计划。
+7. `docs/outdoor-track-v17-conflict-aware-settlement-plan.md` - V17 密集区保方向候选仲裁计划。
 8. `docs/platform-neutral-track-engine-contract.md` - 平台中立函数契约。
 9. `docs/cross-platform-migration-prompt-engineering.md` - 跨平台迁移提示词工程。
 10. `docs/` 下的专题文档 - 只在任务涉及对应主题时阅读。

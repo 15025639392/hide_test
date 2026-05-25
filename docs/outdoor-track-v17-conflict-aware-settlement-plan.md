@@ -1,10 +1,15 @@
-# Outdoor Track V17 Conflict-Aware Settlement Plan
+# Outdoor Track V17 Dense Forward Spine Arbitration Plan
 
-本文是 V17 启动文档。V17 的目标不是继续扩散更多单点规则，而是把 V16.1 已经暴露出来的
-`denseAreaSettlementPlan[]` 和 `denseIntentConflicts[]` 收敛成统一的 settlement 仲裁层。
+本文是 V17 启动文档。V17 专注解决一个具体问题：
 
-V17 初期先做 review-only 计划和真实样本验收清单；只有当某类冲突在真实 evidence 上稳定后，
-才允许升级为默认改线行为。
+```text
+同一个定位点密集区里，多个“保方向 / 主前进骨架”候选互相重叠、包含或相交时，
+如何选出唯一、稳定、可解释的最终主脊线。
+```
+
+V17 不是交通工具专题，也不是泛化的全局 settlement 重写。交通污染、GAP、weak/reject、
+GPX 和高度门控仍属于基础安全边界；本阶段只处理 dense forward spine candidate 之间的
+叠加仲裁。
 
 ## 版本定位
 
@@ -23,95 +28,169 @@ six-layer-evidence-v17
 V17 工作名：
 
 ```text
-conflict-aware settlement orchestrator
+dense forward spine arbitration
 ```
 
 一句话目标：
 
 ```text
-密集区先保主意图和主路线候选，但所有局部情景都必须经过统一仲裁，再决定塌缩、抽稀、
-保留端点、隔离交通，或只输出复盘冲突。
+密集区可以产生多个保方向候选，但同一 raw 子区间最终只能有一个 active 主脊线；
+一致候选合并，冲突候选仲裁，落选候选转为解释上下文。
 ```
 
 ## 为什么需要 V17
 
-V16.1 已证明一个关键问题：情景重建本身不一定稳定，密集区主意图也不一定总是局部正确。
+V16.1 已经完成：
 
-典型例子：
+- 对密集窗口输出 `dense_area_intent`。
+- 在 `forward_motion` 内输出 `dense_main_route_settlement`。
+- 允许局部 `rest_photo_micro_move` 覆盖粗粒度 forward intent。
+- 用 `denseAreaSettlementPlan[]` 和 `denseIntentConflicts[]` 把冲突暴露到 UI。
 
-- 大窗口粗看像 `forward_motion`，局部却是拍照、休息、小范围挪动。
-- 同一段 raw 内可能同时叠加往返、遮挡恢复、停留漂移和交通污染。
-- 只靠单个情景识别器改线，容易出现有的折返线没清掉、有的真实小移动被误清掉。
-- UI 已经能看到冲突，但算法层还缺少一个统一的冲突裁决产物。
+现在发现的新问题是：同一密集区域里可能出现多个保方向候选互相叠加。它们可能来自不同
+窗口尺度、不同局部片段或不同情景叠加。如果简单叠加或简单取交集，会出现：
 
-因此 V17 不应简单加阈值，而应把“候选解释”和“最终结算动作”分开。
+- 主路线被压得过短，只剩中间交集。
+- 入口、出口、折返点被误删。
+- 两条方向不同的候选被误合成一条线。
+- 局部休息/拍照微移动被主方向候选吞掉。
+- 多个候选同时 active，造成距离、运动时间和解释重复结算。
+
+因此 V17 的核心不是再加一个密集区阈值，而是建立保方向候选之间的仲裁。
+
+## 核心原则
+
+- **不把几何交集当最终轨迹。** 交集只能作为重叠证据，不能直接作为清洗线。
+- **时间顺序优先于空间相交。** GNSS 漂移中空间线段交叉很常见，不代表人真的走过交点。
+- **raw 时间轴先切片。** 所有候选按 rawRange 做 sweep-line 分段，每个子区间单独仲裁。
+- **同向一致才合并。** 方向角、入口出口、path/net、前后轨迹连续性都一致时，才能合并。
+- **方向冲突就显式冲突。** 不强行合并，不取交点，不把落选候选静默删除。
+- **同一 raw 子区间唯一 active。** 最终只能有一个主脊线候选负责改线，其余进入
+  `scenarioContexts` / `contributingRawPointIds` / review finding。
 
 ## V17 核心产物
 
-新增或稳定以下概念：
-
 | 产物 | 作用 |
 | --- | --- |
-| `settlementCandidates[]` | 所有情景识别器只提交候选，不直接代表最终真值。 |
-| `settlementConflicts[]` | 记录候选之间的冲突，例如主前进 vs 局部休息、往返 vs 交通污染。 |
-| `settlementDecisions[]` | 统一仲裁后的决定：塌缩、抽稀、保留、隔离、只诊断。 |
-| `settlementReviewFindings[]` | 给 UI 和人工验收看的中文复盘摘要。 |
+| `forwardSpineCandidates[]` | 所有保方向候选，包含 rawRange、trackPointRange、入口出口、方向角、path/net、bbox、来源场景。 |
+| `forwardSpineOverlaps[]` | 候选之间的重叠、包含、端点相接、空间相交关系。 |
+| `forwardSpineConflicts[]` | 无法直接合并的候选冲突，记录冲突类型和证据。 |
+| `forwardSpineDecisions[]` | 每个 raw 子区间的仲裁结果：merge、select、split、downgrade、review_only。 |
 
-V17 可以先把这些结构映射到现有 `scenarios[]`、`denseAreaSettlementPlan[]`、
-`denseIntentConflicts[]` 上，不要求第一步重写全部识别器。
+这些结构可以先从现有 `dense_main_route_settlement`、`denseAreaSettlementPlan[]` 和
+`denseIntentConflicts[]` 派生，不要求第一步重写所有情景识别器。
 
-## 仲裁顺序
+## 候选相交处理
 
-V17 settlement 仲裁建议采用固定顺序：
+### 同向相交
 
-1. **Hard safety boundary**
-   保留 intake、GAP、weak/reject、transport、altitude gate、GPX gate 等基础安全内核。
+表现：
 
-2. **Transport contamination isolation**
-   交通污染优先隔离。疑似交通点不能因为主路线连续性被重新混入徒步距离。
+- 候选方向角接近。
+- rawRange 大量重叠。
+- 入口、出口位置和前后可信轨迹方向一致。
 
-3. **Dense intent and main spine**
-   密集窗口先产出主意图和主路线候选，但只能作为候选骨架，不是最终答案。
+处理：
 
-4. **Local evidence override**
-   小范围 bbox、低净距、高低速/静止支持、休息拍照微移动等局部证据，可以覆盖粗粒度
-   `forward_motion`。
+- 不取交集。
+- 合并为一个更长候选，或选择覆盖更完整、path/net 更优的候选作为主脊线。
+- 被合并候选的 raw id 进入主候选贡献解释。
 
-5. **Round-trip and endpoint preservation**
-   往返、洞内/遮挡端点、进出口锚点不能被静止塌缩误删。
+### 包含相交
 
-6. **Final settlement**
-   同一 raw 区间只能有一个最终结算动作，其他命中情景保留为 explanation context。
+表现：
 
-## 冲突类型优先级
+- 短候选完全落在长候选 rawRange 内。
+- 两者方向基本一致，或短候选只是局部窗口重复识别。
 
-第一批 V17 只稳定这些冲突类型：
+处理：
+
+- 默认长候选 active，短候选降级为 context。
+- 如果短候选明显避开局部漂移，允许把长候选该子区间替换为短候选。
+- 替换必须只发生在切片后的 raw 子区间，不能整段覆盖长候选。
+
+### 交叉相交
+
+表现：
+
+- 两条候选在空间上交叉。
+- 时间顺序、方向角或入口出口语义不一致。
+
+处理：
+
+- 不合并，不取交点。
+- 按 raw 时间轴切片，每片评分选主候选。
+- 输出 `forward_spine_conflict`，落选候选进入 explanation context。
+
+### 端点相交
+
+表现：
+
+- 候选只在入口、出口、折返点、GAP recovery 或弱恢复端点附近相接。
+
+处理：
+
+- 端点优先保留。
+- 端点两侧分别结算。
+- 不能用交集算法吞掉端点。
+
+### 往返相交
+
+表现：
+
+- 前进候选和返程候选在同一路径附近重叠或相交。
+- path/net、闭合度或折返点证据更像往返。
+
+处理：
+
+- 不作为单条 forward spine 处理。
+- 降级或转交 `same_road_round_trip` / `round_trip_line` / `closed_loop_round_trip`。
+- 输出 `round_trip_overrides_forward_spine` review conflict。
+
+## 仲裁评分
+
+每个 raw 子区间对候选评分，而不是对整段一次性评分。
+
+建议评分因素：
+
+| 因素 | 目标 |
+| --- | --- |
+| raw 时间覆盖 | 候选能解释该子区间多少 raw 点。 |
+| 方向连续性 | 与子区间前后可信轨迹方向夹角是否小。 |
+| path/net 比例 | 主脊线是否减少多余折返，而不是制造更长路线。 |
+| bbox 控制 | 候选是否落在合理密集区范围内。 |
+| 入口出口稳定性 | 是否保留真实进入和离开位置。 |
+| 情景冲突 | 是否覆盖了休息、拍照、弱恢复端点或往返信号。 |
+| 距离影响 | 是否避免距离和运动时间重复结算。 |
+
+评分结果只决定 forward spine 候选之间的主次。它不能绕过基础安全内核，也不能把 weak/reject
+直接变成可信 GPX 点。
+
+## 冲突类型
+
+第一批 V17 只稳定这些 forward spine 冲突：
 
 | 冲突类型 | 默认处理 |
 | --- | --- |
-| `local_micro_move_overrides_dense_forward` | 已在 V16.1 验证；局部休息/拍照微移动可覆盖粗粒度前进意图。 |
-| `transport_overrides_forward_or_round_trip` | 先 review-only；交通污染不得进入徒步真值。 |
-| `endpoint_preservation_overrides_collapse` | 先 review-only；弱恢复端点、洞内端点、往返折返点不能被局部塌缩吞掉。 |
-| `stationary_overrides_dense_forward` | 先 review-only；整段净距、bbox 和运动证据都支持静止时，允许压成静止锚点。 |
-| `round_trip_overrides_forward_spine` | 先 review-only；主方向看似前进但闭合/同路往返信号更强时，不应强保前进骨架。 |
-
-除 `local_micro_move_overrides_dense_forward` 外，其余类型在 V17 初期不直接改线，只输出
-结构化冲突和 UI 复盘。
+| `overlapping_forward_spine_candidates` | 同向或包含重叠；优先 merge/select。 |
+| `crossing_forward_spine_candidates` | 空间相交但时间/方向不一致；review-only，切片后选主候选。 |
+| `nested_forward_spine_candidate` | 短候选落在长候选内；默认短候选降级为 context。 |
+| `round_trip_overrides_forward_spine` | 往返信号强于主前进；转交往返情景。 |
+| `local_micro_move_overrides_forward_spine` | 休息/拍照微移动覆盖局部主方向；沿用 V16.1 稳定行为。 |
 
 ## 真实样本验收清单
 
-V17 第一轮必须继续使用真实 evidence 作为验收锚点。
+V17 第一轮继续使用真实 evidence 做锚点。
 
 | Session | Raw 区间 | V17 验收目标 |
 | --- | --- | --- |
-| `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#1944-2014` | 保持休息/拍照微移动塌缩，不出现折返线。 |
-| `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#2461-2483` | 保持塌缩，不出现短折返。 |
-| `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#2795-2834` | 保持塌缩，不出现短折返。 |
-| `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#3192-3946` | 保持往返 + 轻微移动的 bounded distance；不可出现大距离波动。 |
-| `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#4562-4610` | 保持静止/休息微移动塌缩。 |
-| `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#5050-5094` | 保持局部休息微移动覆盖 dense forward 冲突。 |
-| `0ddf2d35-02e2-454c-9057-667265fe8a71` | `Raw#256-312` | 保持静止漂移塌缩为单锚点。 |
-| `ddf59bff-9fe0-4527-96b2-94dd5016a8c4` | `Raw#32-42` | 用于交通工具混入/早期启动情景复盘；先 review-only，不急于改线。 |
+| `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#1944-2014` | 不被 forward spine 吞掉；保持休息/拍照微移动塌缩。 |
+| `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#2461-2483` | 不出现短折返线。 |
+| `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#2795-2834` | 不出现短折返线。 |
+| `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#3192-3946` | 往返 + 轻微移动保持 bounded distance；多个局部方向不能叠加放大距离。 |
+| `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#4562-4610` | 静止/休息微移动保持塌缩。 |
+| `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#5050-5094` | 局部休息微移动继续覆盖粗粒度 forward。 |
+| `0ddf2d35-02e2-454c-9057-667265fe8a71` | `Raw#256-312` | 静止漂移保持单锚点。 |
 
 ## 不做范围
 
@@ -121,38 +200,40 @@ V17 启动阶段不做这些事：
 - 不改 `evidence.jsonl` schema。
 - 不改 trusted GPX 输出口径。
 - 不把 `gnss_snapshot` 升级为硬判点输入。
+- 不把交通工具污染作为 V17 主线。
 - 不在 UI 中展示不稳定规则说明。
-- 不把所有密集区都强行塌缩或强行抽稀。
-- 不让单个情景识别器直接绕过 settlement 仲裁。
+- 不把多个候选取几何交集作为最终路线。
+- 不允许多个 forward spine 在同一 raw 子区间同时 active。
 
 ## 实施分期
 
 ### V17.0 Review-Only
 
-- 新增 `settlementCandidates[]` / `settlementConflicts[]` / `settlementDecisions[]` 的最小结构。
-- 先从现有 dense intent、rest photo micro move、round trip、transport 场景中生成候选。
-- UI 继续以冲突区间和中文解释为主，不展示完整规则说明。
-- 所有新增冲突默认不改线，除 V16.1 已稳定的休息微移动覆盖 dense forward。
+- 从现有 dense main route settlement 生成 `forwardSpineCandidates[]`。
+- 识别候选之间的 overlap、nested、crossing、endpoint-touch。
+- 生成 `forwardSpineConflicts[]` 和中文 review finding。
+- 不改变当前清洗轨迹。
 
-### V17.1 First Active Arbitration
+### V17.1 Active Merge/Select
 
-- 只选择一个真实样本中稳定的冲突类型升级为 active settlement。
-- 同步更新 strategy version、文档和测试。
+- 只启用同向重叠和包含候选的 merge/select。
+- 不处理 crossing 为 active 改线。
 - 必须证明不会破坏 V16.1 已锁定的真实 evidence 回归。
 
-### V17.2 Fixture Hardening
+### V17.2 Crossing And Round-Trip Arbitration
 
-- 将真实 Raw 区间沉淀成更小的 replay-like fixture 或 targeted synthetic case。
-- 补齐交通污染、端点保留、往返覆盖主前进的固定测试。
+- 对 crossing 候选和往返覆盖主方向做 review-only 到 active 的升级评估。
+- 只有真实样本和 targeted synthetic case 都稳定后，才允许 active。
 
 ## 验收标准
 
 V17 任一 active 改线必须满足：
 
 - 对应 raw 区间有明确人工预期。
-- `scenarios[]` 仍保留所有候选解释。
-- 最终只有一个 `settlementDecision` 负责改线。
+- 同一 raw 子区间只有一个 active forward spine decision。
+- 落选候选保留为 context，不静默丢失。
 - 被合并或删除的 raw point 必须进入 `contributingRawPointIds` 或诊断解释链。
+- 入口、出口、折返点不能被交集算法吞掉。
 - 距离、运动时间、爬升、GPX gate 的变化可解释。
 - `npm test` 通过。
 - 本机真实 evidence 回归通过。
@@ -161,7 +242,8 @@ V17 任一 active 改线必须满足：
 
 下一步先实现 V17.0 review-only：
 
-1. 在 `sixLayerTrackProduct.mjs` 中从现有 `scenarios[]` 生成 settlement candidate。
-2. 把 V16.1 的 `denseIntentConflicts[]` 映射为第一批 `settlementConflicts[]`。
-3. UI 右侧冲突详情优先展示 `settlementConflicts[]`，没有时回退 dense conflict。
-4. 不改变当前清洗轨迹，先验证冲突列表是否比 V16.1 更完整、更稳定。
+1. 为 `dense_main_route_settlement` 产出 `forwardSpineCandidates[]`。
+2. 按 rawRange sweep-line 切出候选重叠子区间。
+3. 识别同向、包含、交叉、端点相交、往返相交。
+4. UI 冲突详情展示 forward spine conflict，并可点击定位地图。
+5. 不改变当前清洗轨迹，先验证冲突列表是否准确反映“多个保方向互相叠加”的位置。
