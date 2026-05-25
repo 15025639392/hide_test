@@ -146,6 +146,7 @@ RecordingForegroundService
 | 诊断 JSONL schema | `docs/diagnostic-jsonl-schema.md` |
 | 六层目标函数模型 | `docs/outdoor-track-six-layer-model.md` |
 | 情景识别和局部重建规则 | `docs/outdoor-track-scenario-recognizers.md` |
+| V17 冲突感知 Settlement 启动计划 | `docs/outdoor-track-v17-conflict-aware-settlement-plan.md` |
 | 平台中立函数契约 | `docs/platform-neutral-track-engine-contract.md` |
 | 跨平台迁移提示词工程 | `docs/cross-platform-migration-prompt-engineering.md` |
 | 弱 GPS 研究笔记 | `docs/weak-gps-github-research.md` |

@@ -45,70 +45,6 @@ const CONTOUR_THRESHOLDS_METERS = {
   14: [10, 50],
   15: [10, 50]
 };
-const CLEANING_ALGORITHM_SECTIONS = [
-  {
-    title: '六层模型',
-    rows: [
-      '输入 evidence.jsonl，Web 使用六层因果模型离线生成清洗轨迹',
-      '天空/大气层和场景传播层只落为 accuracy、GAP、raw 点发散、气压趋势等可观测证据',
-      '设备采样层解释 SamplingEpoch、sampling_policy、callbackDelayNanos 和传感器可用性',
-      '水平轨迹层决定 anchor / accept / weak / reject 和 segment',
-      '垂直高度层将 Location.altitude 与 BAROMETER altitude 拆成两条独立线',
-      '活动与结算层统一决定 GPX、距离、运动时间、配速和 selected ascent'
-    ]
-  },
-  {
-    title: 'Intake 硬门槛',
-    rows: (config) => [
-      'raw_location 必须是已归一化的定位证据；provider/source 只作为来源解释，不再绑定 Android GPS_PROVIDER',
-      'provider / source / sourceKind / trustClass 至少要有一个非空，用于证明定位来源可解释',
-      `accuracy 必须有效且 <= ${formatPlainNumber(config.maxIntakeAccuracyMeters)}m`,
-      '拒绝 duplicate、out-of-order、早于记录开始、采样 epoch 不匹配的点',
-      'intake_rejected 只保留为诊断证据，不进入点云、decision 或成品轨迹'
-    ]
-  },
-  {
-    title: '水平轨迹',
-    rows: (config) => [
-      `GAP > ${formatPlainNumber(config.gapSeconds)}s 进入恢复边界，gap_recovery 进可信轨迹但 delta=0`,
-      `accuracy > ${formatPlainNumber(config.weakCloudAccuracyMeters)}m 进入 weak_horizontal_accuracy 或 recovery pending，不进可信 GPX`,
-      `静止阈值 = max(${formatPlainNumber(config.stationaryDistanceMeters)}m, accuracy * ${formatPlainNumber(config.stationaryAccuracyMultiplier)})`,
-      '静止 anchor 必须有近期 still motion 支持；慢走有 walking motion 时可保留为 motion_supported_low_speed',
-      'transport_risk 只保留为诊断，不计入徒步距离、运动时间或爬升'
-    ]
-  },
-  {
-    title: '垂直高度双线',
-    rows: (config) => [
-      `Location.altitude 只在水平点可信且 verticalAccuracy <= ${formatPlainNumber(config.locationAltitudeAscentMaxVerticalAccuracyMeters)}m 时进入 GNSS altitude line`,
-      'GAP recovery、stationary_anchor、transport_risk 会 reset 或 suspend 高度累计，不跨边界计爬升',
-      'BAROMETER altitude 来自 pressure window，按传感器时间独立累计，不绑定单个 TrackPoint',
-      `barometer 样本间隔超过 ${formatPlainNumber(config.barometerAscentMaxSampleGapNanos / 1_000_000_000)}s 或出现压力突变时 reset/reject`,
-      'selected ascent 优先选择可信 BAROMETER，气压不可用时才使用 GNSS altitude 兜底'
-    ]
-  },
-  {
-    title: '统计口径',
-    rows: [
-      '里程 = 清洗轨迹中 countsDistance=true 的 distanceDeltaMeters 求和',
-      '运动耗时 = countsMovingTime=true 的 movingTimeDeltaSeconds 求和',
-      'GAP recovery 可以进入可信线，但不计距、不计运动时间、不跨边界计爬升',
-      'weak / reject / intake_rejected 都只作为诊断证据，不进入 trusted GPX',
-      'Location 海拔累计和气压累计都会保留，selected ascent 只是展示主结果'
-    ]
-  },
-  {
-    title: '不使用 gnss_snapshot',
-    rows: (config) => [
-      `${formatPlainNumber(config.maxIntakeAccuracyMeters)}m 是 raw 进入复算的宽门槛，用于保留弱 GPS 诊断证据`,
-      `${formatPlainNumber(config.weakCloudAccuracyMeters)}m 是水平观测弱分界，避免弱定位污染目标轨迹`,
-      '算法不读取卫星数、C/N0、星座分布或 used-in-fix',
-      '弱定位原因只写可观测现象，例如 weak_horizontal_accuracy、local scatter、GAP、pressure jump',
-      '场景原因如山谷、密林、城市峡谷只进入人工复盘，不进入自动判点标签'
-    ]
-  }
-];
-
 const state = {
   datasets: [],
   selectedDatasetId: null,
@@ -122,8 +58,7 @@ const state = {
   mapLoaded: false,
   contoursAvailable: false,
   contourDemSource: null,
-  popup: null,
-  algorithmSourceText: '正在读取 acceptance-web/src/sixLayerTrackProduct.mjs...'
+  popup: null
 };
 
 const elements = {
@@ -147,9 +82,6 @@ const elements = {
   showPoints: document.querySelector('#showPoints'),
   cleaningAlgorithm: document.querySelector('#cleaningAlgorithm'),
   cleaningConfigState: document.querySelector('#cleaningConfigState'),
-  algorithmDialog: document.querySelector('#algorithmDialog'),
-  algorithmDialogContent: document.querySelector('#algorithmDialogContent'),
-  closeAlgorithmDialogButton: document.querySelector('#closeAlgorithmDialogButton'),
   importStatus: document.querySelector('#importStatus'),
   importSpinner: document.querySelector('#importSpinner'),
   importText: document.querySelector('#importText'),
@@ -174,17 +106,11 @@ elements.scenarioRangeReviewButton.addEventListener('click', applyScenarioRangeR
 elements.scenarioRangeInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') applyScenarioRangeReview();
 });
+elements.scenarioRangeReview.addEventListener('click', handleScenarioRangeReviewClick);
+elements.cleaningAlgorithm.addEventListener('click', handleScenarioRangeReviewClick);
 elements.showTerrain.addEventListener('change', renderTerrain);
 elements.showContours.addEventListener('change', renderContours);
 elements.scenarioRepairOptions.addEventListener('change', handleScenarioRepairChange);
-elements.closeAlgorithmDialogButton.addEventListener('click', closeAlgorithmDialog);
-elements.algorithmDialog.addEventListener('click', (event) => {
-  if (event.target === elements.algorithmDialog) closeAlgorithmDialog();
-});
-elements.algorithmDialog.addEventListener('cancel', (event) => {
-  event.preventDefault();
-  closeAlgorithmDialog();
-});
 for (const input of [
   elements.showRaw,
   elements.showTrusted,
@@ -199,19 +125,6 @@ for (const input of [
 
 initMap();
 render();
-loadAlgorithmSource();
-
-async function loadAlgorithmSource() {
-  try {
-    const response = await fetch('./src/sixLayerTrackProduct.mjs', { cache: 'no-store' });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    state.algorithmSourceText = await response.text();
-  } catch (error) {
-    state.algorithmSourceText = `无法读取 sixLayerTrackProduct.mjs: ${error.message}`;
-  }
-  renderCleaningAlgorithm();
-  if (elements.algorithmDialog.open) renderAlgorithmDialog();
-}
 
 async function importFiles(files, fromDirectory) {
   setLoading(true, '正在识别 evidence.jsonl...');
@@ -329,6 +242,8 @@ function compactTargetOutput(output) {
     barometerTotalAscentMeters: output?.summaries?.pressure?.barometerTotalAscentMeters ?? null,
     locationAltitudeTotalAscentMeters:
       output?.summaries?.pressure?.locationAltitudeTotalAscentMeters ?? null,
+    denseAreaSettlementPlan: output?.denseAreaSettlementPlan || [],
+    denseIntentConflicts: output?.denseIntentConflicts || [],
     findings: output?.findings || []
   };
 }
@@ -555,7 +470,6 @@ function render() {
   renderScenarioRangeReview();
   renderPointDetails();
   renderCleaningAlgorithm();
-  if (elements.algorithmDialog.open) renderAlgorithmDialog();
   renderMap();
 }
 
@@ -655,6 +569,7 @@ function renderScenarioRangeReview() {
   }
   const review = reviewTrackPointScenarioCoverage(dataset.targetProduct,
     parsed.startTrackPointId, parsed.endTrackPointId);
+  review.denseIntentConflicts = denseIntentConflictsForRawRange(dataset, review.rawRange);
   elements.scenarioRangeState.textContent =
     `#${review.requestedTrackPointRange.startTrackPointId}-${review.requestedTrackPointRange.endTrackPointId}`;
   elements.scenarioRangeReview.innerHTML = scenarioRangeReviewMarkup(review);
@@ -692,13 +607,185 @@ function scenarioRangeReviewMarkup(review) {
   const hitMarkup = review.scenarioCoverage.length > 0
     ? scenarioHitListMarkup(review.scenarioCoverage, true)
     : '<p class="empty-note">该清洗点区间没有命中稳定情景</p>';
+  const conflictMarkup = review.denseIntentConflicts?.length > 0
+    ? denseIntentConflictListMarkup(review.denseIntentConflicts)
+    : '<p class="empty-note">该清洗点区间没有 dense intent conflict</p>';
   return [
     summaryBlock('区间概览', overviewRows),
     `<section class="summary-block scenario-hit-block">
       <h3>命中情景</h3>
       ${hitMarkup}
+    </section>`,
+    `<section class="summary-block scenario-hit-block">
+      <h3>密集区冲突</h3>
+      ${conflictMarkup}
     </section>`
   ].join('');
+}
+
+function denseIntentConflictsForRawRange(dataset, rawRange) {
+  const start = rawRange?.startRawPointId;
+  const end = rawRange?.endRawPointId;
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return [];
+  return (dataset?.targetOutput?.denseIntentConflicts || [])
+    .filter((conflict) => rawRangesOverlap(conflict.rawRange, rawRange));
+}
+
+function rawRangesOverlap(left, right) {
+  return Number.isFinite(left?.startRawPointId)
+    && Number.isFinite(left?.endRawPointId)
+    && Number.isFinite(right?.startRawPointId)
+    && Number.isFinite(right?.endRawPointId)
+    && left.startRawPointId <= right.endRawPointId
+    && right.startRawPointId <= left.endRawPointId;
+}
+
+function denseIntentConflictListMarkup(conflicts) {
+  return `
+    <div class="scenario-hit-list">
+      ${conflicts.map((conflict) => denseIntentConflictMarkup(conflict)).join('')}
+    </div>
+  `;
+}
+
+function denseIntentConflictOverviewMarkup(dataset) {
+  const conflicts = dataset?.targetOutput?.denseIntentConflicts || [];
+  if (conflicts.length === 0) {
+    return '<span>当前没有密集区主意图冲突</span>';
+  }
+  return denseIntentConflictListMarkup(conflicts.slice(0, 12));
+}
+
+function denseIntentConflictMarkup(conflict) {
+  const intentText = humanDenseIntentList(conflict.denseAreaIntents);
+  const scenarioText = scenarioNameLabel(conflict.scenario);
+  const handlingText = humanConflictResolution(conflict.resolution);
+  return `
+    <button
+      class="scenario-hit conflict-hit"
+      type="button"
+      data-conflict-start-raw="${escapeHtml(String(conflict.rawRange?.startRawPointId ?? ''))}"
+      data-conflict-end-raw="${escapeHtml(String(conflict.rawRange?.endRawPointId ?? ''))}"
+    >
+      <div class="scenario-hit-title">
+        <strong>${escapeHtml(formatScenarioRawRange(conflict.rawRange))}</strong>
+        <span>${escapeHtml(handlingText)}</span>
+      </div>
+      <div class="scenario-hit-meta">
+        <span>粗判 ${escapeHtml(intentText)}</span>
+        <span>局部 ${escapeHtml(scenarioText)}</span>
+        <span>点击定位地图</span>
+      </div>
+      <p>${escapeHtml(`这段密集点云整体像在前进，但局部轨迹更像拍照/休息时的小范围挪动，所以按局部休息微移动处理。`)}</p>
+      <div class="conflict-evidence">
+        <span>路径 ${escapeHtml(formatMeters(conflict.pathMeters))}</span>
+        <span>首尾净距 ${escapeHtml(formatMeters(conflict.netDistanceMeters))}</span>
+        <span>范围 ${escapeHtml(formatMeters(conflict.bboxDiagonalMeters))}</span>
+        <span>低速比例 ${escapeHtml(formatRatio(conflict.lowSpeedRatio))}</span>
+      </div>
+      <p class="scenario-hit-action">${escapeHtml(humanConflictAction(conflict))}</p>
+    </button>
+  `;
+}
+
+function humanDenseIntentList(intents) {
+  if (!Array.isArray(intents) || intents.length === 0) return '-';
+  return intents.map((intent) => ({
+    forward_motion: '主前进',
+    stationary: '停留',
+    round_trip: '往返',
+    gap_cluster: '遮挡/GAP 聚集',
+    mixed: '混合'
+  })[intent] || intent).join('、');
+}
+
+function humanConflictResolution(resolution) {
+  if (resolution === 'prefer_local_rest_photo_micro_move') return '按局部休息处理';
+  return resolution || '已处理';
+}
+
+function humanConflictAction(conflict) {
+  if (conflict.action === 'collapse_micro_move_to_rest_anchor') {
+    return '处理结果：塌成一个休息锚点，不累计这段抖动距离。';
+  }
+  if (conflict.action === 'simplify_micro_move_shape') {
+    return '处理结果：保留少量微移动锚点，删除多余折返。';
+  }
+  return `处理结果：${conflict.action || '-'}；${conflict.localRebuild || '-'}`;
+}
+
+function handleScenarioRangeReviewClick(event) {
+  const button = event.target.closest('[data-conflict-start-raw][data-conflict-end-raw]');
+  if (!button) return;
+  const startRawPointId = Number(button.dataset.conflictStartRaw);
+  const endRawPointId = Number(button.dataset.conflictEndRaw);
+  focusDenseIntentConflict(startRawPointId, endRawPointId);
+}
+
+function focusDenseIntentConflict(startRawPointId, endRawPointId, datasetId = null) {
+  const dataset = datasetId
+    ? state.datasets.find((item) => item.id === datasetId)
+    : selectedDataset();
+  if (!dataset || !Number.isFinite(startRawPointId) || !Number.isFinite(endRawPointId)) {
+    return;
+  }
+  state.selectedDatasetId = dataset.id;
+  const rawRange = {
+    startRawPointId: Math.min(startRawPointId, endRawPointId),
+    endRawPointId: Math.max(startRawPointId, endRawPointId)
+  };
+  const trackRange = trackPointRangeTouchingRawRange(dataset, rawRange);
+  if (trackRange) {
+    state.scenarioReviewRangeText =
+      `${trackRange.startTrackPointId}-${trackRange.endTrackPointId}`;
+    elements.scenarioRangeInput.value = state.scenarioReviewRangeText;
+    renderScenarioRangeReview();
+  }
+  const bounds = rawRangeBounds(dataset, rawRange);
+  if (bounds) fitBounds(bounds);
+}
+
+function trackPointRangeTouchingRawRange(dataset, rawRange) {
+  const points = (dataset.targetProduct?.track || [])
+    .filter((point) => trackPointTouchesRawRange(point, rawRange));
+  if (points.length === 0) return null;
+  return {
+    startTrackPointId: Math.min(...points.map((point) => point.trackPointId)),
+    endTrackPointId: Math.max(...points.map((point) => point.trackPointId))
+  };
+}
+
+function trackPointTouchesRawRange(point, rawRange) {
+  if (point.sourceRawPointId >= rawRange.startRawPointId
+      && point.sourceRawPointId <= rawRange.endRawPointId) {
+    return true;
+  }
+  return (point.contributingRawPointIds || []).some((rawPointId) =>
+    rawPointId >= rawRange.startRawPointId && rawPointId <= rawRange.endRawPointId);
+}
+
+function rawRangeBounds(dataset, rawRange) {
+  const points = (dataset.model?.points || [])
+    .filter((point) =>
+      point.rawPointId >= rawRange.startRawPointId
+      && point.rawPointId <= rawRange.endRawPointId
+      && hasValidLngLat(point));
+  return boundsForPoints(points);
+}
+
+function boundsForPoints(points) {
+  if (!points.length) return null;
+  return points.reduce((bounds, point) => ({
+    minLat: Math.min(bounds.minLat, point.lat),
+    maxLat: Math.max(bounds.maxLat, point.lat),
+    minLng: Math.min(bounds.minLng, point.lng),
+    maxLng: Math.max(bounds.maxLng, point.lng)
+  }), {
+    minLat: points[0].lat,
+    maxLat: points[0].lat,
+    minLng: points[0].lng,
+    maxLng: points[0].lng
+  });
 }
 
 function scenarioHitListMarkup(items, useMatchedRange = false, limit = Infinity) {
@@ -786,49 +873,24 @@ function renderCleaningAlgorithm() {
 }
 
 function algorithmBlock() {
-  const config = currentCleaningConfig();
   const dataset = selectedDataset();
-  const repairSummary = scenarioRepairSummary(state.enabledScenarioRepairIds);
   return `
     <section class="summary-block algorithm-block">
-      <h3>清洗规则</h3>
-      <div class="algorithm-section">
-        <b>清洗结果</b>
-        ${targetProductSummaryRows(dataset).map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
-      </div>
+      <h3>情景覆盖总览</h3>
       <div class="algorithm-section">
         <b>情景覆盖</b>
         ${scenarioCoverageSummaryRows(dataset).map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
       </div>
       <div class="algorithm-section">
-        <b>情景修复</b>
-        <span>当前 ${escapeHtml(repairSummary)}；勾选变化会立即重算清洗轨迹、统计和线样式</span>
-        <span>情景区域始终来自全量识别结果，不随修复勾选过滤或消失</span>
-        ${scenarioRepairStateRows(config).map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
+        <b>密集区调度</b>
+        ${denseIntentSummaryRows(dataset).map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
       </div>
       <div class="algorithm-section">
-        <b>固定策略口径</b>
-        <span>情景修复开关只控制当前清洗轨迹、统计和线样式；采样、精度、GAP、交通和爬升阈值仍使用默认配置</span>
-        <span>弱点云 ${formatPlainNumber(config.weakCloudAccuracyMeters)}m；GAP ${formatPlainNumber(config.gapSeconds)}s；静止基础距离 ${formatPlainNumber(config.stationaryDistanceMeters)}m</span>
-        <span>accuracy 上限 ${formatPlainNumber(config.maxIntakeAccuracyMeters)}m；低精度连续救回 <= ${formatPlainNumber(config.lowAccuracyRescueMaxAccuracyMeters)}m</span>
-        <span>交通风险 ${formatPlainNumber(config.transportSpeedMetersPerSecond)}m/s + ${formatPlainNumber(config.transportMinDistanceMeters)}m；只做诊断，不进徒步真值</span>
+        <b>冲突详情</b>
+        ${denseIntentConflictOverviewMarkup(dataset)}
       </div>
-      <button id="openAlgorithmDialogButton" class="secondary-button" type="button">查看完整规则说明</button>
     </section>
   `;
-}
-
-function scenarioRepairStateRows(config) {
-  const enabled = [];
-  const disabled = [];
-  for (const option of SCENARIO_REPAIR_OPTIONS) {
-    (config[option.configKey] ? enabled : disabled).push(option.label);
-  }
-  return [
-    ...scenarioRepairImpactRows(state.lastScenarioRepairImpact),
-    `启用 ${enabled.length > 0 ? enabled.join('、') : '-'}`,
-    `关闭 ${disabled.length > 0 ? disabled.join('、') : '-'}`
-  ];
 }
 
 function scenarioRepairImpactRows(impact) {
@@ -931,23 +993,6 @@ function scenarioRepairImpactMessage(impact) {
   return `已按“${impact.summary}”重算：${changedText}，运动里程 ${formatSignedMeters(impact.delta.totalDistanceMeters)}，清洗点 ${formatSignedCount(impact.delta.trustedPointCount)}`;
 }
 
-function targetProductSummaryRows(dataset) {
-  if (!dataset) return ['导入 evidence.jsonl 后显示里程、运动里程、疑似交通里程和运动耗时'];
-  const stats = dataset.targetProduct.stats;
-  const rows = [
-    `文件 ${dataset.fileName}`,
-    `里程 ${formatMeters(stats.routeDistanceMeters)}`,
-    `运动里程 ${formatMeters(stats.totalDistanceMeters)}`,
-    `疑似交通里程 ${formatMeters(stats.suspectedDistanceMeters)}`,
-    ...ascentSummaryRows(dataset),
-    `运动耗时 ${formatDuration(stats.movingTimeSeconds)}`
-  ];
-  if ((dataset.model.points?.length || 0) > MAP_RAW_POINT_LIMIT) {
-    rows.push(`地图 raw 点抽样显示 ${dataset.mapRender?.rawPointIds?.length || 0} / ${dataset.model.points.length}；清洗算法仍使用全量 evidence`);
-  }
-  return rows;
-}
-
 function scenarioCoverageSummaryRows(dataset) {
   const coverage = dataset?.scenarioProduct?.scenarioCoverage || [];
   if (coverage.length === 0) {
@@ -964,6 +1009,48 @@ function scenarioCoverageSummaryRows(dataset) {
     rows.push(`还有 ${coverage.length - 8} 段情景覆盖未展开，可点击对应清洗点查看关联情景`);
   }
   return rows;
+}
+
+function denseIntentSummaryRows(dataset) {
+  if (!dataset) {
+    return ['导入 evidence.jsonl 后显示密集区主意图、处理计划和冲突区间'];
+  }
+  const conflicts = dataset.targetOutput?.denseIntentConflicts || [];
+  const plan = dataset.targetOutput?.denseAreaSettlementPlan || [];
+  const rows = [];
+  if (conflicts.length > 0) {
+    rows.push(`冲突 ${conflicts.length} 段：橙色粗线已标在地图上，可点击定位`);
+  } else {
+    rows.push('冲突 0 段');
+  }
+  if (plan.length > 0) {
+    rows.push(`处理计划 ${plan.length} 段`);
+    for (const item of plan.slice(0, 5)) {
+      rows.push(`${formatScenarioRawRange(item.rawRange)} ${humanDenseIntentList([item.intent])} -> ${humanDenseSettlement(item.plannedSettlement)}；命中 ${humanScenarioList(item.observedScenarios)}`);
+    }
+    if (plan.length > 5) {
+      rows.push(`还有 ${plan.length - 5} 段处理计划未展开`);
+    }
+  } else {
+    rows.push('处理计划 0 段');
+  }
+  return rows;
+}
+
+function humanDenseSettlement(settlement) {
+  return ({
+    keep_forward_spine: '保主前进线',
+    collapse_stationary_drift: '塌缩静止漂移',
+    collapse_rest_photo_micro_move: '塌缩休息微移动',
+    simplify_round_trip: '简化往返线',
+    isolate_gap_cluster: '隔离遮挡聚集',
+    mixed_local_rebuild: '局部混合重建'
+  })[settlement] || settlement || '-';
+}
+
+function humanScenarioList(scenarios) {
+  if (!Array.isArray(scenarios) || scenarios.length === 0) return '-';
+  return scenarios.map((scenario) => scenarioNameLabel(scenario)).join('、');
 }
 
 function scenarioLabel(item) {
@@ -1036,51 +1123,6 @@ function ascentSummaryRows(dataset) {
     `气压累计爬升 ${formatAscent(ascent.barometer.totalMeters)}（样本 ${formatPlainNumber(ascent.barometer.sampleCount || 0)}，拒绝 ${formatPlainNumber(ascent.barometer.rejectedSampleCount || 0)}）`,
     `Location海拔累计爬升 ${formatAscent(ascent.locationAltitude.totalMeters)}（样本 ${formatPlainNumber(ascent.locationAltitude.sampleCount || 0)}，拒绝 ${formatPlainNumber(ascent.locationAltitude.rejectedSampleCount || 0)}）`
   ];
-}
-
-function renderAlgorithmDialog() {
-  elements.algorithmDialogContent.innerHTML = fullAlgorithmMarkup();
-  const button = document.querySelector('#openAlgorithmDialogButton');
-  if (button) button.addEventListener('click', openAlgorithmDialog);
-}
-
-function fullAlgorithmMarkup() {
-  const config = currentCleaningConfig();
-  return `
-    <section class="summary-block algorithm-block">
-      <div class="algorithm-section">
-        <b>固定策略口径</b>
-        <span>当前情景修复：${escapeHtml(scenarioRepairSummary(state.enabledScenarioRepairIds))}</span>
-        <span>情景修复开关只控制当前清洗轨迹、统计和线样式；情景区域保持全量识别覆盖</span>
-        <span>采样、精度、GAP、交通和爬升阈值仍使用默认配置</span>
-        <span>弱点云 ${formatPlainNumber(config.weakCloudAccuracyMeters)}m；GAP ${formatPlainNumber(config.gapSeconds)}s；静止基础距离 ${formatPlainNumber(config.stationaryDistanceMeters)}m</span>
-        <span>accuracy 上限 ${formatPlainNumber(config.maxIntakeAccuracyMeters)}m；低精度连续救回 <= ${formatPlainNumber(config.lowAccuracyRescueMaxAccuracyMeters)}m</span>
-        <span>交通风险 ${formatPlainNumber(config.transportSpeedMetersPerSecond)}m/s + ${formatPlainNumber(config.transportMinDistanceMeters)}m；只做诊断，不进徒步真值</span>
-      </div>
-      ${CLEANING_ALGORITHM_SECTIONS.map((section) => {
-    const rows = typeof section.rows === 'function' ? section.rows(config) : section.rows;
-    return `
-          <div class="algorithm-section">
-            <b>${escapeHtml(section.title)}</b>
-            ${rows.map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
-          </div>
-        `;
-  }).join('')}
-      <details class="algorithm-source">
-        <summary>可直接运行的清洗算法模块：acceptance-web/src/sixLayerTrackProduct.mjs</summary>
-        <pre><code>${escapeHtml(state.algorithmSourceText)}</code></pre>
-      </details>
-    </section>
-  `;
-}
-
-function openAlgorithmDialog() {
-  renderAlgorithmDialog();
-  if (!elements.algorithmDialog.open) elements.algorithmDialog.showModal();
-}
-
-function closeAlgorithmDialog() {
-  if (elements.algorithmDialog.open) elements.algorithmDialog.close();
 }
 
 function renderPointDetails() {
@@ -1243,7 +1285,7 @@ function buildMapStyle() {
       id: 'terrain-hillshade',
       type: 'hillshade',
       source: 'terrainHillshade',
-      layout: { visibility: 'visible' },
+      layout: { visibility: 'none' },
       paint: {
         'hillshade-exaggeration': 0.72,
         'hillshade-shadow-color': 'rgba(0, 0, 0, 0.56)',
@@ -1259,11 +1301,7 @@ function buildMapStyle() {
   return {
     version: 8,
     sources,
-    layers,
-    terrain: {
-      source: 'terrainElevation',
-      exaggeration: TERRAIN_EXAGGERATION
-    }
+    layers
   };
 }
 
@@ -1560,6 +1598,7 @@ function addMapLayers() {
   state.map.addSource('raw-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('trusted-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('cleaned-lines', { type: 'geojson', data: emptyFeatureCollection() });
+  state.map.addSource('dense-intent-conflicts', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('direction-arrows', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('cleaned-points', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('points', { type: 'geojson', data: emptyFeatureCollection() });
@@ -1622,6 +1661,22 @@ function addMapLayers() {
       'line-color': ['coalesce', ['get', 'lineColor'], '#ef4444'],
       'line-width': ['coalesce', ['get', 'lineWidth'], 4],
       'line-opacity': ['coalesce', ['get', 'lineOpacity'], 0.95]
+    }
+  });
+  state.map.addLayer({
+    id: 'dense-intent-conflicts',
+    type: 'line',
+    source: 'dense-intent-conflicts',
+    paint: {
+      'line-color': '#f97316',
+      'line-width': [
+        'interpolate', ['linear'], ['zoom'],
+        10, 4,
+        15, 7,
+        20, 11
+      ],
+      'line-opacity': 0.96,
+      'line-blur': 0.4
     }
   });
   state.map.addLayer({
@@ -1782,6 +1837,11 @@ function bindMapEvents() {
     if (!feature) return;
     selectScenarioPolygon(feature, event.lngLat);
   });
+  state.map.on('click', 'dense-intent-conflicts', (event) => {
+    const feature = event.features?.[0];
+    if (!feature) return;
+    selectDenseIntentConflict(feature, event.lngLat);
+  });
   for (const layerId of CONTOUR_LINE_LAYER_IDS) {
     if (!state.map.getLayer(layerId)) continue;
     state.map.on('click', layerId, (event) => {
@@ -1805,6 +1865,9 @@ function bindMapEvents() {
   state.map.on('mouseenter', 'scenario-polygons-fill', () => {
     state.map.getCanvas().style.cursor = 'pointer';
   });
+  state.map.on('mouseenter', 'dense-intent-conflicts', () => {
+    state.map.getCanvas().style.cursor = 'pointer';
+  });
   state.map.on('mouseleave', 'points', () => {
     state.map.getCanvas().style.cursor = '';
   });
@@ -1812,6 +1875,9 @@ function bindMapEvents() {
     state.map.getCanvas().style.cursor = '';
   });
   state.map.on('mouseleave', 'scenario-polygons-fill', () => {
+    state.map.getCanvas().style.cursor = '';
+  });
+  state.map.on('mouseleave', 'dense-intent-conflicts', () => {
     state.map.getCanvas().style.cursor = '';
   });
 }
@@ -1823,6 +1889,7 @@ function renderMap() {
   state.map.getSource('raw-lines').setData(elements.showRaw.checked ? rawFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('trusted-lines').setData(elements.showTrusted.checked ? trustedFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('cleaned-lines').setData(elements.showCleaned.checked ? cleanedFeatureCollection(visible) : emptyFeatureCollection());
+  state.map.getSource('dense-intent-conflicts').setData(denseIntentConflictFeatureCollection(visible));
   renderDirectionArrows(visible);
   state.map.getSource('cleaned-points').setData(
     elements.showCleaned.checked && elements.showCleanedPoints.checked
@@ -1881,12 +1948,51 @@ function scenarioPolygonFeatureCollection(datasets) {
   return { type: 'FeatureCollection', features };
 }
 
+function denseIntentConflictFeatureCollection(datasets) {
+  return {
+    type: 'FeatureCollection',
+    features: datasets.flatMap((dataset) =>
+      (dataset.targetOutput?.denseIntentConflicts || [])
+        .map((conflict, index) => denseIntentConflictFeature(dataset, conflict, index))
+        .filter(Boolean))
+  };
+}
+
+function denseIntentConflictFeature(dataset, conflict, index) {
+  const points = rawPointsInRange(dataset, conflict.rawRange).filter(hasValidLngLat);
+  if (points.length < 2) return null;
+  return lineFeature(dataset, points, 'dense_intent_conflict', null, {
+    conflictIndex: index,
+    conflict: conflict.conflict,
+    resolution: conflict.resolution,
+    scenario: conflict.scenario,
+    action: conflict.action,
+    localRebuild: conflict.localRebuild,
+    rawRange: formatScenarioRawRange(conflict.rawRange),
+    startRawPointId: conflict.rawRange?.startRawPointId,
+    endRawPointId: conflict.rawRange?.endRawPointId,
+    pathMeters: conflict.pathMeters,
+    netDistanceMeters: conflict.netDistanceMeters,
+    bboxDiagonalMeters: conflict.bboxDiagonalMeters,
+    lowSpeedRatio: conflict.lowSpeedRatio,
+    denseAreaIntents: (conflict.denseAreaIntents || []).join('、')
+  });
+}
+
 function directionArrowFeatureCollection(datasets) {
   return {
     type: 'FeatureCollection',
     features: datasets.flatMap(directionArrowFeaturesForDataset)
       .filter((feature) => feature.geometry.coordinates.length > 1)
   };
+}
+
+function rawPointsInRange(dataset, rawRange) {
+  const start = rawRange?.startRawPointId;
+  const end = rawRange?.endRawPointId;
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return [];
+  return (dataset.model?.points || []).filter((point) =>
+    point.rawPointId >= start && point.rawPointId <= end);
 }
 
 function directionArrowFeaturesForDataset(dataset) {
@@ -2108,6 +2214,26 @@ function focusRawPoint(datasetId, rawPointId) {
   }
 }
 
+function selectDenseIntentConflict(feature, lngLat) {
+  const properties = feature.properties || {};
+  const datasetId = String(properties.datasetId || '');
+  const startRawPointId = Number(properties.startRawPointId);
+  const endRawPointId = Number(properties.endRawPointId);
+  focusDenseIntentConflict(startRawPointId, endRawPointId, datasetId);
+  if (state.popup && lngLat) {
+    state.popup
+      .setLngLat(lngLat)
+      .setHTML([
+        `<strong>${escapeHtml(properties.conflict || 'dense_intent_conflict')}</strong>`,
+        escapeHtml(properties.rawRange || 'Raw#-'),
+        `intent ${escapeHtml(properties.denseAreaIntents || '-')}`,
+        `resolution ${escapeHtml(properties.resolution || '-')}`,
+        `path ${escapeHtml(formatMeters(Number(properties.pathMeters)))} / net ${escapeHtml(formatMeters(Number(properties.netDistanceMeters)))} / bbox ${escapeHtml(formatMeters(Number(properties.bboxDiagonalMeters)))}`
+      ].join('<br/>'))
+      .addTo(state.map);
+  }
+}
+
 function rawPointDecision(dataset, point) {
   if (!dataset?.targetProduct || !point) return null;
   return dataset.rawDecisionById?.get(point.rawPointId) || null;
@@ -2178,6 +2304,10 @@ function formatMeters(value) {
   if (!Number.isFinite(value)) return '-';
   if (Math.abs(value) >= 1000) return `${(value / 1000).toFixed(2)} km`;
   return `${value.toFixed(1)} m`;
+}
+
+function formatRatio(value) {
+  return Number.isFinite(value) ? value.toFixed(2) : '-';
 }
 
 function formatAreaMeters2(value) {

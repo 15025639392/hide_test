@@ -47,7 +47,7 @@ https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}
 https://tiles.mapterhorn.com/tilejson.json
 ```
 
-- 地形默认开启，可在地图图层面板切换；俯视时显示 hillshade，倾斜地图时显示 3D
+- 地形默认关闭，可在地图图层面板切换；俯视时显示 hillshade，倾斜地图时显示 3D
   terrain。
 - 等高线默认开启，使用同一组 DEM 瓦片在浏览器端生成 contour vector tile；可在地图图层
   面板独立切换；等高线高度会像方向箭头一样沿线重复标注，地图数据面板也会展示当前

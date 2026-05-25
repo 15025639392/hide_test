@@ -174,13 +174,14 @@ button:disabled {
 
 .layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr) 400px;
   min-height: 0;
 }
 
 .right-panel {
   z-index: 1;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: rgba(7, 17, 19, 0.92);
 }
 
@@ -415,6 +416,12 @@ button:disabled {
   background: linear-gradient(90deg, #22c55e, #38bdf8, #f59e0b);
 }
 
+.line.conflict {
+  height: 5px;
+  background: #f97316;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.65);
+}
+
 .polygon {
   width: 22px;
   height: 12px;
@@ -553,26 +560,48 @@ button:disabled {
   border-top: 1px solid rgba(203, 213, 225, 0.1);
 }
 
+button.scenario-hit {
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  white-space: normal;
+  align-items: stretch;
+  justify-content: stretch;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+button.scenario-hit:hover {
+  background: rgba(249, 115, 22, 0.08);
+}
+
 .scenario-hit:first-child {
   border-top: 0;
   padding-top: 0;
 }
 
 .scenario-hit-title {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
 }
 
 .scenario-hit-title strong {
   color: var(--ink);
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .scenario-hit-title span,
 .scenario-hit-meta,
-.scenario-hit p {
+.scenario-hit p,
+.conflict-evidence {
   color: var(--muted);
   font-size: 11px;
 }
@@ -584,18 +613,41 @@ button:disabled {
 }
 
 .scenario-hit-meta span {
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid rgba(203, 213, 225, 0.12);
   border-radius: 999px;
   padding: 2px 6px;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .scenario-hit p {
   margin: 0;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .scenario-hit .scenario-hit-action {
   color: var(--ink);
+}
+
+.conflict-hit {
+  border-radius: 6px;
+  padding: 9px;
+}
+
+.conflict-evidence {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 8px;
+}
+
+.conflict-evidence span {
+  color: #d5e2e5;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .summary-block h3,
@@ -635,83 +687,12 @@ button:disabled {
   font-size: 12px;
 }
 
-.algorithm-source {
-  border-top: 1px solid rgba(203, 213, 225, 0.10);
-  padding-top: 8px;
-}
-
-.algorithm-source summary {
-  cursor: pointer;
-  color: #ffffff;
-  font-size: 12px;
-  font-weight: 850;
-}
-
-.algorithm-source pre {
-  overflow: auto;
-  max-height: 460px;
-  margin: 8px 0 0;
-  border: 1px solid rgba(203, 213, 225, 0.16);
-  border-radius: 6px;
-  padding: 10px;
-  background: #061012;
-}
-
-.algorithm-source code {
-  color: #dbeafe;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 11px;
-  line-height: 1.45;
-  white-space: pre;
-}
-
-.algorithm-dialog {
-  width: min(920px, calc(100vw - 32px));
-  max-height: min(760px, calc(100vh - 32px));
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 0;
-  background: var(--panel-strong);
-  color: var(--ink);
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.52);
-}
-
-.algorithm-dialog::backdrop {
-  background: rgba(2, 8, 10, 0.72);
-}
-
-.algorithm-dialog-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  border-bottom: 1px solid var(--line);
-  padding: 14px 16px;
-  background: #0b171a;
-}
-
-.algorithm-dialog-header h2 {
-  margin: 0;
-  color: #ffffff;
-  font-size: 15px;
-}
-
 .icon-button {
   width: 32px;
   height: 32px;
   padding: 0;
   font-size: 20px;
   line-height: 1;
-}
-
-.algorithm-dialog-content {
-  overflow: auto;
-  max-height: calc(min(760px, 100vh - 32px) - 61px);
-  padding: 14px;
-}
-
-.algorithm-dialog-content .summary-block {
-  padding: 0;
 }
 
 .maplibregl-popup-content {
@@ -728,6 +709,10 @@ button:disabled {
 
 @media (max-width: 1280px) {
   .layout {
-    grid-template-columns: minmax(0, 1fr) 320px;
+    grid-template-columns: minmax(0, 1fr) 360px;
+  }
+
+  .conflict-evidence {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

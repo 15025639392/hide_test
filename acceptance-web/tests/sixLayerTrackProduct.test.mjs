@@ -12,6 +12,12 @@ function scenarioByName(product, name) {
   return product.scenarios.find((scenario) => scenario.scenario === name);
 }
 
+function scenarioByIntent(product, intent) {
+  return product.scenarios.find((scenario) =>
+    scenario.scenario === 'dense_area_intent'
+    && scenario.evidence?.intent === intent);
+}
+
 function rawPointAdder(events, baseLat, baseLng) {
   const cosLat = Math.cos(baseLat * Math.PI / 180);
   return (rawPointId, elapsedSeconds, eastMeters, northMeters, accuracy = 5,
@@ -256,7 +262,14 @@ test('buildSixLayerTrackProduct preserves a weak cave endpoint and simplifies th
   addRaw(900, 700, 2, 0, 5);
   addRaw(906, 730, 35, 0, 5);
 
-  const product = buildSixLayerTrackProduct(events);
+  const product = buildSixLayerTrackProduct(events, {
+    config: {
+      restPhotoMicroMoveMaxEndpointDistanceMeters: 100,
+      restPhotoMicroMoveMaxBboxMeters: 30,
+      restPhotoMicroMoveMaxPathMeters: 200,
+      restPhotoMicroMoveMinPathNetRatio: 1
+    }
+  });
   const collapsed = product.roundTripLineSimplify;
   const shapeIds = product.track.map((point) => point.sourceRawPointId);
   const caveAnchor = product.track.find((point) =>
@@ -300,7 +313,9 @@ test('buildSixLayerTrackProduct preserves a weak cave endpoint and simplifies th
   assert.equal(product.track[12].countsDistance, true);
   assert.equal(product.track[12].entersTrustedGpx, true);
   assert.equal(product.interwovenCorridorSimplify, undefined);
-  assert.deepEqual(product.scenarios.map((scenario) => scenario.scenario), [
+  assert.deepEqual(product.scenarios
+    .filter((scenario) => scenario.scenario !== 'dense_area_intent')
+    .map((scenario) => scenario.scenario), [
     'weak_recovery_endpoint',
     'same_road_round_trip',
     'gap_recovery_boundary'
@@ -315,6 +330,8 @@ test('buildSixLayerTrackProduct preserves a weak cave endpoint and simplifies th
   assert.deepEqual(sameRoadScenario.anchorRawPointIds, [643, 644]);
   assert.equal(sameRoadScenario.evidence.inputTrackPointCount, 30);
   assert.equal(sameRoadScenario.evidence.outputTrackPointCount, 13);
+  assert.ok(Array.isArray(sameRoadScenario.evidence.denseAreaIntents));
+  assert.equal(typeof sameRoadScenario.evidence.roundTripIntentSupported, 'boolean');
   assert.ok(sameRoadScenario.confidence > 0.5);
   const gapScenario = scenarioByName(product, 'gap_recovery_boundary');
   assert.equal(gapScenario.action, 'reset_segment_zero_delta');
@@ -351,9 +368,38 @@ test('buildSixLayerTrackProduct recognizes a closed-loop round trip without a we
   assert.equal(scenario.localRebuild, 'round_trip_diagnostic');
   assert.ok(scenario.evidence.pathMeters > 250);
   assert.ok(scenario.evidence.netDistanceMeters <= 8);
+  assert.deepEqual(scenario.evidence.denseAreaIntents, ['round_trip']);
+  assert.equal(scenario.evidence.roundTripIntentSupported, true);
   assert.equal(product.track.find((point) =>
     point.sourceRawPointId === scenario.rawRange.startRawPointId)
     .primaryExplanation.scenario, 'closed_loop_round_trip');
+});
+
+test('buildSixLayerTrackProduct keeps round-trip intent below concrete loop explanation', () => {
+  const events = loopEvents(30, 120, [
+    [0, 0], [4, -18], [9, -36], [12, -54], [10, -72], [6, -90],
+    [2, -108], [-2, -126], [-4, -144], [-2, -126], [2, -108],
+    [6, -90], [10, -72], [12, -54], [9, -36], [4, -18], [0, 0]
+  ], 1, 3);
+
+  const product = buildSixLayerTrackProduct(events, {
+    config: { closedLoopRoundTripMinTrackPoints: 12 }
+  });
+  const intentScenario = scenarioByIntent(product, 'round_trip');
+  const loopScenario = scenarioByName(product, 'closed_loop_round_trip');
+  const firstPoint = product.track.find((point) =>
+    point.sourceRawPointId === loopScenario.rawRange.startRawPointId);
+
+  assert.ok(intentScenario);
+  assert.ok(loopScenario);
+  assert.equal(intentScenario.evidence.intent, 'round_trip');
+  assert.ok(product.denseAreaSettlementPlan.some((plan) =>
+    plan.intent === 'round_trip'
+    && plan.plannedSettlement === 'round_trip_settlement'
+    && plan.observedScenarios.includes('closed_loop_round_trip')));
+  assert.equal(firstPoint.primaryExplanation.scenario, 'closed_loop_round_trip');
+  assert.ok(firstPoint.scenarioContexts.some((scenario) =>
+    scenario.scenario === 'dense_area_intent'));
 });
 
 test('buildSixLayerTrackProduct recognizes an enclosed gap cluster', () => {
@@ -392,6 +438,129 @@ test('buildSixLayerTrackProduct recognizes an enclosed gap cluster', () => {
   assert.equal(scenario.localRebuild, 'gap_stationary_cluster_diagnostic');
   assert.ok(scenario.evidence.gapRecoveryCount >= 3);
   assert.ok(scenario.evidence.stationaryAnchorCount >= 3);
+  assert.ok(Array.isArray(scenario.evidence.denseAreaIntents));
+  assert.equal(typeof scenario.evidence.gapClusterIntentSupported, 'boolean');
+  assert.equal(typeof scenario.evidence.mixedIntentSupported, 'boolean');
+});
+
+test('buildSixLayerTrackProduct preserves dense area main route skeleton first', () => {
+  const events = loopEvents(30, 120, [
+    [0, 0], [4, 3], [8, -3], [12, 3], [16, -3], [20, 3],
+    [24, -3], [28, 3], [32, -3], [36, 3], [40, -3], [44, 3],
+    [48, -3], [52, 3], [56, -3], [60, 0]
+  ], 700, 3);
+
+  const product = buildSixLayerTrackProduct(events, {
+    config: {
+      denseMainRouteMinTrackPoints: 10,
+      denseMainRouteSimplifyToleranceMeters: 7
+    }
+  });
+  const intent = scenarioByIntent(product, 'forward_motion');
+  const scenario = scenarioByName(product, 'dense_main_route_settlement');
+  const settledPoints = product.track.filter((point) =>
+    point.reason.startsWith('dense_main_route_'));
+
+  assert.ok(intent);
+  assert.equal(intent.action, 'classify_dense_area_intent');
+  assert.equal(intent.localRebuild, 'dense_area_intent_classifier');
+  assert.ok(scenario);
+  assert.ok(product.denseAreaSettlementPlan.some((plan) =>
+    plan.intent === 'forward_motion'
+    && plan.plannedSettlement === 'dense_main_route_settlement'
+    && plan.settlementPriority === 10
+    && plan.observedScenarios.includes('dense_main_route_settlement')));
+  assert.equal(scenario.action, 'preserve_dense_main_route_skeleton');
+  assert.equal(scenario.localRebuild, 'dense_main_route_skeleton');
+  assert.ok(scenario.evidence.outputTrackPointCount < scenario.evidence.inputTrackPointCount);
+  assert.ok(scenario.evidence.simplifiedPathMeters < scenario.evidence.pathMeters);
+  assert.ok(settledPoints.length >= 2);
+  assert.equal(settledPoints[0].reason, 'dense_main_route_start');
+  assert.equal(settledPoints.at(-1).reason, 'dense_main_route_end');
+  assert.ok(settledPoints.some((point) => point.contributingRawPointIds.length > 1));
+});
+
+test('buildSixLayerTrackProduct compresses enclosed loop gap drift into anchors', () => {
+  const events = [
+    {
+      event: 'session_metadata',
+      sessionId: 'S1',
+      recordStartElapsedRealtimeNanos: 1_000_000_000
+    },
+    {
+      event: 'sampling_policy',
+      samplingEpochId: 1,
+      state: 'MOVING',
+      eventElapsedRealtimeNanos: 1_000_000_000
+    }
+  ];
+  const addRaw = rawPointAdder(events, 30, 120);
+  [
+    [1, 1, 0, 0, 5, 1, 'active'],
+    [2, 4, 8, 0, 5, 1, 'active'],
+    [3, 7, 16, 0, 5, 1, 'active'],
+    [201, 150, 22, 0, 5, 1, 'active'],
+    [202, 153, 22, 0, 5, 0, 'still'],
+    [203, 156, 22.2, 0.2, 5, 0, 'still'],
+    [401, 310, 48, 35, 5, 1, 'active'],
+    [402, 313, 48.2, 35.1, 5, 0, 'still'],
+    [403, 316, 48.1, 35.2, 5, 0, 'still'],
+    [501, 440, 40, 20, 5, 1, 'active'],
+    [502, 443, 40, 20, 5, 0, 'still'],
+    [503, 446, 40.2, 20.1, 5, 0, 'still'],
+    [601, 570, 25, 4, 5, 1, 'active'],
+    [602, 573, 25.1, 4, 5, 0, 'still'],
+    [603, 576, 25.2, 4.1, 5, 0, 'still'],
+    [604, 750, 1, 0, 5, 1, 'active'],
+    [605, 753, 0, 0, 5, 1, 'active']
+  ].forEach((args) => addRaw(...args));
+
+  const product = buildSixLayerTrackProduct(events, {
+    config: {
+      closedLoopRoundTripMinTrackPoints: 8,
+      closedLoopRoundTripMinPathMeters: 40,
+      closedLoopRoundTripMinBboxMeters: 20,
+      closedLoopRoundTripMaxEndpointDistanceMeters: 12,
+      closedLoopRoundTripMaxNetPathRatio: 0.3,
+      enclosedGapClusterMinRawPointIdSpan: 1
+    }
+  });
+  const scenario = scenarioByName(product, 'enclosed_loop_cluster_settlement');
+  const settledDistance = product.track.reduce((sum, point) =>
+    sum + (point.countsDistance ? point.distanceDeltaMeters : 0), 0);
+
+  assert.ok(scenario);
+  assert.equal(scenario.action, 'compress_enclosed_loop_low_speed_drift');
+  assert.equal(scenario.localRebuild, 'enclosed_loop_anchor_settlement');
+  assert.ok(scenario.evidence.outputTrackPointCount < scenario.evidence.inputTrackPointCount);
+  assert.equal(scenario.evidence.settledDistanceMeters, 0);
+  assert.ok(Array.isArray(scenario.evidence.denseAreaIntents));
+  assert.equal(typeof scenario.evidence.gapClusterIntentSupported, 'boolean');
+  assert.equal(typeof scenario.evidence.mixedIntentSupported, 'boolean');
+  assert.equal(settledDistance, 0);
+  assert.ok(product.track.some((point) => point.contributingRawPointIds?.includes(401)));
+});
+
+test('buildSixLayerTrackProduct classifies dense stationary intent', () => {
+  const events = loopEvents(30, 120, [
+    [0, 0], [3, 0], [0, 3], [3, 3], [0, 0], [3, -3],
+    [0, -3], [3, 0], [0, 3], [2, 0]
+  ], 820, 3);
+
+  const product = buildSixLayerTrackProduct(events, {
+    config: {
+      denseAreaIntentMinTrackPoints: 8,
+      stationarySessionCollapseEnabled: false,
+      dwellDriftCollapseEnabled: false,
+      restPhotoMicroMoveSimplifyEnabled: false
+    }
+  });
+  const intent = scenarioByIntent(product, 'stationary');
+
+  assert.ok(intent);
+  assert.equal(intent.evidence.intent, 'stationary');
+  assert.ok(intent.evidence.netDistanceMeters <= 12);
+  assert.equal(scenarioByName(product, 'dense_main_route_settlement'), undefined);
 });
 
 test('buildSixLayerTrackProduct recognizes rest photo micro movement', () => {
@@ -400,7 +569,12 @@ test('buildSixLayerTrackProduct recognizes rest photo micro movement', () => {
     [-5, 9], [-2, 7], [-1, 2], [-6, 1], [-4, -1], [0, 0]
   ], 1, 3);
 
-  const product = buildSixLayerTrackProduct(events);
+  const product = buildSixLayerTrackProduct(events, {
+    config: {
+      restPhotoMicroMoveMaxPathMeters: 200,
+      restPhotoMicroMoveSimplifyEnabled: false
+    }
+  });
   const scenario = scenarioByName(product, 'rest_photo_micro_move');
 
   assert.ok(scenario);
@@ -408,6 +582,119 @@ test('buildSixLayerTrackProduct recognizes rest photo micro movement', () => {
   assert.equal(scenario.localRebuild, 'rest_photo_micro_move_diagnostic');
   assert.ok(scenario.evidence.pathMeters >= 20);
   assert.ok(scenario.evidence.bboxDiagonalMeters <= 25);
+  assert.ok(Array.isArray(scenario.evidence.denseAreaIntents));
+  assert.equal(typeof scenario.evidence.localMicroMoveOverridesDenseForward, 'boolean');
+  if (scenario.evidence.localMicroMoveOverridesDenseForward) {
+    assert.ok(product.denseIntentConflicts.some((conflict) =>
+      conflict.conflict === 'local_micro_move_overrides_dense_forward'
+      && conflict.scenario === 'rest_photo_micro_move'
+      && conflict.resolution === 'prefer_local_rest_photo_micro_move'));
+    assert.ok(product.findings.some((finding) =>
+      finding.includes('dense intent conflict')));
+  }
+});
+
+test('buildSixLayerTrackProduct simplifies confirmed rest photo micro movement', () => {
+  const events = loopEvents(30, 120, [
+    [0, 0], [8, -3], [1, -10], [10, -14], [-3, -18],
+    [9, -16], [-5, -12], [8, -8], [-2, -3], [9, 2],
+    [0, 6], [10, 9], [2, 13], [8, 16], [0, 11],
+    [6, 5], [-3, 1]
+  ], 5050, 8);
+  const product = buildSixLayerTrackProduct(events, {
+    config: { restPhotoMicroMoveMaxPathMeters: 200 }
+  });
+  const scenario = scenarioByName(product, 'rest_photo_micro_move');
+  const simplifiedPoints = product.track.filter((point) =>
+    point.reason.startsWith('rest_photo_micro_move_'));
+
+  assert.ok(scenario);
+  assert.equal(scenario.action, 'simplify_micro_move_shape');
+  assert.equal(scenario.localRebuild, 'rest_photo_micro_move_simplifier');
+  assert.ok(scenario.evidence.outputTrackPointCount < scenario.evidence.inputTrackPointCount);
+  assert.ok(scenario.evidence.simplifiedPathMeters < scenario.evidence.pathMeters);
+  assert.ok(simplifiedPoints.length <= 6);
+  assert.ok(simplifiedPoints.some((point) => point.contributingRawPointIds.length > 1));
+  assert.equal(product.rawPointDecisions.find((decision) =>
+    decision.rawPointId === 5051).entersTrustedGpx, false);
+});
+
+test('buildSixLayerTrackProduct collapses nearly stationary rest photo micro movement', () => {
+  const events = loopEvents(30, 120, [
+    [0, 0], [8, -3], [1, -10], [10, -14], [-3, -18],
+    [9, -16], [-5, -12], [8, -8], [-2, -3], [9, 2],
+    [0, 6], [10, 9], [2, 13], [8, 16], [0, 11],
+    [6, 5], [-3, 1]
+  ], 4562, 8);
+
+  const product = buildSixLayerTrackProduct(events, {
+    config: {
+      restPhotoMicroMoveCollapseMaxBboxMeters: 25,
+      restPhotoMicroMoveCollapseMaxPathMeters: 120
+    }
+  });
+  const scenario = scenarioByName(product, 'rest_photo_micro_move');
+  const collapsed = product.track.find((point) =>
+    point.reason === 'rest_photo_micro_move_anchor');
+
+  assert.ok(scenario);
+  assert.ok(collapsed);
+  assert.equal(scenario.action, 'collapse_micro_move_to_rest_anchor');
+  assert.equal(scenario.localRebuild, 'rest_photo_micro_move_anchor');
+  assert.ok(Array.isArray(scenario.evidence.denseAreaIntents));
+  assert.equal(typeof scenario.evidence.forwardIntentOverlapped, 'boolean');
+  assert.equal(typeof scenario.evidence.localMicroMoveOverridesDenseForward, 'boolean');
+  assert.equal(collapsed.countsDistance, false);
+  assert.equal(collapsed.countsMovingTime, false);
+  assert.equal(collapsed.contributingRawPointIds.length, scenario.evidence.inputTrackPointCount);
+});
+
+test('buildSixLayerTrackProduct collapses short rest micro move foldback', () => {
+  const events = loopEvents(30, 120, [
+    [0, 0], [5, -1], [8, -3], [3, -6], [-1, -4],
+    [2, -1], [6, 1], [1, 4], [-1, 1], [4, -2]
+  ], 2461, 7);
+  for (const event of events.filter((event) => event.event === 'raw_location')) {
+    event.accuracy = 1;
+    event.speed = event.rawPointId === 2461 ? 5.2 : 0.6;
+  }
+
+  const product = buildSixLayerTrackProduct(events, {
+    config: { restPhotoMicroMoveMinTrackPoints: 6 }
+  });
+  const scenario = scenarioByName(product, 'rest_photo_micro_move');
+  const collapsed = product.track.find((point) =>
+    point.reason === 'rest_photo_micro_move_anchor');
+
+  assert.ok(scenario);
+  assert.ok(collapsed);
+  assert.equal(scenario.action, 'collapse_micro_move_to_rest_anchor');
+  assert.equal(scenario.evidence.outputTrackPointCount, 1);
+  assert.equal(collapsed.countsDistance, false);
+  assert.notEqual(collapsed.sourceRawPointId, 2461);
+});
+
+test('buildSixLayerTrackProduct removes a single low-speed moving spike', () => {
+  const events = loopEvents(30, 120, [
+    [0, 0], [4, 0], [9, 0], [9, -6], [14, 1], [18, 2]
+  ], 1664, 3);
+  for (const event of events.filter((event) => event.event === 'raw_location')) {
+    event.speed = event.rawPointId === 1667 ? 0 : 1.2;
+  }
+
+  const product = buildSixLayerTrackProduct(events);
+  const scenario = scenarioByName(product, 'moving_spike_cleanup');
+  const rawDecision = product.rawPointDecisions.find((decision) =>
+    decision.rawPointId === 1667);
+  const bridgePoint = product.track.find((point) =>
+    point.contributingRawPointIds.includes(1667));
+
+  assert.ok(scenario);
+  assert.equal(scenario.action, 'remove_single_point_spike');
+  assert.equal(scenario.evidence.spikeRawPointId, 1667);
+  assert.equal(rawDecision.entersTrustedGpx, false);
+  assert.equal(rawDecision.countsDistance, false);
+  assert.equal(bridgePoint.sourceRawPointId, 1668);
 });
 
 test('buildSixLayerTrackProduct keeps composable scenario contexts on overlapping spans', () => {
@@ -418,7 +705,10 @@ test('buildSixLayerTrackProduct keeps composable scenario contexts on overlappin
   ], 1, 3);
 
   const product = buildSixLayerTrackProduct(events, {
-    config: { closedLoopRoundTripMinTrackPoints: 18 }
+    config: {
+      closedLoopRoundTripMinTrackPoints: 18,
+      restPhotoMicroMoveSimplifyEnabled: false
+    }
   });
   const loopScenario = scenarioByName(product, 'closed_loop_round_trip');
   const photoScenario = scenarioByName(product, 'rest_photo_micro_move');
@@ -519,6 +809,49 @@ test('buildSixLayerTrackProduct keeps transport risk out of hiking truth', () =>
   assert.deepEqual(transportScenario.evidence.rejectedRawPointIds, [2]);
   assert.equal(transportScenario.evidence.countsDistance, false);
   assert.equal(transportScenario.evidence.countsMovingTime, false);
+});
+
+test('buildSixLayerTrackProduct does not label low reported speed jumps as transport', () => {
+  const model = parseEvidenceJsonl([
+    '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":5,"speed":1,"elapsedRealtimeNanos":1000000000}',
+    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.0002,"lng":120,"accuracy":5,"speed":1.2,"elapsedRealtimeNanos":2000000000}'
+  ].join('\n'));
+
+  const product = buildSixLayerTrackProduct(model);
+
+  assert.equal(product.stats.transportCount, 0);
+  assert.equal(scenarioByName(product, 'transport_contamination'), undefined);
+  assert.equal(product.excluded.weak[0].reason,
+    'implied_speed_unconfirmed_by_reported_speed');
+});
+
+test('buildSixLayerTrackProduct resets distance at position snap recovery', () => {
+  const model = parseEvidenceJsonl([
+    '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":5,"speed":1,"elapsedRealtimeNanos":1000000000}',
+    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.0002,"lng":120,"accuracy":5,"speed":1.2,"elapsedRealtimeNanos":2000000000}',
+    '{"event":"raw_location","rawPointId":3,"provider":"gps","lat":30.00023,"lng":120,"accuracy":5,"speed":0.8,"elapsedRealtimeNanos":5000000000}',
+    '{"event":"raw_location","rawPointId":4,"provider":"gps","lat":30.00026,"lng":120,"accuracy":5,"speed":0.8,"elapsedRealtimeNanos":11000000000}',
+    '{"event":"raw_location","rawPointId":5,"provider":"gps","lat":30.00035,"lng":120,"accuracy":5,"speed":0.8,"elapsedRealtimeNanos":14000000000}'
+  ].join('\n'));
+
+  const product = buildSixLayerTrackProduct(model);
+  const scenario = scenarioByName(product, 'position_snap_recovery');
+  const recovery = product.track.find((point) => point.sourceRawPointId === 4);
+
+  assert.ok(scenario);
+  assert.equal(scenario.action, 'reset_position_snap_recovery_delta');
+  assert.equal(scenario.localRebuild, 'position_snap_recovery_anchor');
+  assert.equal(recovery.reason, 'position_snap_recovery_anchor');
+  assert.equal(recovery.distanceDeltaMeters, 0);
+  assert.equal(recovery.countsDistance, false);
+  assert.deepEqual(recovery.contributingRawPointIds, [2, 3, 4]);
+  assert.equal(product.rawPointDecisions.find((decision) =>
+    decision.rawPointId === 2).entersTrustedGpx, false);
+  assert.ok(product.track.find((point) => point.sourceRawPointId === 5).countsDistance);
 });
 
 test('buildSixLayerTrackProduct keeps recovery transport continuity without hiking distance', () => {
@@ -675,7 +1008,7 @@ test('buildSixLayerTrackProduct collapses a marked dwell drift cloud into one an
     point.reason === 'stationary_drift_anchor');
 
   assert.ok(collapsed);
-  assert.equal(collapsed.sourceRawPointId, 256);
+  assert.equal(collapsed.sourceRawPointId, collapsed.representativeRawPointId);
   assert.equal(collapsed.cloudSampleCount, 57);
   assert.deepEqual([
     collapsed.contributingRawPointIds[0],
@@ -700,7 +1033,9 @@ test('buildSixLayerTrackProduct collapses a marked dwell drift cloud into one an
     startRawPointId: 256,
     endRawPointId: 312
   });
-  assert.deepEqual(driftScenario.anchorRawPointIds, [256]);
+  assert.deepEqual(driftScenario.anchorRawPointIds, [collapsed.representativeRawPointId]);
+  assert.equal(driftScenario.evidence.representativeRawPointId,
+    collapsed.representativeRawPointId);
   assert.equal(driftScenario.evidence.rawPointCount, 57);
   assert.equal(driftScenario.evidence.coreStartRawPointId, 274);
   assert.equal(driftScenario.evidence.coreEndRawPointId, 307);

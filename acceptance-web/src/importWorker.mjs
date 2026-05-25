@@ -50,6 +50,8 @@ function compactTargetOutput(output) {
     barometerTotalAscentMeters: output?.summaries?.pressure?.barometerTotalAscentMeters ?? null,
     locationAltitudeTotalAscentMeters:
       output?.summaries?.pressure?.locationAltitudeTotalAscentMeters ?? null,
+    denseAreaSettlementPlan: output?.denseAreaSettlementPlan || [],
+    denseIntentConflicts: output?.denseIntentConflicts || [],
     findings: output?.findings || []
   };
 }

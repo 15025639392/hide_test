@@ -44,7 +44,7 @@
             <label class="toggle disabled" title="情景区域始终显示全量触发范围">
               <input id="showScenarios" type="checkbox" checked disabled /> 情景区域
             </label>
-            <label class="toggle"><input id="showTerrain" type="checkbox" checked /> 地形</label>
+            <label class="toggle"><input id="showTerrain" type="checkbox" /> 地形</label>
             <label class="toggle"><input id="showContours" type="checkbox" checked /> 等高线</label>
             <label class="toggle"><input id="showDirection" type="checkbox" checked /> 方向</label>
             <label class="toggle"><input id="showCleanedPoints" type="checkbox" /> 清洗点</label>
@@ -64,6 +64,7 @@
             <span><i class="line raw"></i>raw 轨迹</span>
             <span><i class="line cleaned"></i>算法清洗轨迹</span>
             <span><i class="line repaired"></i>启用修复段</span>
+            <span><i class="line conflict"></i>密集区冲突</span>
             <span><i class="polygon scenario"></i>情景触发区域</span>
             <span><i class="terrain-swatch"></i>地形阴影</span>
             <span><i class="contour-swatch"></i>等高线</span>
@@ -78,13 +79,13 @@
         <aside class="right-panel" aria-label="点详情面板">
           <section class="panel">
             <div class="panel-title">
-              <h2>策略说明</h2>
-              <span id="cleaningConfigState">全部修复</span>
+              <h2>情景复盘</h2>
+              <span id="cleaningConfigState">密集区</span>
             </div>
             <div id="cleaningAlgorithm" class="summary-list algorithm-list"></div>
           </section>
 
-          <section class="panel">
+          <section class="panel" hidden>
             <div class="panel-title">
               <h2>区间复核</h2>
               <span id="scenarioRangeState">-</span>
@@ -96,7 +97,7 @@
             <div id="scenarioRangeReview" class="summary-list scenario-review-results"></div>
           </section>
 
-          <section class="panel details-panel">
+          <section class="panel details-panel" hidden>
             <div class="panel-title">
               <h2>点详情</h2>
               <span id="selectedPointText">-</span>
@@ -108,14 +109,6 @@
         </aside>
       </section>
     </main>
-
-    <dialog id="algorithmDialog" class="algorithm-dialog" aria-labelledby="algorithmDialogTitle">
-      <div class="algorithm-dialog-header">
-        <h2 id="algorithmDialogTitle">清洗算法说明</h2>
-        <button id="closeAlgorithmDialogButton" class="icon-button" type="button" aria-label="关闭">×</button>
-      </div>
-      <div id="algorithmDialogContent" class="algorithm-dialog-content"></div>
-    </dialog>
 
     <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
     <script src="https://unpkg.com/maplibre-contour@0.1.0/dist/index.min.js"></script>

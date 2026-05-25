@@ -57,6 +57,8 @@ test('buildTargetOutput uses recomputed target product instead of recorded decis
   assert.equal(output.summaries.decision.intakeRejectedCount, 0);
   assert.equal(output.summaries.decision.weakCount, 0);
   assert.equal(output.summaries.decision.rejectCount, 0);
+  assert.ok(Array.isArray(output.denseAreaSettlementPlan));
+  assert.ok(Array.isArray(output.denseIntentConflicts));
   assert.ok(!output.findings.some((finding) => finding.includes('未解释 raw_location')));
 });
 

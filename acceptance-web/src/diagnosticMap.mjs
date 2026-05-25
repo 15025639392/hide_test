@@ -20,6 +20,11 @@ const DECISION_REASON_EXPLANATIONS = {
     meaning: '该点通过移动距离、时间和精度检查，进入可信轨迹并累计距离/运动时间。',
     evidence: '重点看 accuracy、距上一可信点距离、时间间隔、推算速度和距离增量。'
   },
+  implied_speed_unconfirmed_by_reported_speed: {
+    title: '推算速度缺少系统速度确认',
+    meaning: '两点间短时间位移看起来过快，但系统 reported speed 未达到交通阈值，因此按弱诊断保留，不标记交通工具。',
+    evidence: '重点同时看相邻点距离、dt、推算速度、reported speed、accuracy 和后续点是否回到稳定轨迹。'
+  },
   weak_signal_stage2: {
     title: '弱点云',
     meaning: '当前合法样本进入 WEAK_CLOUD，只保留为 weak 诊断点，不进入 GPX，也不累计距离。',
@@ -239,6 +244,8 @@ export function buildTargetOutput(model, targetProduct = null) {
       pressure: pressureSummary(model, ascent),
       motion: motionSummary(model)
     },
+    denseAreaSettlementPlan: targetProduct?.denseAreaSettlementPlan || [],
+    denseIntentConflicts: targetProduct?.denseIntentConflicts || [],
     findings
   };
 }

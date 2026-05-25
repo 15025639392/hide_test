@@ -5,7 +5,7 @@ const START_TOLERANCE_NANOS = 1_000_000_000;
 const MOTION_LOOKBACK_NANOS = 5_000_000_000;
 const NANOS_PER_SECOND = 1_000_000_000;
 
-export const SIX_LAYER_TRACK_ALGORITHM_VERSION = 'six-layer-evidence-v10';
+export const SIX_LAYER_TRACK_ALGORITHM_VERSION = 'six-layer-evidence-v16.1';
 
 export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   maxIntakeAccuracyMeters: 80,
@@ -72,6 +72,10 @@ export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   enclosedGapClusterMaxBboxMeters: 90,
   enclosedGapClusterMinDurationSeconds: 300,
   enclosedGapClusterMinRawPointIdSpan: 200,
+  enclosedLoopSettlementEnabled: true,
+  enclosedLoopSettlementMaxBboxMeters: 90,
+  enclosedLoopSettlementMaxCorridorDistanceMeters: 16,
+  enclosedLoopSettlementMinRemovedTrackPoints: 6,
   restPhotoMicroMoveEnabled: true,
   restPhotoMicroMoveMinTrackPoints: 8,
   restPhotoMicroMoveMaxTrackPoints: 25,
@@ -81,6 +85,45 @@ export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   restPhotoMicroMoveMaxEndpointDistanceMeters: 12,
   restPhotoMicroMoveMinPathNetRatio: 4,
   restPhotoMicroMoveMaxDurationSeconds: 300,
+  restPhotoMicroMoveSimplifyEnabled: true,
+  restPhotoMicroMoveSimplifyMinDurationSeconds: 60,
+  restPhotoMicroMoveSimplifyToleranceMeters: 6,
+  restPhotoMicroMoveSimplifyMinPathReductionRatio: 0.25,
+  restPhotoMicroMoveSimplifyMaxOutputTrackPoints: 6,
+  restPhotoMicroMoveCollapseMaxBboxMeters: 25,
+  restPhotoMicroMoveCollapseMaxNetDistanceMeters: 12,
+  restPhotoMicroMoveCollapseMaxPathMeters: 70,
+  restPhotoMicroMoveLongCollapseMinDurationSeconds: 180,
+  restPhotoMicroMoveLongCollapseMaxBboxMeters: 28,
+  restPhotoMicroMoveLongCollapseMaxNetDistanceMeters: 10,
+  restPhotoMicroMoveLongCollapseMaxPathMeters: 120,
+  movingSpikeCleanupEnabled: true,
+  movingSpikeMaxReportedSpeedMetersPerSecond: 0.2,
+  movingSpikeMinDetourMeters: 1.5,
+  movingSpikeMinLateralMeters: 2.5,
+  movingSpikeMinNeighborDistanceMeters: 5,
+  movingSpikeMaxBridgeDistanceMeters: 15,
+  positionSnapRecoveryEnabled: true,
+  positionSnapRecoveryMinWeakPoints: 1,
+  positionSnapRecoveryMinBridgeDistanceMeters: 20,
+  positionSnapRecoveryMaxReportedSpeedMetersPerSecond: 2,
+  denseAreaIntentEnabled: true,
+  denseAreaIntentMinTrackPoints: 8,
+  denseAreaIntentMaxSampleGapSeconds: 20,
+  denseAreaIntentForwardMinNetDistanceMeters: 20,
+  denseAreaIntentStationaryMaxNetDistanceMeters: 12,
+  denseAreaIntentStationaryMaxBboxMeters: 35,
+  denseAreaIntentStationaryMaxPathMeters: 60,
+  denseAreaIntentRoundTripMinPathMeters: 80,
+  denseAreaIntentRoundTripMaxNetPathRatio: 0.15,
+  denseAreaIntentControlsMainRouteSettlement: true,
+  denseMainRouteSettlementEnabled: true,
+  denseMainRouteMinTrackPoints: 12,
+  denseMainRouteMinNetDistanceMeters: 25,
+  denseMainRouteMaxBboxMeters: 120,
+  denseMainRouteMaxPathNetRatio: 3,
+  denseMainRouteSimplifyToleranceMeters: 4,
+  denseMainRouteMinPathReductionRatio: 0.15,
   interwovenCorridorSimplifyEnabled: false,
   interwovenCorridorMinTrackPoints: 30,
   interwovenCorridorMinRawPointIdSpan: 200,
@@ -229,6 +272,7 @@ export function buildSixLayerTrackProduct(modelOrEvents, options = {}) {
         cloudWeightedRadiusMeters: decision.cloudWeightedRadiusMeters,
         representativeRawPointId: decision.representativeRawPointId ?? rawPoint.rawPointId,
         contributingRawPointIds: decision.contributingRawPointIds ?? [rawPoint.rawPointId],
+        reportedSpeedMetersPerSecond: rawPoint.speed,
         coordinateSource: 'raw',
         virtualCoordinate: false,
         activityState: decision.activityState,
@@ -268,25 +312,48 @@ export function buildSixLayerTrackProduct(modelOrEvents, options = {}) {
   }
 
   const collapsedStationarySession = collapseStationarySession(product, evidence, config);
+  const denseAreaIntents = collapsedStationarySession
+    ? []
+    : analyzeDenseAreaIntents(product, config);
+  const settledDenseMainRoute = collapsedStationarySession
+    ? false
+    : settleDenseMainRouteSpans(product, config, denseAreaIntents);
   const collapsedDwellDrift = collapsedStationarySession
     ? false
-    : collapseDwellDriftClouds(product, evidence, config);
+    : collapseDwellDriftClouds(product, evidence, config, denseAreaIntents);
   const preservedWeakRecoveryShape = collapsedStationarySession
     ? false
     : preserveWeakRecoveryShapeAnchors(product, evidence, config);
   const simplifiedRoundTripLine = collapsedStationarySession
     ? false
-    : simplifyRoundTripLineSpans(product, config);
+    : simplifyRoundTripLineSpans(product, config, denseAreaIntents);
   const simplifiedInterwovenCorridor = collapsedStationarySession
     ? false
     : simplifyInterwovenCorridorSpans(product, config);
-  if (collapsedStationarySession || collapsedDwellDrift || preservedWeakRecoveryShape
-      || simplifiedRoundTripLine || simplifiedInterwovenCorridor) {
+  const simplifiedRestPhotoMicroMove = collapsedStationarySession
+    ? false
+    : simplifyRestPhotoMicroMoveSpans(product, config, denseAreaIntents);
+  const cleanedMovingSpikes = collapsedStationarySession
+    ? false
+    : cleanMovingSpikePoints(product, config);
+  const settledEnclosedLoop = collapsedStationarySession
+    ? false
+    : settleEnclosedLoopClusters(product, config, denseAreaIntents);
+  const settledPositionSnapRecovery = collapsedStationarySession
+    ? false
+    : settlePositionSnapRecoveries(product, config);
+  if (collapsedStationarySession || settledDenseMainRoute || collapsedDwellDrift || preservedWeakRecoveryShape
+      || simplifiedRoundTripLine || simplifiedInterwovenCorridor
+      || simplifiedRestPhotoMicroMove || cleanedMovingSpikes || settledEnclosedLoop
+      || settledPositionSnapRecovery) {
     recomputeLocationAltitudeAscent(product, evidence, config);
   }
+  product.denseAreaIntents = denseAreaIntents;
   applyBarometerAscent(product, evidence, config);
   finalizeStats(product);
   addPostSettlementScenarios(product);
+  product.denseAreaSettlementPlan = buildDenseAreaSettlementPlan(product, denseAreaIntents);
+  product.denseIntentConflicts = buildDenseIntentConflicts(product);
   attachExplanationModel(product);
   product.scenarioCoverage = buildScenarioCoverage(product);
   product.findings = buildFindings(product, evidence);
@@ -542,9 +609,7 @@ function decideHorizontal(rawPoint, epoch, motion, state, config) {
     return decideTransportRecovery(rawPoint, motion, state, config);
   }
 
-  const transportRisk = distance >= config.transportMinDistanceMeters
-    && (impliedSpeed >= config.transportSpeedMetersPerSecond
-      || (reportedSpeed !== null && reportedSpeed >= config.transportSpeedMetersPerSecond));
+  const transportRisk = isTransportRiskDistance(distance, impliedSpeed, reportedSpeed, config);
 
   if (isGap) {
     return decideGapRecovery(rawPoint, previous, motion, state, distance, config);
@@ -565,6 +630,14 @@ function decideHorizontal(rawPoint, epoch, motion, state, config) {
       distanceDeltaMeters: distance,
       movingTimeDeltaSeconds: Math.max(0, dtSeconds)
     });
+  }
+
+  if (isImpliedTransportUnconfirmedByReportedSpeed(distance, impliedSpeed, reportedSpeed,
+    config)) {
+    return diagnosticDecision(rawPoint, 'weak', 'implied_speed_unconfirmed_by_reported_speed',
+      motion, {
+        cloudType: 'WEAK_CLOUD'
+      });
   }
 
   if (impliedSpeed > config.impossibleSpeedMetersPerSecond) {
@@ -665,9 +738,7 @@ function isRecoveryTransportPoint(rawPoint, previousRawPoint, config) {
   const distance = distanceMeters(previousRawPoint.lat, previousRawPoint.lng,
     rawPoint.lat, rawPoint.lng);
   const reportedSpeed = Number.isFinite(rawPoint.speed) ? rawPoint.speed : null;
-  return distance >= config.transportMinDistanceMeters
-    && (distance / dtSeconds >= config.transportSpeedMetersPerSecond
-      || (reportedSpeed !== null && reportedSpeed >= config.transportSpeedMetersPerSecond));
+  return isTransportRiskDistance(distance, distance / dtSeconds, reportedSpeed, config);
 }
 
 function decideStationaryCloud(rawPoint, previous, motion, state, config,
@@ -706,9 +777,7 @@ function decideTransportRecovery(rawPoint, motion, state, config) {
   const dtSeconds = elapsedSeconds(reference.elapsedRealtimeNanos, rawPoint.elapsedRealtimeNanos);
   const impliedSpeed = dtSeconds > 0 ? distance / dtSeconds : Infinity;
   const reportedSpeed = Number.isFinite(rawPoint.speed) ? rawPoint.speed : null;
-  const stillTransport = distance >= config.transportMinDistanceMeters
-    && (impliedSpeed >= config.transportSpeedMetersPerSecond
-      || (reportedSpeed !== null && reportedSpeed >= config.transportSpeedMetersPerSecond));
+  const stillTransport = isTransportRiskDistance(distance, impliedSpeed, reportedSpeed, config);
 
   if (stillTransport) {
     return diagnosticDecision(rawPoint, 'reject', 'transport_risk', motion, {
@@ -731,6 +800,22 @@ function decideTransportRecovery(rawPoint, motion, state, config) {
     boundaryState: 'transport_recovered',
     cloudType: 'RECOVERY_CLOUD'
   });
+}
+
+function isTransportRiskDistance(distance, impliedSpeed, reportedSpeed, config) {
+  if (distance < config.transportMinDistanceMeters) return false;
+  if (reportedSpeed !== null) {
+    return reportedSpeed >= config.transportSpeedMetersPerSecond;
+  }
+  return impliedSpeed >= config.transportSpeedMetersPerSecond;
+}
+
+function isImpliedTransportUnconfirmedByReportedSpeed(distance, impliedSpeed, reportedSpeed,
+  config) {
+  return distance >= config.transportMinDistanceMeters
+    && impliedSpeed >= config.transportSpeedMetersPerSecond
+    && reportedSpeed !== null
+    && reportedSpeed < config.transportSpeedMetersPerSecond;
 }
 
 function collapseStationarySession(product, evidence, config) {
@@ -880,7 +965,425 @@ function stationarySessionAnchor(rawPoints, representative) {
   };
 }
 
-function collapseDwellDriftClouds(product, evidence, config) {
+function analyzeDenseAreaIntents(product, config) {
+  if (!config.denseAreaIntentEnabled) return [];
+  const candidates = denseAreaIntentCandidates(product.track, config);
+  for (const candidate of candidates) {
+    addScenario(product, denseAreaIntentScenario(candidate));
+  }
+  return candidates.map((candidate) => ({
+    intent: candidate.intent,
+    rawRange: candidate.rawRange,
+    trackPointCount: candidate.span.length,
+    confidence: candidate.confidence,
+    evidence: candidate.evidence
+  }));
+}
+
+function denseAreaIntentCandidates(track, config) {
+  const candidates = [];
+  let startIndex = 0;
+  while (startIndex < track.length) {
+    while (startIndex < track.length && !canBeDenseAreaIntentPoint(track[startIndex])) {
+      startIndex++;
+    }
+    let endIndex = startIndex;
+    while (endIndex < track.length && canBeDenseAreaIntentPoint(track[endIndex])) {
+      const previous = endIndex > startIndex ? track[endIndex - 1] : null;
+      if (previous && elapsedSeconds(previous.elapsedRealtimeNanos,
+        track[endIndex].elapsedRealtimeNanos) > config.denseAreaIntentMaxSampleGapSeconds) {
+        break;
+      }
+      endIndex++;
+    }
+    if (endIndex - startIndex >= config.denseAreaIntentMinTrackPoints) {
+      const span = track.slice(startIndex, endIndex);
+      const candidate = denseAreaIntentCandidate(span, startIndex, endIndex - 1, config);
+      if (candidate) candidates.push(candidate);
+    }
+    startIndex = Math.max(endIndex + 1, startIndex + 1);
+  }
+  return nonOverlappingScenarioCandidates(candidates, []);
+}
+
+function canBeDenseAreaIntentPoint(point) {
+  return hasValidLngLat(point)
+    && point.entersTrustedGpx === true
+    && !isTransportTrackReason(point.reason);
+}
+
+function denseAreaIntentCandidate(span, startIndex, endIndex, config) {
+  const pathMeters = trackPathMeters(span);
+  const netDistanceMeters = trackNetDistanceMeters(span);
+  const bboxMeters = bboxDiagonalMeters(span);
+  const gapRecoveryCount = span.filter((point) => point.reason === 'gap_recovery').length;
+  const stationaryAnchorCount = span.filter((point) =>
+    point.reason === 'stationary_anchor'
+    || point.reason === 'stationary_drift_anchor').length;
+  const movingCount = span.filter((point) => point.countsDistance === true).length;
+  const zeroDistanceCount = span.length - movingCount;
+  const rawRange = trackSpanRawPointRange(span);
+  const intent = denseAreaIntentName({
+    span,
+    pathMeters,
+    netDistanceMeters,
+    bboxMeters,
+    gapRecoveryCount,
+    stationaryAnchorCount,
+    movingCount,
+    zeroDistanceCount
+  }, config);
+  const confidence = denseAreaIntentConfidence(intent, {
+    span,
+    pathMeters,
+    netDistanceMeters,
+    bboxMeters,
+    gapRecoveryCount,
+    stationaryAnchorCount,
+    movingCount,
+    zeroDistanceCount
+  }, config);
+  return {
+    scenario: 'dense_area_intent',
+    intent,
+    confidence,
+    startIndex,
+    endIndex,
+    span,
+    rawRange,
+    evidence: {
+      intent,
+      trackPointCount: span.length,
+      pathMeters: scenarioNumber(pathMeters),
+      netDistanceMeters: scenarioNumber(netDistanceMeters),
+      bboxDiagonalMeters: scenarioNumber(bboxMeters),
+      gapRecoveryCount,
+      stationaryAnchorCount,
+      movingRatio: scenarioNumber(movingCount / Math.max(span.length, 1)),
+      zeroDistanceRatio: scenarioNumber(zeroDistanceCount / Math.max(span.length, 1))
+    },
+    score: span.length * 10 + pathMeters
+  };
+}
+
+function denseAreaIntentName(metrics, config) {
+  if (metrics.gapRecoveryCount >= config.enclosedGapClusterMinGapRecoveries
+      && metrics.stationaryAnchorCount >= config.enclosedGapClusterMinStationaryAnchors) {
+    return 'gap_cluster';
+  }
+  if (metrics.pathMeters >= config.denseAreaIntentRoundTripMinPathMeters
+      && metrics.netDistanceMeters / Math.max(metrics.pathMeters, 1)
+        <= config.denseAreaIntentRoundTripMaxNetPathRatio) {
+    return 'round_trip';
+  }
+  if (metrics.netDistanceMeters <= config.denseAreaIntentStationaryMaxNetDistanceMeters
+      && metrics.bboxMeters <= config.denseAreaIntentStationaryMaxBboxMeters
+      && (metrics.zeroDistanceCount >= metrics.movingCount
+        || metrics.pathMeters <= config.denseAreaIntentStationaryMaxPathMeters)) {
+    return 'stationary';
+  }
+  if (metrics.netDistanceMeters >= config.denseAreaIntentForwardMinNetDistanceMeters
+      && metrics.movingCount > metrics.zeroDistanceCount) {
+    return 'forward_motion';
+  }
+  return 'mixed';
+}
+
+function denseAreaIntentConfidence(intent, metrics, config) {
+  switch (intent) {
+    case 'gap_cluster':
+      return scenarioNumber(clamp01(0.55
+        + Math.min(1, metrics.gapRecoveryCount
+          / Math.max(config.enclosedGapClusterMinGapRecoveries + 2, 1)) * 0.25
+        + Math.min(1, metrics.stationaryAnchorCount
+          / Math.max(config.enclosedGapClusterMinStationaryAnchors + 2, 1)) * 0.2));
+    case 'round_trip':
+      return scenarioNumber(clamp01(0.55
+        + (1 - Math.min(1, metrics.netDistanceMeters / Math.max(metrics.pathMeters, 1))) * 0.3
+        + Math.min(1, metrics.pathMeters
+          / Math.max(config.denseAreaIntentRoundTripMinPathMeters * 2, 1)) * 0.15));
+    case 'stationary':
+      return scenarioNumber(clamp01(0.55
+        + (1 - Math.min(1, metrics.netDistanceMeters
+          / Math.max(config.denseAreaIntentStationaryMaxNetDistanceMeters, 1))) * 0.25
+        + (metrics.zeroDistanceCount / Math.max(metrics.span.length, 1)) * 0.2));
+    case 'forward_motion':
+      return scenarioNumber(clamp01(0.55
+        + Math.min(1, metrics.netDistanceMeters
+          / Math.max(config.denseAreaIntentForwardMinNetDistanceMeters * 2, 1)) * 0.25
+        + (metrics.movingCount / Math.max(metrics.span.length, 1)) * 0.2));
+    default:
+      return 0.5;
+  }
+}
+
+function denseAreaIntentScenario(candidate) {
+  return {
+    scenario: 'dense_area_intent',
+    confidence: candidate.confidence,
+    rawRange: candidate.rawRange,
+    anchorRawPointIds: uniqueNumbers([
+      candidate.span[0]?.sourceRawPointId,
+      candidate.span.at(-1)?.sourceRawPointId
+    ]),
+    action: 'classify_dense_area_intent',
+    localRebuild: 'dense_area_intent_classifier',
+    evidence: {
+      ...candidate.evidence,
+      plannedSettlement: denseAreaIntentPlannedSettlement(candidate.intent)
+    }
+  };
+}
+
+function denseAreaIntentPlannedSettlement(intent) {
+  switch (intent) {
+    case 'forward_motion': return 'dense_main_route_settlement';
+    case 'stationary': return 'stationary_drift_or_session_collapse';
+    case 'round_trip': return 'round_trip_settlement';
+    case 'gap_cluster': return 'enclosed_gap_cluster_settlement';
+    default: return 'existing_composite_scenarios';
+  }
+}
+
+function buildDenseAreaSettlementPlan(product, denseAreaIntents = []) {
+  return denseAreaIntents.map((intent) => {
+    const plannedSettlement = denseAreaIntentPlannedSettlement(intent.intent);
+    const overlappingScenarios = product.scenarios
+      .filter((scenario) => scenario.scenario !== 'dense_area_intent'
+        && rawRangesOverlap(scenario.rawRange, intent.rawRange))
+      .map((scenario) => scenario.scenario);
+    return {
+      intent: intent.intent,
+      rawRange: intent.rawRange,
+      confidence: intent.confidence,
+      plannedSettlement,
+      settlementPriority: denseAreaSettlementPriority(intent.intent),
+      observedScenarios: uniqueStrings(overlappingScenarios)
+    };
+  }).sort((a, b) =>
+    a.settlementPriority - b.settlementPriority
+    || a.rawRange.startRawPointId - b.rawRange.startRawPointId);
+}
+
+function denseAreaSettlementPriority(intent) {
+  switch (intent) {
+    case 'forward_motion': return 10;
+    case 'stationary': return 20;
+    case 'round_trip': return 30;
+    case 'gap_cluster': return 40;
+    case 'mixed': return 90;
+    default: return 100;
+  }
+}
+
+function buildDenseIntentConflicts(product) {
+  return product.scenarios
+    .filter((scenario) => scenario.evidence?.localMicroMoveOverridesDenseForward === true)
+    .map((scenario) => ({
+      conflict: 'local_micro_move_overrides_dense_forward',
+      rawRange: scenario.rawRange,
+      scenario: scenario.scenario,
+      action: scenario.action,
+      localRebuild: scenario.localRebuild,
+      denseAreaIntents: scenario.evidence.denseAreaIntents || [],
+      pathMeters: scenario.evidence.pathMeters,
+      netDistanceMeters: scenario.evidence.netDistanceMeters,
+      bboxDiagonalMeters: scenario.evidence.bboxDiagonalMeters,
+      lowSpeedRatio: scenario.evidence.lowSpeedRatio,
+      resolution: 'prefer_local_rest_photo_micro_move'
+    }))
+    .sort((a, b) => a.rawRange.startRawPointId - b.rawRange.startRawPointId);
+}
+
+function settleDenseMainRouteSpans(product, config, denseAreaIntents = []) {
+  if (!config.denseMainRouteSettlementEnabled) return false;
+  const forwardIntentRanges = denseAreaIntents
+    .filter((intent) => intent.intent === 'forward_motion')
+    .map((intent) => intent.rawRange)
+    .filter(Boolean);
+  const candidates = nonOverlappingScenarioCandidates(
+    denseMainRouteCandidates(product.track, config)
+      .filter((candidate) =>
+        denseMainRouteCandidateAllowedByIntent(candidate, forwardIntentRanges, config)),
+    []
+  );
+  if (candidates.length === 0) return false;
+
+  const settledRanges = [];
+  for (const candidate of candidates.sort((a, b) => b.startIndex - a.startIndex)) {
+    const settled = denseMainRoutePoints(candidate, config);
+    if (settled.length >= candidate.span.length) continue;
+    product.track.splice(candidate.startIndex,
+      candidate.endIndex - candidate.startIndex + 1, ...settled);
+    addScenario(product, denseMainRouteScenario(candidate, settled, config));
+    settledRanges.push({
+      startRawPointId: candidate.rawRange.startRawPointId,
+      endRawPointId: candidate.rawRange.endRawPointId,
+      inputTrackPointCount: candidate.span.length,
+      outputTrackPointCount: settled.length
+    });
+  }
+  if (settledRanges.length === 0) return false;
+
+  renumberTrackPoints(product);
+  rebuildRawPointDecisions(product);
+  product.denseMainRouteSettlement = {
+    settledSpanCount: settledRanges.length,
+    settledRawPointRanges: settledRanges.reverse()
+  };
+  return true;
+}
+
+function denseMainRouteCandidateAllowedByIntent(candidate, forwardIntentRanges, config) {
+  if (!config.denseAreaIntentEnabled || !config.denseAreaIntentControlsMainRouteSettlement) {
+    return true;
+  }
+  return forwardIntentRanges.some((range) => rawRangeContains(range, candidate.rawRange));
+}
+
+function denseAreaIntentsForRange(denseAreaIntents, rawRange) {
+  return denseAreaIntents.filter((intent) => rawRangesOverlap(intent.rawRange, rawRange));
+}
+
+function denseMainRouteCandidates(track, config) {
+  const candidates = [];
+  let startIndex = 0;
+  while (startIndex < track.length) {
+    while (startIndex < track.length && !canBeDenseMainRoutePoint(track[startIndex])) {
+      startIndex++;
+    }
+    let endIndex = startIndex;
+    while (endIndex < track.length && canBeDenseMainRoutePoint(track[endIndex])) {
+      endIndex++;
+    }
+    if (endIndex - startIndex >= config.denseMainRouteMinTrackPoints) {
+      const span = track.slice(startIndex, endIndex);
+      const candidate = denseMainRouteCandidate(span, startIndex, endIndex - 1, config);
+      if (candidate) candidates.push(candidate);
+    }
+    startIndex = Math.max(endIndex + 1, startIndex + 1);
+  }
+  return candidates;
+}
+
+function canBeDenseMainRoutePoint(point) {
+  return hasValidLngLat(point)
+    && point.entersTrustedGpx === true
+    && point.countsDistance === true
+    && !isTransportTrackReason(point.reason)
+    && (point.reason === 'moving_good_fix'
+      || point.reason === 'motion_supported_low_speed'
+      || point.reason === 'continuity_rescue_low_accuracy');
+}
+
+function denseMainRouteCandidate(span, startIndex, endIndex, config) {
+  const pathMeters = trackPathMeters(span);
+  const netDistanceMeters = trackNetDistanceMeters(span);
+  if (netDistanceMeters < config.denseMainRouteMinNetDistanceMeters) return null;
+  if (pathMeters / Math.max(netDistanceMeters, 1) > config.denseMainRouteMaxPathNetRatio) {
+    return null;
+  }
+  const bboxMeters = bboxDiagonalMeters(span);
+  if (bboxMeters > config.denseMainRouteMaxBboxMeters) return null;
+  const keepIndexes = denseMainRouteKeepIndexes(span, config);
+  if (keepIndexes.length >= span.length) return null;
+  const simplifiedPathMeters = trackPathMeters(keepIndexes.map((index) => span[index]));
+  if (simplifiedPathMeters / Math.max(pathMeters, 1)
+      > 1 - config.denseMainRouteMinPathReductionRatio) {
+    return null;
+  }
+  return {
+    scenario: 'dense_main_route_settlement',
+    startIndex,
+    endIndex,
+    span,
+    rawRange: trackSpanRawPointRange(span),
+    pathMeters,
+    netDistanceMeters,
+    bboxMeters,
+    simplifiedPathMeters,
+    keepIndexes,
+    score: span.length * 10 + pathMeters
+  };
+}
+
+function denseMainRouteKeepIndexes(span, config) {
+  const keepIndexes = new Set([0, span.length - 1]);
+  simplifySpanByDistance(span, 0, span.length - 1,
+    config.denseMainRouteSimplifyToleranceMeters, keepIndexes);
+  return [...keepIndexes].sort((a, b) => a - b);
+}
+
+function denseMainRoutePoints(candidate, config) {
+  const keepIndexes = candidate.keepIndexes ?? denseMainRouteKeepIndexes(candidate.span, config);
+  return keepIndexes.map((spanIndex, keepIndex) =>
+    denseMainRouteKeptPoint(candidate, keepIndexes, spanIndex, keepIndex));
+}
+
+function denseMainRouteKeptPoint(candidate, keepIndexes, spanIndex, keepIndex) {
+  const original = candidate.span[spanIndex];
+  const previousKeptSpanIndex = keepIndex === 0 ? -1 : keepIndexes[keepIndex - 1];
+  const group = candidate.span.slice(previousKeptSpanIndex + 1, spanIndex + 1);
+  const rawPointIds = uniqueRawPointIds(group);
+  const previousKept = keepIndex === 0 ? null : candidate.span[previousKeptSpanIndex];
+  const distanceDeltaMeters = previousKept
+    ? distanceMeters(previousKept.lat, previousKept.lng, original.lat, original.lng)
+    : original.distanceDeltaMeters || 0;
+  const aggregateMovingTime = group.reduce((sum, point) =>
+    sum + (point.countsMovingTime ? point.movingTimeDeltaSeconds || 0 : 0), 0);
+  const isStart = keepIndex === 0;
+  const isEnd = keepIndex === keepIndexes.length - 1;
+  return {
+    ...original,
+    reason: denseMainRouteReason(isStart, isEnd),
+    distanceDeltaMeters,
+    movingTimeDeltaSeconds: aggregateMovingTime,
+    cloudType: 'DENSE_MAIN_ROUTE_CLOUD',
+    cloudId: candidate.rawRange.startRawPointId,
+    cloudSampleCount: rawPointIds.length,
+    cloudWeightSum: rawPointIds.length,
+    cloudWeightedRadiusMeters: candidate.bboxMeters / 2,
+    representativeRawPointId: original.representativeRawPointId ?? original.sourceRawPointId,
+    contributingRawPointIds: rawPointIds,
+    coordinateSource: original.coordinateSource || 'raw_representative',
+    virtualCoordinate: original.virtualCoordinate === true,
+    activityState: 'dense_main_route',
+    boundaryState: 'dense_main_route_settled',
+    countsDistance: distanceDeltaMeters > 0,
+    countsMovingTime: aggregateMovingTime > 0 && distanceDeltaMeters > 0,
+    countsAscentWindow: false,
+    entersTrustedGpx: true
+  };
+}
+
+function denseMainRouteReason(isStart, isEnd) {
+  if (isStart) return 'dense_main_route_start';
+  if (isEnd) return 'dense_main_route_end';
+  return 'dense_main_route_shape';
+}
+
+function denseMainRouteScenario(candidate, settled, config) {
+  return {
+    scenario: 'dense_main_route_settlement',
+    confidence: 0.78,
+    rawRange: candidate.rawRange,
+    anchorRawPointIds: uniqueNumbers(settled.map((point) => point.sourceRawPointId)),
+    action: 'preserve_dense_main_route_skeleton',
+    localRebuild: 'dense_main_route_skeleton',
+    evidence: {
+      intent: 'forward_motion',
+      inputTrackPointCount: candidate.span.length,
+      outputTrackPointCount: settled.length,
+      pathMeters: scenarioNumber(candidate.pathMeters),
+      netDistanceMeters: scenarioNumber(candidate.netDistanceMeters),
+      simplifiedPathMeters: scenarioNumber(trackPathMeters(settled)),
+      bboxDiagonalMeters: scenarioNumber(candidate.bboxMeters),
+      simplifyToleranceMeters: scenarioNumber(config.denseMainRouteSimplifyToleranceMeters)
+    }
+  };
+}
+
+function collapseDwellDriftClouds(product, evidence, config, denseAreaIntents = []) {
   if (!config.dwellDriftCollapseEnabled) return false;
   const intervals = findDwellDriftIntervals(evidence.rawPoints, config)
     .sort((a, b) => b.startIndex - a.startIndex);
@@ -904,7 +1407,7 @@ function collapseDwellDriftClouds(product, evidence, config) {
     product.track = product.track.filter((point, index) => !removeIndexes.has(index));
     product.track.splice(insertIndex, 0, collapsedPoint);
     removeExcludedRawPoints(product, rawPointIds);
-    addScenario(product, stationaryDwellDriftScenario(interval));
+    addScenario(product, stationaryDwellDriftScenario(interval, denseAreaIntents));
     changed = true;
   }
 
@@ -919,14 +1422,20 @@ function collapseDwellDriftClouds(product, evidence, config) {
   return true;
 }
 
-function stationaryDwellDriftScenario(interval) {
+function stationaryDwellDriftScenario(interval, denseAreaIntents = []) {
   const first = interval.rawPoints[0];
   const last = interval.rawPoints.at(-1);
+  const representative = nearestRawPoint(weightedRawCenter(interval.rawPoints), interval.rawPoints);
   const durationSeconds = elapsedSeconds(first.elapsedRealtimeNanos,
     last.elapsedRealtimeNanos);
   const bboxMeters = bboxDiagonalMeters(interval.rawPoints);
   const netDistanceMeters = distanceMeters(first.lat, first.lng, last.lat, last.lng);
   const coreRatio = interval.coreRawPoints.length / Math.max(interval.rawPoints.length, 1);
+  const rawRange = {
+    startRawPointId: first.rawPointId,
+    endRawPointId: last.rawPointId
+  };
+  const overlappingIntents = denseAreaIntentsForRange(denseAreaIntents, rawRange);
   return {
     scenario: 'stationary_drift_collapse',
     confidence: scenarioNumber(clamp01(0.5
@@ -934,11 +1443,8 @@ function stationaryDwellDriftScenario(interval) {
       + (1 - Math.min(1, bboxMeters / 100)) * 0.15
       + (1 - Math.min(1, netDistanceMeters / 80)) * 0.1
       + Math.min(1, coreRatio) * 0.1)),
-    rawRange: {
-      startRawPointId: first.rawPointId,
-      endRawPointId: last.rawPointId
-    },
-    anchorRawPointIds: [first.rawPointId],
+    rawRange,
+    anchorRawPointIds: [representative.rawPointId],
     action: 'collapse_drift_cloud',
     localRebuild: 'stationary_drift_anchor',
     evidence: {
@@ -946,6 +1452,10 @@ function stationaryDwellDriftScenario(interval) {
       coreRawPointCount: interval.coreRawPoints.length,
       coreStartRawPointId: interval.coreRawPoints[0]?.rawPointId ?? null,
       coreEndRawPointId: interval.coreRawPoints.at(-1)?.rawPointId ?? null,
+      representativeRawPointId: representative.rawPointId,
+      denseAreaIntents: overlappingIntents.map((intent) => intent.intent),
+      stationaryIntentSupported: overlappingIntents.some((intent) =>
+        intent.intent === 'stationary'),
       durationSeconds: scenarioNumber(durationSeconds),
       bboxDiagonalMeters: scenarioNumber(bboxMeters),
       netDistanceMeters: scenarioNumber(netDistanceMeters),
@@ -1213,7 +1723,7 @@ function weakRecoveryEndpointConfidence(candidate) {
     + distanceScore * 0.15);
 }
 
-function simplifyRoundTripLineSpans(product, config) {
+function simplifyRoundTripLineSpans(product, config, denseAreaIntents = []) {
   if (!config.roundTripLineSimplifyEnabled) return false;
   const candidates = [];
   for (let index = 0; index < product.track.length; index++) {
@@ -1233,7 +1743,8 @@ function simplifyRoundTripLineSpans(product, config) {
       : roundTripLinePoints(candidate, config);
     product.track.splice(candidate.startIndex,
       candidate.endIndex - candidate.startIndex + 1, ...collapsed);
-    addScenario(product, roundTripLineScenario(candidate, collapsed, sameRoad, config));
+    addScenario(product, roundTripLineScenario(candidate, collapsed, sameRoad, config,
+      denseAreaIntents));
   }
 
   renumberTrackPoints(product);
@@ -1299,18 +1810,20 @@ function roundTripLineCandidate(track, turnIndex, config) {
     || a.endpointDistance - b.endpointDistance)[0] ?? null;
 }
 
-function roundTripLineScenario(candidate, collapsed, sameRoad, config) {
+function roundTripLineScenario(candidate, collapsed, sameRoad, config, denseAreaIntents = []) {
   const sameRoadEvidence = sameRoad ? roundTripSameRoadEvidence(candidate) : null;
   const turnEndpointRawPointId = candidate.turn.shapeEndpointRawPointId
     ?? candidate.turn.sourceRawPointId;
+  const rawRange = {
+    startRawPointId: candidate.start.sourceRawPointId,
+    endRawPointId: candidate.end.sourceRawPointId
+  };
+  const overlappingIntents = denseAreaIntentsForRange(denseAreaIntents, rawRange);
   return {
     scenario: sameRoad ? 'same_road_round_trip' : 'round_trip_line',
     confidence: scenarioNumber(roundTripLineConfidence(candidate, sameRoad, config,
       sameRoadEvidence)),
-    rawRange: {
-      startRawPointId: candidate.start.sourceRawPointId,
-      endRawPointId: candidate.end.sourceRawPointId
-    },
+    rawRange,
     anchorRawPointIds: uniqueNumbers([
       candidate.turn.sourceRawPointId,
       turnEndpointRawPointId
@@ -1330,7 +1843,10 @@ function roundTripLineScenario(candidate, collapsed, sameRoad, config) {
       simplifyToleranceMeters: scenarioNumber(config.roundTripLineSimplifyToleranceMeters),
       sameRoadBboxMeters: scenarioNumber(sameRoadEvidence?.bboxMeters),
       sameRoadApproachPairDistanceMeters:
-        scenarioNumber(sameRoadEvidence?.approachPairDistanceMeters)
+        scenarioNumber(sameRoadEvidence?.approachPairDistanceMeters),
+      denseAreaIntents: overlappingIntents.map((intent) => intent.intent),
+      roundTripIntentSupported: overlappingIntents
+        .some((intent) => intent.intent === 'round_trip')
     }
   };
 }
@@ -1853,6 +2369,629 @@ function interwovenCorridorReason(isStart, isEnd) {
   return 'interwoven_corridor_shape';
 }
 
+function cleanMovingSpikePoints(product, config) {
+  if (!config.movingSpikeCleanupEnabled) return false;
+  const removeIndexes = [];
+  for (let index = 1; index < product.track.length - 1; index++) {
+    if (isMovingSpikePoint(product.track[index - 1], product.track[index],
+      product.track[index + 1], config)) {
+      removeIndexes.push(index);
+    }
+  }
+  if (removeIndexes.length === 0) return false;
+
+  for (const index of removeIndexes.sort((a, b) => b - a)) {
+    const spike = product.track[index];
+    const next = product.track[index + 1];
+    next.contributingRawPointIds = uniqueRawPointIds([spike, next]);
+    next.distanceDeltaMeters = distanceMeters(product.track[index - 1].lat,
+      product.track[index - 1].lng, next.lat, next.lng);
+    next.movingTimeDeltaSeconds = (spike.countsMovingTime ? spike.movingTimeDeltaSeconds || 0 : 0)
+      + (next.countsMovingTime ? next.movingTimeDeltaSeconds || 0 : 0);
+    next.cloudType = 'MOVING_SPIKE_CLEANUP_CLOUD';
+    next.cloudId = spike.sourceRawPointId;
+    next.cloudSampleCount = next.contributingRawPointIds.length;
+    next.cloudWeightSum = next.contributingRawPointIds.length;
+    next.cloudWeightedRadiusMeters = distanceToSegmentMeters(spike,
+      product.track[index - 1], next);
+    next.boundaryState = 'moving_spike_cleaned';
+    next.countsDistance = next.distanceDeltaMeters > 0;
+    next.countsMovingTime = next.movingTimeDeltaSeconds > 0;
+    product.track.splice(index, 1);
+    addScenario(product, movingSpikeScenario(product.track[index - 1], spike, next));
+  }
+
+  renumberTrackPoints(product);
+  rebuildRawPointDecisions(product);
+  product.movingSpikeCleanup = {
+    cleanedPointCount: removeIndexes.length
+  };
+  return true;
+}
+
+function isMovingSpikePoint(previous, point, next, config) {
+  if (!hasValidLngLat(previous) || !hasValidLngLat(point) || !hasValidLngLat(next)) return false;
+  if (!point.entersTrustedGpx || !next.entersTrustedGpx) return false;
+  if (point.reason !== 'motion_supported_low_speed' && point.reason !== 'moving_good_fix') {
+    return false;
+  }
+  if (!Number.isFinite(point.reportedSpeedMetersPerSecond)
+      || point.reportedSpeedMetersPerSecond > config.movingSpikeMaxReportedSpeedMetersPerSecond) {
+    return false;
+  }
+  const previousDistance = distanceMeters(previous.lat, previous.lng, point.lat, point.lng);
+  const nextDistance = distanceMeters(point.lat, point.lng, next.lat, next.lng);
+  const bridgeDistance = distanceMeters(previous.lat, previous.lng, next.lat, next.lng);
+  if (previousDistance < config.movingSpikeMinNeighborDistanceMeters
+      || nextDistance < config.movingSpikeMinNeighborDistanceMeters
+      || bridgeDistance > config.movingSpikeMaxBridgeDistanceMeters) {
+    return false;
+  }
+  const detour = previousDistance + nextDistance - bridgeDistance;
+  const lateral = distanceToSegmentMeters(point, previous, next);
+  return detour >= config.movingSpikeMinDetourMeters
+    && lateral >= config.movingSpikeMinLateralMeters;
+}
+
+function movingSpikeScenario(previous, spike, next) {
+  return {
+    scenario: 'moving_spike_cleanup',
+    confidence: 0.82,
+    rawRange: {
+      startRawPointId: previous.sourceRawPointId,
+      endRawPointId: next.sourceRawPointId
+    },
+    anchorRawPointIds: [next.sourceRawPointId],
+    action: 'remove_single_point_spike',
+    localRebuild: 'moving_spike_line_bridge',
+    evidence: {
+      previousRawPointId: previous.sourceRawPointId,
+      spikeRawPointId: spike.sourceRawPointId,
+      nextRawPointId: next.sourceRawPointId,
+      lateralMeters: scenarioNumber(distanceToSegmentMeters(spike, previous, next)),
+      bridgeDistanceMeters: scenarioNumber(distanceMeters(previous.lat, previous.lng,
+        next.lat, next.lng))
+    }
+  };
+}
+
+function settleEnclosedLoopClusters(product, config, denseAreaIntents = []) {
+  if (!config.enclosedLoopSettlementEnabled) return false;
+  const loopCandidates = closedLoopRoundTripCandidates(product, config);
+  if (loopCandidates.length === 0) return false;
+  const clusterCandidates = enclosedGapClusterCandidates(product, config)
+    .filter((cluster) => cluster.bboxMeters <= config.enclosedLoopSettlementMaxBboxMeters
+      && loopCandidates.some((loop) => rawRangeContains(loop.rawRange, cluster.rawRange)));
+  const candidates = nonOverlappingScenarioCandidates(clusterCandidates, []);
+  const settledRanges = [];
+
+  for (const candidate of candidates.sort((a, b) => b.startIndex - a.startIndex)) {
+    const settlement = enclosedLoopClusterSettledPoints(candidate,
+      product.track[candidate.startIndex - 1] ?? null,
+      product.track[candidate.endIndex + 1] ?? null,
+      config);
+    if (!settlement || settlement.removedTrackPointCount
+        < config.enclosedLoopSettlementMinRemovedTrackPoints) {
+      continue;
+    }
+    product.track.splice(candidate.startIndex,
+      candidate.endIndex - candidate.startIndex + 1, ...settlement.points);
+    addScenario(product, enclosedLoopClusterSettlementScenario(candidate, settlement,
+      denseAreaIntents));
+    settledRanges.push({
+      startRawPointId: candidate.rawRange.startRawPointId,
+      endRawPointId: candidate.rawRange.endRawPointId,
+      inputTrackPointCount: candidate.span.length,
+      outputTrackPointCount: settlement.points.length
+    });
+  }
+  if (settledRanges.length === 0) return false;
+
+  renumberTrackPoints(product);
+  rebuildRawPointDecisions(product);
+  product.enclosedLoopSettlement = {
+    settledSpanCount: settledRanges.length,
+    settledRawPointRanges: settledRanges.reverse()
+  };
+  return true;
+}
+
+function enclosedLoopClusterSettledPoints(candidate, previousOutside, nextOutside, config) {
+  const keepIndexes = enclosedLoopClusterKeepIndexes(candidate.span, previousOutside,
+    nextOutside, config);
+  if (keepIndexes.size >= candidate.span.length) return null;
+  const sortedKeepIndexes = [...keepIndexes].sort((a, b) => a - b);
+  const points = [];
+  let pending = [];
+  for (let index = 0; index < candidate.span.length; index++) {
+    const point = candidate.span[index];
+    if (!keepIndexes.has(index)) {
+      pending.push(point);
+      continue;
+    }
+    const group = [...pending, point];
+    pending = [];
+    const settled = enclosedLoopClusterKeptPoint(group, point,
+      points.at(-1) ?? null, index === sortedKeepIndexes[0],
+      index === sortedKeepIndexes.at(-1));
+    points.push(settled);
+  }
+  if (pending.length > 0 && points.length > 0) {
+    const last = points.at(-1);
+    last.contributingRawPointIds = uniqueRawPointIds([...pending, last]);
+    last.cloudSampleCount = last.contributingRawPointIds.length;
+    last.cloudWeightSum = last.contributingRawPointIds.length;
+  }
+  return {
+    points,
+    keepRawPointIds: uniqueNumbers(points.map((point) => point.sourceRawPointId)),
+    removedTrackPointCount: candidate.span.length - points.length,
+    settledDistanceMeters: points.reduce((sum, point) =>
+      sum + (point.countsDistance ? point.distanceDeltaMeters || 0 : 0), 0),
+    originalDistanceMeters: candidate.span.reduce((sum, point) =>
+      sum + (point.countsDistance ? point.distanceDeltaMeters || 0 : 0), 0)
+  };
+}
+
+function enclosedLoopClusterKeepIndexes(span, previousOutside, nextOutside, config) {
+  const keep = new Set();
+  const corridorStart = previousOutside ?? span[0];
+  const corridorEnd = nextOutside ?? span.at(-1);
+  span.forEach((point, index) => {
+    if (point.reason === 'gap_recovery'
+        || point.reason === 'stationary_anchor'
+        || point.reason === 'stationary_drift_anchor'
+        || point.reason === 'rest_photo_micro_move_anchor') {
+      const corridorDistance = hasValidLngLat(corridorStart)
+        && hasValidLngLat(corridorEnd)
+        && hasValidLngLat(point)
+        ? distanceToSegmentMeters(point, corridorStart, corridorEnd)
+        : 0;
+      if (corridorDistance <= config.enclosedLoopSettlementMaxCorridorDistanceMeters) {
+        keep.add(index);
+      }
+    }
+  });
+  if (keep.size === 0) {
+    keep.add(enclosedLoopClusterRepresentativeIndex(span, corridorStart, corridorEnd));
+  }
+  const lastKeptIndex = Math.max(...keep);
+  if (lastKeptIndex < span.length - 1) {
+    keep.add(span.length - 1);
+  }
+  return keep;
+}
+
+function enclosedLoopClusterRepresentativeIndex(span, corridorStart, corridorEnd) {
+  return span
+    .map((point, index) => ({
+      index,
+      score: hasValidLngLat(corridorStart) && hasValidLngLat(corridorEnd) && hasValidLngLat(point)
+        ? distanceToSegmentMeters(point, corridorStart, corridorEnd)
+        : 0
+    }))
+    .sort((a, b) => a.score - b.score || a.index - b.index)[0]?.index ?? 0;
+}
+
+function enclosedLoopClusterKeptPoint(group, fallback, previousSettledPoint, isStart, isEnd) {
+  const rawPointIds = uniqueRawPointIds(group);
+  return {
+    ...fallback,
+    reason: fallback.reason === 'gap_recovery'
+      ? fallback.reason
+      : enclosedLoopClusterReason(fallback, isStart, isEnd),
+    distanceDeltaMeters: 0,
+    movingTimeDeltaSeconds: 0,
+    cloudType: 'ENCLOSED_LOOP_SETTLEMENT_CLOUD',
+    cloudId: rawPointIds[0] ?? fallback.sourceRawPointId,
+    cloudSampleCount: rawPointIds.length,
+    cloudWeightSum: rawPointIds.length,
+    representativeRawPointId: fallback.representativeRawPointId ?? fallback.sourceRawPointId,
+    contributingRawPointIds: rawPointIds,
+    coordinateSource: fallback.coordinateSource || 'raw_representative',
+    virtualCoordinate: fallback.virtualCoordinate === true,
+    activityState: 'enclosed_loop_settlement',
+    boundaryState: isStart || isEnd ? 'enclosed_loop_boundary' : 'enclosed_loop_anchor',
+    countsDistance: false,
+    countsMovingTime: false,
+    countsAscentWindow: false,
+    entersTrustedGpx: true
+  };
+}
+
+function enclosedLoopClusterReason(point, isStart, isEnd) {
+  if (isStart) return 'enclosed_loop_cluster_start';
+  if (isEnd) return 'enclosed_loop_cluster_end';
+  if (point.reason === 'rest_photo_micro_move_anchor') return point.reason;
+  return 'enclosed_loop_cluster_anchor';
+}
+
+function enclosedLoopClusterSettlementScenario(candidate, settlement, denseAreaIntents = []) {
+  const overlappingIntents = denseAreaIntentsForRange(denseAreaIntents, candidate.rawRange);
+  return {
+    scenario: 'enclosed_loop_cluster_settlement',
+    confidence: 0.84,
+    rawRange: candidate.rawRange,
+    anchorRawPointIds: settlement.keepRawPointIds,
+    action: 'compress_enclosed_loop_low_speed_drift',
+    localRebuild: 'enclosed_loop_anchor_settlement',
+    evidence: {
+      inputTrackPointCount: candidate.span.length,
+      outputTrackPointCount: settlement.points.length,
+      removedTrackPointCount: settlement.removedTrackPointCount,
+      originalDistanceMeters: scenarioNumber(settlement.originalDistanceMeters),
+      settledDistanceMeters: scenarioNumber(settlement.settledDistanceMeters),
+      gapRecoveryCount: candidate.gapRecoveryCount,
+      stationaryAnchorCount: candidate.stationaryAnchorCount,
+      bboxDiagonalMeters: scenarioNumber(candidate.bboxMeters),
+      durationSeconds: scenarioNumber(candidate.durationSeconds),
+      denseAreaIntents: overlappingIntents.map((intent) => intent.intent),
+      gapClusterIntentSupported: overlappingIntents
+        .some((intent) => intent.intent === 'gap_cluster'),
+      mixedIntentSupported: overlappingIntents
+        .some((intent) => intent.intent === 'mixed')
+    }
+  };
+}
+
+function settlePositionSnapRecoveries(product, config) {
+  if (!config.positionSnapRecoveryEnabled) return false;
+  const weakByRawPointId = new Map(product.excluded.weak.map((point) => [
+    point.rawPointId ?? point.sourceRawPointId,
+    point
+  ]));
+  const settled = [];
+  for (let index = 1; index < product.track.length; index++) {
+    const previous = product.track[index - 1];
+    const point = product.track[index];
+    const candidate = positionSnapRecoveryCandidate(previous, point, weakByRawPointId, config);
+    if (!candidate) continue;
+    point.reason = 'position_snap_recovery_anchor';
+    point.distanceDeltaMeters = 0;
+    point.movingTimeDeltaSeconds = 0;
+    point.cloudType = 'POSITION_SNAP_RECOVERY_CLOUD';
+    point.cloudId = candidate.rawRange.startRawPointId;
+    point.cloudSampleCount = candidate.rawPointIds.length;
+    point.cloudWeightSum = candidate.rawPointIds.length;
+    point.cloudWeightedRadiusMeters = candidate.bridgeDistanceMeters;
+    point.representativeRawPointId = point.representativeRawPointId ?? point.sourceRawPointId;
+    point.contributingRawPointIds = candidate.rawPointIds;
+    point.activityState = 'position_snap_recovery';
+    point.boundaryState = 'position_snap_recovered';
+    point.countsDistance = false;
+    point.countsMovingTime = false;
+    point.countsAscentWindow = false;
+    point.entersTrustedGpx = true;
+    addScenario(product, positionSnapRecoveryScenario(candidate));
+    removeExcludedRawPoints(product, new Set(candidate.weakRawPointIds));
+    settled.push(candidate);
+  }
+  if (settled.length === 0) return false;
+
+  rebuildRawPointDecisions(product);
+  product.positionSnapRecovery = {
+    settledCount: settled.length,
+    settledRawPointRanges: settled.map((candidate) => candidate.rawRange)
+  };
+  return true;
+}
+
+function positionSnapRecoveryCandidate(previous, point, weakByRawPointId, config) {
+  if (!hasValidLngLat(previous) || !hasValidLngLat(point)) return null;
+  if (!point.entersTrustedGpx || point.reason === 'gap_recovery') return null;
+  if (point.reason !== 'moving_good_fix' && point.reason !== 'motion_supported_low_speed'
+      && point.reason !== 'continuity_rescue_low_accuracy') {
+    return null;
+  }
+  const reportedSpeed = Number.isFinite(point.reportedSpeedMetersPerSecond)
+    ? point.reportedSpeedMetersPerSecond
+    : null;
+  if (reportedSpeed !== null
+      && reportedSpeed > config.positionSnapRecoveryMaxReportedSpeedMetersPerSecond) {
+    return null;
+  }
+  const bridgeDistanceMeters = distanceMeters(previous.lat, previous.lng, point.lat, point.lng);
+  if (bridgeDistanceMeters < config.positionSnapRecoveryMinBridgeDistanceMeters) return null;
+  const weakPoints = [];
+  for (let rawPointId = previous.sourceRawPointId + 1;
+    rawPointId < point.sourceRawPointId; rawPointId++) {
+    const weak = weakByRawPointId.get(rawPointId);
+    if (!weak) continue;
+    if (weak.reason !== 'implied_speed_unconfirmed_by_reported_speed') continue;
+    weakPoints.push(weak);
+  }
+  if (weakPoints.length < config.positionSnapRecoveryMinWeakPoints) return null;
+  const weakRawPointIds = uniqueNumbers(weakPoints.map((weak) =>
+    weak.rawPointId ?? weak.sourceRawPointId));
+  return {
+    previousRawPointId: previous.sourceRawPointId,
+    recoveryRawPointId: point.sourceRawPointId,
+    weakRawPointIds,
+    rawPointIds: uniqueNumbers([...weakRawPointIds, point.sourceRawPointId]),
+    rawRange: rawPointRange([...weakRawPointIds, point.sourceRawPointId]),
+    bridgeDistanceMeters,
+    reportedSpeedMetersPerSecond: reportedSpeed
+  };
+}
+
+function positionSnapRecoveryScenario(candidate) {
+  return {
+    scenario: 'position_snap_recovery',
+    confidence: 0.82,
+    rawRange: candidate.rawRange,
+    anchorRawPointIds: [candidate.recoveryRawPointId],
+    action: 'reset_position_snap_recovery_delta',
+    localRebuild: 'position_snap_recovery_anchor',
+    evidence: {
+      previousRawPointId: candidate.previousRawPointId,
+      recoveryRawPointId: candidate.recoveryRawPointId,
+      weakRawPointIds: candidate.weakRawPointIds,
+      bridgeDistanceMeters: scenarioNumber(candidate.bridgeDistanceMeters),
+      reportedSpeedMetersPerSecond: scenarioNumber(candidate.reportedSpeedMetersPerSecond),
+      countsDistance: false,
+      countsMovingTime: false
+    }
+  };
+}
+
+function simplifyRestPhotoMicroMoveSpans(product, config, denseAreaIntents = []) {
+  if (!config.restPhotoMicroMoveEnabled || !config.restPhotoMicroMoveSimplifyEnabled) {
+    return false;
+  }
+  const candidates = nonOverlappingScenarioCandidates(
+    restPhotoMicroMoveCandidates(product, config),
+    []
+  ).filter((candidate) =>
+    restPhotoMicroMoveShouldCollapse(candidate, config)
+      || restPhotoMicroMoveNeedsSimplify(candidate, config));
+  if (candidates.length === 0) return false;
+
+  const simplifiedRanges = [];
+  for (const candidate of candidates.sort((a, b) => b.startIndex - a.startIndex)) {
+    const simplified = restPhotoMicroMoveShouldCollapse(candidate, config)
+      ? [restPhotoMicroMoveCollapsedPoint(candidate)]
+      : restPhotoMicroMoveSimplifiedPoints(candidate, config);
+    if (simplified.length >= candidate.span.length) continue;
+    product.track.splice(candidate.startIndex,
+      candidate.endIndex - candidate.startIndex + 1, ...simplified);
+    addScenario(product, restPhotoMicroMoveShouldCollapse(candidate, config)
+      ? restPhotoMicroMoveCollapsedScenario(candidate, simplified[0], config, denseAreaIntents)
+      : restPhotoMicroMoveSimplifiedScenario(candidate, simplified, config, denseAreaIntents));
+    simplifiedRanges.push({
+      startRawPointId: candidate.rawRange.startRawPointId,
+      endRawPointId: candidate.rawRange.endRawPointId,
+      inputTrackPointCount: candidate.span.length,
+      outputTrackPointCount: simplified.length
+    });
+  }
+  if (simplifiedRanges.length === 0) return false;
+
+  renumberTrackPoints(product);
+  rebuildRawPointDecisions(product);
+  product.restPhotoMicroMoveSimplify = {
+    simplifiedSpanCount: simplifiedRanges.length,
+    simplifiedRawPointRanges: simplifiedRanges.reverse()
+  };
+  return true;
+}
+
+function restPhotoMicroMoveShouldCollapse(candidate, config) {
+  const shortFoldback = candidate.bboxMeters <= config.restPhotoMicroMoveCollapseMaxBboxMeters
+    && candidate.netDistanceMeters <= config.restPhotoMicroMoveCollapseMaxNetDistanceMeters
+    && candidate.pathMeters <= config.restPhotoMicroMoveCollapseMaxPathMeters;
+  const longRestDrift = candidate.durationSeconds
+      >= config.restPhotoMicroMoveLongCollapseMinDurationSeconds
+    && candidate.bboxMeters <= config.restPhotoMicroMoveLongCollapseMaxBboxMeters
+    && candidate.netDistanceMeters <= config.restPhotoMicroMoveLongCollapseMaxNetDistanceMeters
+    && candidate.pathMeters <= config.restPhotoMicroMoveLongCollapseMaxPathMeters;
+  return shortFoldback || longRestDrift;
+}
+
+function restPhotoMicroMoveNeedsSimplify(candidate, config) {
+  if (candidate.span.length <= 2) return false;
+  if (candidate.durationSeconds < config.restPhotoMicroMoveSimplifyMinDurationSeconds) {
+    return false;
+  }
+  if (candidate.pathMeters <= candidate.bboxMeters) return false;
+  const reducedPath = restPhotoMicroMoveSimplifiedPath(candidate, config);
+  if (!Number.isFinite(reducedPath) || reducedPath <= 0) return false;
+  return reducedPath / Math.max(candidate.pathMeters, 1)
+    <= 1 - config.restPhotoMicroMoveSimplifyMinPathReductionRatio;
+}
+
+function restPhotoMicroMoveCollapsedPoint(candidate) {
+  const representative = restPhotoMicroMoveCollapseRepresentative(candidate.span);
+  const rawPointIds = uniqueRawPointIds(candidate.span);
+  return {
+    ...representative,
+    reason: 'rest_photo_micro_move_anchor',
+    distanceDeltaMeters: 0,
+    movingTimeDeltaSeconds: 0,
+    cloudType: 'REST_PHOTO_MICRO_MOVE_CLOUD',
+    cloudId: candidate.rawRange.startRawPointId,
+    cloudSampleCount: rawPointIds.length,
+    cloudWeightSum: rawPointIds.length,
+    cloudWeightedRadiusMeters: candidate.bboxMeters / 2,
+    representativeRawPointId: representative.representativeRawPointId
+      ?? representative.sourceRawPointId,
+    contributingRawPointIds: rawPointIds,
+    coordinateSource: representative.coordinateSource || 'raw_representative',
+    virtualCoordinate: representative.virtualCoordinate === true,
+    activityState: 'rest_photo_micro_move',
+    boundaryState: 'rest_photo_micro_move_collapsed',
+    countsDistance: false,
+    countsMovingTime: false,
+    countsAscentWindow: false,
+    entersTrustedGpx: true
+  };
+}
+
+function restPhotoMicroMoveCollapseRepresentative(span) {
+  const stationary = span.find((point) => point.reason === 'stationary_anchor');
+  if (stationary) return stationary;
+  return [...span].sort((a, b) =>
+    (Number.isFinite(a.reportedSpeedMetersPerSecond) ? a.reportedSpeedMetersPerSecond : 0)
+      - (Number.isFinite(b.reportedSpeedMetersPerSecond) ? b.reportedSpeedMetersPerSecond : 0)
+    || a.sourceRawPointId - b.sourceRawPointId)[0] ?? span[0];
+}
+
+function restPhotoMicroMoveSimplifiedPath(candidate, config) {
+  const keepIndexes = restPhotoMicroMoveKeepIndexes(candidate, config);
+  const kept = keepIndexes.map((index) => candidate.span[index]);
+  return trackPathMeters(kept);
+}
+
+function restPhotoMicroMoveSimplifiedPoints(candidate, config) {
+  const keepIndexes = restPhotoMicroMoveKeepIndexes(candidate, config);
+  const simplified = [];
+  keepIndexes.forEach((spanIndex, keepIndex) => {
+    simplified.push(restPhotoMicroMoveKeptPoint(candidate, keepIndexes,
+      spanIndex, keepIndex, simplified.at(-1) ?? null, config));
+  });
+  return simplified;
+}
+
+function restPhotoMicroMoveKeepIndexes(candidate, config) {
+  const keepIndexes = new Set([0, candidate.span.length - 1]);
+  simplifySpanByDistance(candidate.span, 0, candidate.span.length - 1,
+    config.restPhotoMicroMoveSimplifyToleranceMeters, keepIndexes);
+  let sorted = [...keepIndexes].sort((a, b) => a - b);
+  const maxOutput = Math.max(2, Math.floor(config.restPhotoMicroMoveSimplifyMaxOutputTrackPoints));
+  while (sorted.length > maxOutput) {
+    const removable = sorted
+      .slice(1, -1)
+      .map((spanIndex) => ({
+        spanIndex,
+        score: restPhotoMicroMoveKeepPriority(candidate.span, sorted, spanIndex)
+      }))
+      .sort((a, b) => a.score - b.score || a.spanIndex - b.spanIndex)[0];
+    if (!removable) break;
+    keepIndexes.delete(removable.spanIndex);
+    sorted = [...keepIndexes].sort((a, b) => a - b);
+  }
+  return [...keepIndexes].sort((a, b) => a - b);
+}
+
+function restPhotoMicroMoveKeepPriority(span, keepIndexes, spanIndex) {
+  const sorted = [...keepIndexes].sort((a, b) => a - b);
+  const position = sorted.indexOf(spanIndex);
+  if (position <= 0 || position >= sorted.length - 1) return Infinity;
+  const previous = span[sorted[position - 1]];
+  const current = span[spanIndex];
+  const next = span[sorted[position + 1]];
+  const detour = distanceMeters(previous.lat, previous.lng, current.lat, current.lng)
+    + distanceMeters(current.lat, current.lng, next.lat, next.lng)
+    - distanceMeters(previous.lat, previous.lng, next.lat, next.lng);
+  return detour;
+}
+
+function restPhotoMicroMoveKeptPoint(candidate, keepIndexes, spanIndex, keepIndex,
+  previousSimplifiedPoint, config) {
+  const fallback = candidate.span[spanIndex];
+  const previousKeptSpanIndex = keepIndex === 0 ? -1 : keepIndexes[keepIndex - 1];
+  const group = candidate.span.slice(previousKeptSpanIndex + 1, spanIndex + 1);
+  const original = restPhotoMicroMoveRepresentativePoint(group, fallback, config);
+  const rawPointIds = uniqueRawPointIds(group);
+  const simplifiedDistance = previousSimplifiedPoint
+    ? distanceMeters(previousSimplifiedPoint.lat, previousSimplifiedPoint.lng,
+      original.lat, original.lng)
+    : original.distanceDeltaMeters || 0;
+  const aggregateMovingTime = group.reduce((sum, point) =>
+    sum + (point.countsMovingTime ? point.movingTimeDeltaSeconds || 0 : 0), 0);
+  const isStart = keepIndex === 0;
+  const isEnd = keepIndex === keepIndexes.length - 1;
+
+  return {
+    ...original,
+    reason: restPhotoMicroMoveReason(isStart, isEnd),
+    distanceDeltaMeters: simplifiedDistance,
+    movingTimeDeltaSeconds: aggregateMovingTime,
+    cloudType: 'REST_PHOTO_MICRO_MOVE_CLOUD',
+    cloudId: candidate.rawRange.startRawPointId,
+    cloudSampleCount: rawPointIds.length,
+    cloudWeightSum: rawPointIds.length,
+    cloudWeightedRadiusMeters: candidate.bboxMeters / 2,
+    representativeRawPointId: original.representativeRawPointId ?? original.sourceRawPointId,
+    contributingRawPointIds: rawPointIds,
+    coordinateSource: original.coordinateSource || 'raw_representative',
+    virtualCoordinate: original.virtualCoordinate === true,
+    activityState: 'rest_photo_micro_move',
+    boundaryState: 'rest_photo_micro_move_simplified',
+    countsDistance: simplifiedDistance > 0 && original.countsDistance === true,
+    countsMovingTime: aggregateMovingTime > 0 && original.countsMovingTime === true,
+    countsAscentWindow: false,
+    entersTrustedGpx: true
+  };
+}
+
+function restPhotoMicroMoveRepresentativePoint(group, fallback, config) {
+  if (!Number.isFinite(fallback.reportedSpeedMetersPerSecond)
+      || fallback.reportedSpeedMetersPerSecond < config.transportSpeedMetersPerSecond) {
+    return fallback;
+  }
+  return [...group]
+    .filter((point) => hasValidLngLat(point)
+      && (!Number.isFinite(point.reportedSpeedMetersPerSecond)
+        || point.reportedSpeedMetersPerSecond < config.transportSpeedMetersPerSecond))
+    .sort((a, b) =>
+      restPhotoMicroMoveRepresentativeScore(b, fallback)
+        - restPhotoMicroMoveRepresentativeScore(a, fallback)
+      || a.sourceRawPointId - b.sourceRawPointId)[0] ?? fallback;
+}
+
+function restPhotoMicroMoveRepresentativeScore(point, fallback) {
+  const speed = Number.isFinite(point.reportedSpeedMetersPerSecond)
+    ? point.reportedSpeedMetersPerSecond
+    : 0;
+  const shapeDistance = hasValidLngLat(point) && hasValidLngLat(fallback)
+    ? distanceMeters(point.lat, point.lng, fallback.lat, fallback.lng)
+    : 0;
+  return shapeDistance - speed * 2;
+}
+
+function restPhotoMicroMoveReason(isStart, isEnd) {
+  if (isStart) return 'rest_photo_micro_move_start';
+  if (isEnd) return 'rest_photo_micro_move_end';
+  return 'rest_photo_micro_move_shape';
+}
+
+function restPhotoMicroMoveSimplifiedScenario(candidate, simplified, config,
+  denseAreaIntents = []) {
+  const base = restPhotoMicroMoveScenario(candidate, config, denseAreaIntents);
+  return {
+    ...base,
+    action: 'simplify_micro_move_shape',
+    localRebuild: 'rest_photo_micro_move_simplifier',
+    anchorRawPointIds: uniqueNumbers(simplified.map((point) => point.sourceRawPointId)),
+    evidence: {
+      ...base.evidence,
+      inputTrackPointCount: candidate.span.length,
+      outputTrackPointCount: simplified.length,
+      simplifiedPathMeters: scenarioNumber(trackPathMeters(simplified)),
+      simplifyToleranceMeters: scenarioNumber(config.restPhotoMicroMoveSimplifyToleranceMeters)
+    }
+  };
+}
+
+function restPhotoMicroMoveCollapsedScenario(candidate, collapsed, config,
+  denseAreaIntents = []) {
+  const base = restPhotoMicroMoveScenario(candidate, config, denseAreaIntents);
+  return {
+    ...base,
+    action: 'collapse_micro_move_to_rest_anchor',
+    localRebuild: 'rest_photo_micro_move_anchor',
+    anchorRawPointIds: [collapsed.sourceRawPointId],
+    evidence: {
+      ...base.evidence,
+      inputTrackPointCount: candidate.span.length,
+      outputTrackPointCount: 1,
+      representativeRawPointId: collapsed.sourceRawPointId,
+      collapsedDistanceMeters: 0,
+      collapsedMovingTimeSeconds: 0
+    }
+  };
+}
+
 function configSafeNumber(value, fallback) {
   return Number.isFinite(value) ? value : fallback;
 }
@@ -2008,13 +3147,13 @@ function dwellDriftAnchor(interval, template) {
   const representative = nearestRawPoint(center, interval.rawPoints);
   return {
     trackPointId: 0,
-    sourceRawPointId: first.rawPointId,
+    sourceRawPointId: representative.rawPointId,
     recomputedDecisionId: template.recomputedDecisionId,
     segmentId: template.segmentId,
     lat: center.lat,
     lng: center.lng,
-    elapsedRealtimeNanos: first.elapsedRealtimeNanos,
-    timeMillis: first.timeMillis,
+    elapsedRealtimeNanos: representative.elapsedRealtimeNanos,
+    timeMillis: representative.timeMillis,
     result: 'anchor',
     reason: 'stationary_drift_anchor',
     distanceDeltaMeters: 0,
@@ -2562,7 +3701,8 @@ function addClosedLoopRoundTripScenarios(product, config) {
       || scenario.scenario === 'round_trip_line')
   );
   for (const candidate of candidates) {
-    addScenario(product, closedLoopRoundTripScenario(candidate, config));
+    addScenario(product, closedLoopRoundTripScenario(candidate, config,
+      product.denseAreaIntents ?? []));
   }
 }
 
@@ -2617,9 +3757,10 @@ function closedLoopRoundTripCandidates(product, config) {
   return candidates;
 }
 
-function closedLoopRoundTripScenario(candidate, config) {
+function closedLoopRoundTripScenario(candidate, config, denseAreaIntents = []) {
   const start = candidate.span[0];
   const end = candidate.span.at(-1);
+  const overlappingIntents = denseAreaIntentsForRange(denseAreaIntents, candidate.rawRange);
   const netScore = 1 - Math.min(1,
     candidate.netDistanceMeters / Math.max(config.closedLoopRoundTripMaxEndpointDistanceMeters, 1));
   const pathScore = Math.min(1,
@@ -2643,7 +3784,10 @@ function closedLoopRoundTripScenario(candidate, config) {
       bboxDiagonalMeters: scenarioNumber(candidate.bboxMeters),
       durationSeconds: scenarioNumber(candidate.durationSeconds),
       maxEndpointDistanceMeters: scenarioNumber(
-        config.closedLoopRoundTripMaxEndpointDistanceMeters)
+        config.closedLoopRoundTripMaxEndpointDistanceMeters),
+      denseAreaIntents: overlappingIntents.map((intent) => intent.intent),
+      roundTripIntentSupported: overlappingIntents
+        .some((intent) => intent.intent === 'round_trip')
     }
   };
 }
@@ -2655,7 +3799,8 @@ function addEnclosedGapClusterScenarios(product, config) {
     []
   );
   for (const candidate of candidates) {
-    addScenario(product, enclosedGapClusterScenario(candidate, config));
+    addScenario(product, enclosedGapClusterScenario(candidate, config,
+      product.denseAreaIntents ?? []));
   }
 }
 
@@ -2703,7 +3848,8 @@ function enclosedGapClusterCandidates(product, config) {
   return candidates;
 }
 
-function enclosedGapClusterScenario(candidate, config) {
+function enclosedGapClusterScenario(candidate, config, denseAreaIntents = []) {
+  const overlappingIntents = denseAreaIntentsForRange(denseAreaIntents, candidate.rawRange);
   return {
     scenario: 'enclosed_gap_cluster',
     confidence: scenarioNumber(clamp01(0.45
@@ -2729,19 +3875,30 @@ function enclosedGapClusterScenario(candidate, config) {
       stationaryAnchorCount: candidate.stationaryAnchorCount,
       segmentIds: candidate.segmentIds,
       bboxDiagonalMeters: scenarioNumber(candidate.bboxMeters),
-      durationSeconds: scenarioNumber(candidate.durationSeconds)
+      durationSeconds: scenarioNumber(candidate.durationSeconds),
+      denseAreaIntents: overlappingIntents.map((intent) => intent.intent),
+      gapClusterIntentSupported: overlappingIntents
+        .some((intent) => intent.intent === 'gap_cluster'),
+      mixedIntentSupported: overlappingIntents
+        .some((intent) => intent.intent === 'mixed')
     }
   };
 }
 
 function addRestPhotoMicroMoveScenarios(product, config) {
   if (!config.restPhotoMicroMoveEnabled) return;
+  const existingRanges = product.scenarios
+    .filter((scenario) => scenario.scenario === 'rest_photo_micro_move')
+    .map((scenario) => scenario.rawRange)
+    .filter(Boolean);
   const candidates = nonOverlappingScenarioCandidates(
-    restPhotoMicroMoveCandidates(product, config),
+    restPhotoMicroMoveCandidates(product, config).filter((candidate) =>
+      !existingRanges.some((range) => rawRangesOverlap(range, candidate.rawRange))),
     []
   );
   for (const candidate of candidates) {
-    addScenario(product, restPhotoMicroMoveScenario(candidate, config));
+    addScenario(product, restPhotoMicroMoveScenario(candidate, config,
+      product.denseAreaIntents ?? []));
   }
 }
 
@@ -2796,7 +3953,9 @@ function restPhotoMicroMoveCandidates(product, config) {
   return candidates;
 }
 
-function restPhotoMicroMoveScenario(candidate, config) {
+function restPhotoMicroMoveScenario(candidate, config, denseAreaIntents = []) {
+  const overlappingIntents = denseAreaIntentsForRange(denseAreaIntents, candidate.rawRange);
+  const intentNames = overlappingIntents.map((intent) => intent.intent);
   return {
     scenario: 'rest_photo_micro_move',
     confidence: scenarioNumber(clamp01(0.45
@@ -2821,7 +3980,14 @@ function restPhotoMicroMoveScenario(candidate, config) {
       bboxDiagonalMeters: scenarioNumber(candidate.bboxMeters),
       durationSeconds: scenarioNumber(candidate.durationSeconds),
       lowSpeedRatio: scenarioNumber(candidate.lowSpeedCount
-        / Math.max(candidate.span.length, 1))
+        / Math.max(candidate.span.length, 1)),
+      denseAreaIntents: intentNames,
+      stationaryIntentSupported: intentNames.includes('stationary'),
+      mixedIntentSupported: intentNames.includes('mixed'),
+      forwardIntentOverlapped: intentNames.includes('forward_motion'),
+      localMicroMoveOverridesDenseForward: intentNames.includes('forward_motion')
+        && candidate.pathMeters / Math.max(candidate.netDistanceMeters, 1)
+          >= config.restPhotoMicroMoveMinPathNetRatio
     }
   };
 }
@@ -2863,6 +4029,15 @@ function rawRangesOverlap(a, b) {
     && Number.isFinite(b?.endRawPointId)
     && a.startRawPointId <= b.endRawPointId
     && b.startRawPointId <= a.endRawPointId;
+}
+
+function rawRangeContains(outer, inner) {
+  return Number.isFinite(outer?.startRawPointId)
+    && Number.isFinite(outer?.endRawPointId)
+    && Number.isFinite(inner?.startRawPointId)
+    && Number.isFinite(inner?.endRawPointId)
+    && outer.startRawPointId <= inner.startRawPointId
+    && outer.endRawPointId >= inner.endRawPointId;
 }
 
 function trackSpanRawPointRange(span) {
@@ -2969,6 +4144,7 @@ function scenarioRawPointIds(scenario) {
   addNumbers(ids, scenario.anchorRawPointIds);
   addNumbers(ids, scenario.evidence?.rawPointIds);
   addNumbers(ids, scenario.evidence?.rejectedRawPointIds);
+  addNumbers(ids, scenario.evidence?.weakRawPointIds);
   addNumbers(ids, scenario.evidence?.keptRawPointIds);
   addNumbers(ids, scenario.evidence?.pendingRawPointIds);
   addNumbers(ids, [
@@ -3000,6 +4176,9 @@ function scenarioUsesContinuousRawRange(name) {
     || name === 'round_trip_line'
     || name === 'closed_loop_round_trip'
     || name === 'enclosed_gap_cluster'
+    || name === 'enclosed_loop_cluster_settlement'
+    || name === 'dense_area_intent'
+    || name === 'dense_main_route_settlement'
     || name === 'rest_photo_micro_move';
 }
 
@@ -3153,14 +4332,18 @@ function scenarioPriority(name) {
   switch (name) {
     case 'stationary_session_collapse': return 10;
     case 'stationary_drift_collapse': return 20;
+    case 'dense_main_route_settlement': return 22;
     case 'rest_photo_micro_move': return 24;
+    case 'enclosed_loop_cluster_settlement': return 25;
     case 'enclosed_gap_cluster': return 26;
+    case 'position_snap_recovery': return 28;
     case 'same_road_round_trip': return 30;
     case 'closed_loop_round_trip': return 32;
     case 'round_trip_line': return 35;
     case 'weak_recovery_endpoint': return 40;
     case 'gap_recovery_boundary': return 50;
     case 'transport_contamination': return 60;
+    case 'dense_area_intent': return 90;
     default: return 100;
   }
 }
@@ -3171,10 +4354,15 @@ function scenarioChineseLabel(name) {
     case 'same_road_round_trip': return '同路往返交织';
     case 'closed_loop_round_trip': return '闭合往返/回环';
     case 'round_trip_line': return '往返线形';
+    case 'dense_area_intent': return '密集区意图判断';
     case 'enclosed_gap_cluster': return '山洞/室内类遮挡聚集';
+    case 'enclosed_loop_cluster_settlement': return '遮挡回环聚集压缩';
+    case 'dense_main_route_settlement': return '密集区主路线骨架';
+    case 'position_snap_recovery': return '定位跳变恢复';
     case 'stationary_session_collapse': return '整段静止压缩';
     case 'stationary_drift_collapse': return '停留漂移压缩';
     case 'rest_photo_micro_move': return '拍照/休息微移动';
+    case 'moving_spike_cleanup': return '移动单点尖刺清理';
     case 'gap_recovery_boundary': return 'GAP 恢复边界';
     case 'transport_contamination': return '交通工具混入';
     default: return name || '未知情景';
@@ -3187,10 +4375,17 @@ function scenarioActionChineseLabel(action) {
     case 'centerline_with_endpoint': return '压成中心线并保留端点';
     case 'classify_loop_without_rewrite': return '只标注闭合往返，不改轨迹';
     case 'rdp_line_simplify': return '线形抽稀';
+    case 'classify_dense_area_intent': return '判断密集区主意图';
     case 'classify_enclosed_gap_cluster': return '标注遮挡聚集，不跨 GAP 计距';
+    case 'compress_enclosed_loop_low_speed_drift': return '压缩遮挡回环内低速碎点';
+    case 'preserve_dense_main_route_skeleton': return '保留密集区主路线骨架';
+    case 'reset_position_snap_recovery_delta': return '定位跳变恢复点置零';
     case 'collapse_stationary_session': return '整段压成代表点';
     case 'collapse_drift_cloud': return '漂移云压成停留锚点';
     case 'classify_micro_move_without_rewrite': return '只标注小范围微移动';
+    case 'simplify_micro_move_shape': return '简化小范围微移动';
+    case 'collapse_micro_move_to_rest_anchor': return '压成休息锚点';
+    case 'remove_single_point_spike': return '移除单点尖刺';
     case 'reset_segment_zero_delta': return '边界重置，距离和运动时间置零';
     case 'exclude_from_hiking_truth': return '排除出徒步真值';
     default: return action || '无动作';
@@ -3203,10 +4398,17 @@ function localRebuildChineseLabel(localRebuild) {
     case 'same_road_centerline': return '同路中心线';
     case 'round_trip_diagnostic': return '往返诊断标注';
     case 'round_trip_polyline': return '往返折线';
+    case 'dense_area_intent_classifier': return '密集区意图分类';
     case 'gap_stationary_cluster_diagnostic': return 'GAP/静止聚集诊断';
+    case 'enclosed_loop_anchor_settlement': return '遮挡回环锚点压缩';
+    case 'dense_main_route_skeleton': return '密集区前进骨架';
+    case 'position_snap_recovery_anchor': return '定位跳变恢复锚点';
     case 'stationary_session_anchor': return '整段静止代表点';
     case 'stationary_drift_anchor': return '停留漂移代表点';
     case 'rest_photo_micro_move_diagnostic': return '微移动诊断标注';
+    case 'rest_photo_micro_move_simplifier': return '微移动简化';
+    case 'rest_photo_micro_move_anchor': return '休息微移动锚点';
+    case 'moving_spike_line_bridge': return '移动尖刺桥接';
     case 'gap_recovery_anchor': return 'GAP 恢复锚点';
     case 'transport_diagnostic_continuity': return '交通污染诊断连续性';
     default: return localRebuild || '无局部重建';
@@ -3230,6 +4432,15 @@ function scenarioForReason(reason, scenarioByName) {
   }
   if (String(reason || '').startsWith('interwoven_corridor_')) {
     return scenarioByName.get('interwoven_corridor') ?? null;
+  }
+  if (String(reason || '').startsWith('enclosed_loop_cluster_')) {
+    return scenarioByName.get('enclosed_loop_cluster_settlement') ?? null;
+  }
+  if (String(reason || '').startsWith('dense_main_route_')) {
+    return scenarioByName.get('dense_main_route_settlement') ?? null;
+  }
+  if (reason === 'position_snap_recovery_anchor') {
+    return scenarioByName.get('position_snap_recovery') ?? null;
   }
   if (reason === 'gap_recovery') {
     return scenarioByName.get('gap_recovery_boundary') ?? null;
@@ -3322,8 +4533,12 @@ function reasonPrimitiveFacts(reason) {
       return ['low_speed_movement', 'motion_supported'];
     case 'continuity_rescue_low_accuracy':
       return ['horizontal_accuracy_weak', 'continuity_supported'];
+    case 'position_snap_recovery_anchor':
+      return ['position_snap_recovery', 'boundary_reset'];
     case 'weak_horizontal_accuracy':
       return ['horizontal_accuracy_weak'];
+    case 'implied_speed_unconfirmed_by_reported_speed':
+      return ['speed_implausible', 'reported_speed_not_transport'];
     case 'implied_speed_too_high':
       return ['speed_implausible'];
     case 'gap_recovery':
@@ -3352,6 +4567,9 @@ function reasonPrimitiveFacts(reason) {
       if (String(reason || '').startsWith('interwoven_corridor_')) {
         return ['interwoven_corridor'];
       }
+      if (String(reason || '').startsWith('dense_main_route_')) {
+        return ['dense_main_route'];
+      }
       return reason ? [`reason_${reason}`] : [];
   }
 }
@@ -3366,8 +4584,16 @@ function scenarioExplanationSummary(scenario) {
       return '轨迹路径较长但首尾接近，识别为闭合往返/回环片段。';
     case 'round_trip_line':
       return '往返线形被保守抽稀，保留起点、折返点和终点语义。';
+    case 'dense_area_intent':
+      return `密集区先判断为 ${scenario.evidence?.intent || 'unknown'}，再调度局部 settlement。`;
     case 'enclosed_gap_cluster':
       return '小范围内多次 GAP 恢复和静止锚点聚集，识别为山洞/室内类遮挡片段。';
+    case 'enclosed_loop_cluster_settlement':
+      return '遮挡聚集叠加闭合往返时，低速碎点并入锚点，避免形成额外折返距离。';
+    case 'dense_main_route_settlement':
+      return '定位点密集但存在明确前进方向时，先抽出主路线骨架，再让局部情景在骨架周围修复。';
+    case 'position_snap_recovery':
+      return '定位短时跳变后恢复到稳定位置，恢复锚点重置 delta，避免从跳变前位置硬桥接。';
     case 'stationary_session_collapse':
       return '整段 session 近似静止，压缩为一个代表锚点。';
     case 'stationary_drift_collapse':
@@ -3493,6 +4719,13 @@ function buildFindings(product, evidence) {
   }
   if (product.interwovenCorridorSimplify?.collapsedSpanCount > 0) {
     findings.push(`interwoven corridor simplify ${product.interwovenCorridorSimplify.collapsedSpanCount} 段，按窄走廊交织误差抽稀`);
+  }
+  const denseIntentConflicts = product.denseIntentConflicts || [];
+  if (denseIntentConflicts.length > 0) {
+    const ranges = denseIntentConflicts.slice(0, 5)
+      .map((scenario) =>
+        `Raw#${scenario.rawRange.startRawPointId}-${scenario.rawRange.endRawPointId}`);
+    findings.push(`dense intent conflict ${denseIntentConflicts.length} 段：局部休息/拍照微移动覆盖粗粒度 forward 判断（${ranges.join(', ')}）`);
   }
   if (product.scenarios.length > 0) {
     const scenarioNames = [...new Set(product.scenarios.map((scenario) => scenario.scenario))];
