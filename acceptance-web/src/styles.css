@@ -209,10 +209,10 @@ button:disabled {
 
 .map-legend {
   position: absolute;
-  left: 156px;
+  left: 204px;
   bottom: 16px;
   display: flex;
-  max-width: calc(100% - 176px);
+  max-width: calc(100% - 224px);
   flex-wrap: wrap;
   gap: 10px;
   border: 1px solid var(--line);
@@ -229,7 +229,7 @@ button:disabled {
   top: 16px;
   left: 16px;
   display: grid;
-  width: 124px;
+  width: 172px;
   gap: 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -249,9 +249,9 @@ button:disabled {
 .contour-data-panel {
   position: absolute;
   top: 16px;
-  left: 156px;
+  left: 204px;
   display: grid;
-  max-width: min(430px, calc(100% - 332px));
+  max-width: min(430px, calc(100% - 380px));
   gap: 4px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -317,6 +317,11 @@ button:disabled {
   background: rgba(7, 17, 19, 0.96);
 }
 
+.scenario-repair-options {
+  max-height: 260px;
+  overflow: auto;
+}
+
 .shadow-filter-option {
   display: flex;
   align-items: flex-start;
@@ -330,6 +335,25 @@ button:disabled {
 .shadow-filter-option input {
   margin-top: 1px;
   accent-color: var(--accent);
+}
+
+.shadow-filter-option span {
+  display: grid;
+  gap: 2px;
+}
+
+.shadow-filter-option small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.scenario-repair-option[data-repair-kind="rewrite"] small {
+  color: #fbbf24;
+}
+
+.scenario-repair-option[data-repair-kind="diagnostic"] small {
+  color: #93c5fd;
 }
 
 .line,
@@ -384,6 +408,11 @@ button:disabled {
 
 .line.cleaned {
   background: #ef4444;
+}
+
+.line.repaired {
+  height: 5px;
+  background: linear-gradient(90deg, #22c55e, #38bdf8, #f59e0b);
 }
 
 .line.shadow {

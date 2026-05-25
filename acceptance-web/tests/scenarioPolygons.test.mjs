@@ -114,3 +114,58 @@ test('discrete scenario coverage splits distant trigger points into separate pol
   assert.ok(features.every((feature) => feature.properties.regionCount === 2));
   assert.ok(features.every((feature) => feature.properties.areaMeters2 > 0));
 });
+
+test('scenario polygons use full scenario product when current target has repairs disabled', () => {
+  const dataset = {
+    id: 'dataset-1',
+    fileName: 'fixture-evidence.jsonl',
+    model: {
+      points: [
+        { rawPointId: 1, lat: 30, lng: 120, accuracy: 8 },
+        { rawPointId: 2, lat: 30.0002, lng: 120.0003, accuracy: 8 }
+      ]
+    },
+    targetProduct: {
+      track: [
+        { trackPointId: 1, sourceRawPointId: 1, lat: 30, lng: 120 }
+      ],
+      scenarios: [],
+      scenarioCoverage: []
+    },
+    scenarioProduct: {
+      track: [
+        { trackPointId: 1, sourceRawPointId: 1, lat: 30, lng: 120 },
+        { trackPointId: 2, sourceRawPointId: 2, lat: 30.0002, lng: 120.0003 }
+      ],
+      scenarios: [
+        {
+          scenarioId: 8,
+          scenario: 'round_trip_line',
+          confidence: 0.7,
+          rawRange: { startRawPointId: 1, endRawPointId: 2 },
+          action: 'simplify_round_trip_line',
+          localRebuild: 'round_trip_line_simplified'
+        }
+      ],
+      scenarioCoverage: [
+        {
+          scenarioId: 8,
+          scenario: 'round_trip_line',
+          scenarioLabel: '往返线形',
+          confidence: 0.7,
+          continuousCoverage: true,
+          rawRange: { startRawPointId: 1, endRawPointId: 2 },
+          trackPointRange: { startTrackPointId: 1, endTrackPointId: 2 },
+          trackPointIds: [1, 2],
+          summary: 'full scenario coverage'
+        }
+      ]
+    }
+  };
+
+  const features = buildScenarioPolygonFeatures(dataset);
+
+  assert.equal(features.length, 1);
+  assert.equal(features[0].properties.scenario, 'round_trip_line');
+  assert.equal(features[0].properties.trackCoverage, '#1-2');
+});

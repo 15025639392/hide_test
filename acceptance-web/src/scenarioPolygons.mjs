@@ -26,9 +26,10 @@ export function buildScenarioPolygonFeatureCollection(datasets, options = {}) {
 }
 
 export function buildScenarioPolygonFeatures(dataset, options = {}) {
-  const coverages = dataset?.targetProduct?.scenarioCoverage || [];
+  const product = scenarioPolygonProduct(dataset);
+  const coverages = product?.scenarioCoverage || [];
   if (coverages.length === 0) return [];
-  const scenarioById = new Map((dataset.targetProduct?.scenarios || [])
+  const scenarioById = new Map((product?.scenarios || [])
     .map((scenario) => [scenario.scenarioId, scenario]));
   return coverages.flatMap((coverage, coverageIndex) => {
     const scenario = scenarioById.get(coverage.scenarioId) || null;
@@ -163,9 +164,14 @@ function rawPointIndex(dataset) {
 }
 
 function trackPointIndex(dataset) {
-  if (dataset?.targetTrackPointById instanceof Map) return dataset.targetTrackPointById;
-  return new Map((dataset?.targetProduct?.track || [])
+  if (dataset?.scenarioTrackPointById instanceof Map) return dataset.scenarioTrackPointById;
+  const product = scenarioPolygonProduct(dataset);
+  return new Map((product?.track || [])
     .map((point) => [point.trackPointId, point]));
+}
+
+function scenarioPolygonProduct(dataset) {
+  return dataset?.scenarioProduct || dataset?.targetProduct || null;
 }
 
 function trackPointRawIds(point) {

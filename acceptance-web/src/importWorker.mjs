@@ -5,18 +5,25 @@ import {
 import { buildSixLayerTrackProduct } from './sixLayerTrackProduct.mjs';
 
 self.onmessage = async (event) => {
-  const { file, fileName, filePath, config } = event.data || {};
+  const { file, fileName, filePath, config, scenarioConfig, mode, model } = event.data || {};
   try {
-    const text = await file.text();
-    const model = parseEvidenceJsonl(text, filePath);
-    const targetProduct = buildSixLayerTrackProduct(model, { config });
-    const targetOutput = compactTargetOutput(buildTargetOutput(model, targetProduct));
+    const inputModel = mode === 'rebuild'
+      ? model
+      : parseEvidenceJsonl(await file.text(), filePath);
+    const targetProduct = buildSixLayerTrackProduct(inputModel, { config });
+    const scenarioProduct = scenarioConfig
+      ? sameCleaningConfig(config, scenarioConfig)
+        ? targetProduct
+        : buildSixLayerTrackProduct(inputModel, { config: scenarioConfig })
+      : null;
+    const targetOutput = compactTargetOutput(buildTargetOutput(inputModel, targetProduct));
     self.postMessage({
       ok: true,
       result: {
         fileName,
         filePath,
-        model,
+        model: inputModel,
+        scenarioProduct,
         targetProduct,
         targetOutput
       }
@@ -31,6 +38,10 @@ self.onmessage = async (event) => {
     });
   }
 };
+
+function sameCleaningConfig(left, right) {
+  return JSON.stringify(left || {}) === JSON.stringify(right || {});
+}
 
 function compactTargetOutput(output) {
   return {

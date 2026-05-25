@@ -2,23 +2,29 @@ import {
   buildTargetOutput,
   formatDuration,
   isEvidenceCandidatePath,
-  isEvidenceJsonlPath,
   parseEvidenceJsonl
 } from './diagnosticMap.mjs';
+import { buildCleanedLineFeatures } from './cleanedLineStyles.mjs';
 import {
   buildSixLayerTrackProduct,
-  normalizeSixLayerTrackConfig,
   reviewTrackPointScenarioCoverage
 } from './sixLayerTrackProduct.mjs';
 import {
-  buildScenarioPolygonFeatureCollection
+  buildScenarioPolygonFeatures
 } from './scenarioPolygons.mjs';
+import {
+  DEFAULT_SCENARIO_REPAIR_IDS,
+  SCENARIO_REPAIR_OPTIONS,
+  enabledScenarioRepairIds,
+  fullScenarioRepairConfig,
+  scenarioRepairConfigFromIds,
+  scenarioRepairSummary
+} from './scenarioRepairConfig.mjs';
 
 const COLORS = ['#2dd4bf', '#fb7185', '#facc15', '#60a5fa', '#c084fc', '#34d399', '#f97316', '#e879f9'];
 const MAP_LINE_POINT_LIMIT = 6000;
 const MAP_RAW_POINT_LIMIT = 7000;
 const MAP_TRACK_POINT_LIMIT = 5000;
-const FIXED_CLEANING_CONFIG = normalizeSixLayerTrackConfig();
 const TERRAIN_EXAGGERATION = 1.15;
 const TERRAIN_TILEJSON_URL = 'https://tiles.mapterhorn.com/tilejson.json';
 const TERRAIN_TILE_TEMPLATE = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
@@ -108,6 +114,9 @@ const state = {
   selectedDatasetId: null,
   selectedPoint: null,
   scenarioReviewRangeText: '',
+  enabledScenarioRepairIds: [...DEFAULT_SCENARIO_REPAIR_IDS],
+  lastScenarioRepairImpact: null,
+  scenarioRepairApplyGeneration: 0,
   selectedShadowIds: [],
   selectedContour: null,
   map: null,
@@ -133,6 +142,8 @@ const elements = {
   contourDataPanel: document.querySelector('#contourDataPanel'),
   contourDataStatus: document.querySelector('#contourDataStatus'),
   contourDataSelected: document.querySelector('#contourDataSelected'),
+  scenarioRepairSummary: document.querySelector('#scenarioRepairSummary'),
+  scenarioRepairOptions: document.querySelector('#scenarioRepairOptions'),
   shadowFilterSummary: document.querySelector('#shadowFilterSummary'),
   shadowFilterOptions: document.querySelector('#shadowFilterOptions'),
   showDirection: document.querySelector('#showDirection'),
@@ -141,6 +152,7 @@ const elements = {
   showCleanedPoints: document.querySelector('#showCleanedPoints'),
   showPoints: document.querySelector('#showPoints'),
   cleaningAlgorithm: document.querySelector('#cleaningAlgorithm'),
+  cleaningConfigState: document.querySelector('#cleaningConfigState'),
   algorithmDialog: document.querySelector('#algorithmDialog'),
   algorithmDialogContent: document.querySelector('#algorithmDialogContent'),
   closeAlgorithmDialogButton: document.querySelector('#closeAlgorithmDialogButton'),
@@ -171,6 +183,7 @@ elements.scenarioRangeInput.addEventListener('keydown', (event) => {
 });
 elements.showTerrain.addEventListener('change', renderTerrain);
 elements.showContours.addEventListener('change', renderContours);
+elements.scenarioRepairOptions.addEventListener('change', handleScenarioRepairChange);
 elements.shadowFilterOptions.addEventListener('change', handleShadowFilterChange);
 elements.closeAlgorithmDialogButton.addEventListener('click', closeAlgorithmDialog);
 elements.algorithmDialog.addEventListener('click', (event) => {
@@ -208,7 +221,7 @@ async function loadAlgorithmSource() {
     state.algorithmSourceText = `无法读取 sixLayerTrackProduct.mjs: ${error.message}`;
   }
   renderCleaningAlgorithm();
-  renderAlgorithmDialog();
+  if (elements.algorithmDialog.open) renderAlgorithmDialog();
 }
 
 async function importFiles(files, fromDirectory) {
@@ -217,7 +230,7 @@ async function importFiles(files, fromDirectory) {
   const evidenceFiles = files
     .filter((file) => {
       const path = file.webkitRelativePath || file.name;
-      return fromDirectory ? isEvidenceJsonlPath(path) : isEvidenceCandidatePath(path);
+      return isEvidenceCandidatePath(path);
     })
     .sort((left, right) =>
       (left.webkitRelativePath || left.name).localeCompare(right.webkitRelativePath || right.name));
@@ -249,16 +262,17 @@ async function importFiles(files, fromDirectory) {
 
 async function readEvidenceFile(file, index) {
   const filePath = file.webkitRelativePath || file.name;
-  const result = await readEvidenceFileInWorker(file, filePath, FIXED_CLEANING_CONFIG);
+  const result = await readEvidenceFileInWorker(file, filePath, currentCleaningConfig(),
+    fullScenarioConfig());
   return finalizeDataset({
     ...result,
     sourceFile: file
   }, index);
 }
 
-async function readEvidenceFileInWorker(file, filePath, config) {
+async function readEvidenceFileInWorker(file, filePath, config, scenarioConfig) {
   if (!window.Worker) {
-    return readEvidenceFileOnMainThread(file, filePath, config);
+    return readEvidenceFileOnMainThread(file, filePath, config, scenarioConfig);
   }
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL('./importWorker.mjs', import.meta.url), { type: 'module' });
@@ -279,19 +293,24 @@ async function readEvidenceFileInWorker(file, filePath, config) {
       file,
       fileName: file.name,
       filePath,
-      config
+      config,
+      scenarioConfig
     });
   });
 }
 
-async function readEvidenceFileOnMainThread(file, filePath, config) {
+async function readEvidenceFileOnMainThread(file, filePath, config, scenarioConfig) {
   const text = await file.text();
   const model = parseEvidenceJsonl(text, filePath);
   const targetProduct = buildSixLayerTrackProduct(model, { config });
+  const scenarioProduct = sameCleaningConfig(config, scenarioConfig)
+    ? targetProduct
+    : buildSixLayerTrackProduct(model, { config: scenarioConfig });
   return {
     fileName: file.name,
     filePath,
     model,
+    scenarioProduct,
     targetProduct,
     targetOutput: compactTargetOutput(buildTargetOutput(model, targetProduct))
   };
@@ -305,6 +324,7 @@ function finalizeDataset(result, index) {
     sourceFile: result.sourceFile || null,
     color: COLORS[index % COLORS.length],
     model: result.model,
+    scenarioProduct: result.scenarioProduct || result.targetProduct,
     targetProduct: result.targetProduct,
     targetOutput: result.targetOutput,
     visible: true
@@ -324,10 +344,17 @@ function compactTargetOutput(output) {
   };
 }
 
+function sameCleaningConfig(left, right) {
+  return JSON.stringify(left || {}) === JSON.stringify(right || {});
+}
+
 function attachDatasetIndexes(dataset) {
+  dataset.scenarioProduct = dataset.scenarioProduct || dataset.targetProduct;
   dataset.rawPointById = new Map((dataset.model?.points || [])
     .map((point) => [point.rawPointId, point]));
   dataset.targetTrackPointById = new Map((dataset.targetProduct?.track || [])
+    .map((point) => [point.trackPointId, point]));
+  dataset.scenarioTrackPointById = new Map((dataset.scenarioProduct?.track || [])
     .map((point) => [point.trackPointId, point]));
   dataset.shadowTrackPointById = new Map((primaryAdaptiveShadow(dataset)?.track || [])
     .map((point) => [point.trackPointId, point]));
@@ -335,7 +362,76 @@ function attachDatasetIndexes(dataset) {
   dataset.shadowDifferenceByRawId = new Map(Array.from(dataset.shadowDifferencesByRawId.entries())
     .map(([rawPointId, differences]) => [rawPointId, differences[0]]));
   dataset.rawDecisionById = buildRawDecisionIndex(dataset.targetProduct);
+  if (dataset.scenarioPolygonProduct !== dataset.scenarioProduct) {
+    dataset.scenarioPolygonFeatures = buildScenarioPolygonFeatures(dataset);
+    dataset.scenarioPolygonProduct = dataset.scenarioProduct;
+  }
   dataset.mapRender = buildMapRenderIndexes(dataset);
+}
+
+function currentCleaningConfig() {
+  return scenarioRepairConfigFromIds(state.enabledScenarioRepairIds);
+}
+
+function fullScenarioConfig() {
+  return fullScenarioRepairConfig();
+}
+
+function rebuildDatasetWithCleaningConfig(dataset, config) {
+  const targetProduct = buildSixLayerTrackProduct(dataset.model, { config });
+  dataset.targetProduct = targetProduct;
+  dataset.targetOutput = compactTargetOutput(buildTargetOutput(dataset.model, targetProduct));
+  attachDatasetIndexes(dataset);
+  return dataset;
+}
+
+async function rebuildDatasetWithCleaningConfigInWorker(dataset, config) {
+  if (!window.Worker) {
+    return rebuildDatasetWithCleaningConfig(dataset, config);
+  }
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./importWorker.mjs', import.meta.url), { type: 'module' });
+    worker.onmessage = (event) => {
+      worker.terminate();
+      const message = event.data || {};
+      if (!message.ok) {
+        reject(new Error(message.error?.message || '后台重算失败'));
+        return;
+      }
+      resolve(finalizeRebuiltDataset(dataset, message.result));
+    };
+    worker.onerror = (event) => {
+      worker.terminate();
+      reject(new Error(event.message || '后台重算失败'));
+    };
+    worker.postMessage({
+      mode: 'rebuild',
+      fileName: dataset.fileName,
+      filePath: dataset.filePath,
+      model: dataset.model,
+      config
+    });
+  });
+}
+
+function finalizeRebuiltDataset(dataset, result) {
+  const nextDataset = {
+    ...dataset,
+    model: result.model || dataset.model,
+    scenarioProduct: dataset.scenarioProduct || result.scenarioProduct || result.targetProduct,
+    targetProduct: result.targetProduct,
+    targetOutput: result.targetOutput
+  };
+  attachDatasetIndexes(nextDataset);
+  return nextDataset;
+}
+
+function snapshotDatasetProduct(dataset) {
+  return {
+    id: dataset.id,
+    fileName: dataset.fileName,
+    targetProduct: dataset.targetProduct
+  };
 }
 
 function buildRawDecisionIndex(targetProduct) {
@@ -473,6 +569,7 @@ function clearAll() {
   state.selectedDatasetId = null;
   state.selectedPoint = null;
   state.scenarioReviewRangeText = '';
+  state.lastScenarioRepairImpact = null;
   state.selectedShadowIds = [];
   elements.folderInput.value = '';
   elements.fileInput.value = '';
@@ -499,12 +596,17 @@ function setLoading(loading, text = null) {
     elements.folderInput,
     elements.fileInput,
     elements.fitBoundsButton,
-    elements.clearButton
+    elements.clearButton,
+    elements.scenarioRepairSummary
   ]) {
     element.disabled = loading;
   }
   for (const label of document.querySelectorAll('.file-button')) {
     label.classList.toggle('disabled', loading);
+  }
+  for (const input of elements.scenarioRepairOptions
+    .querySelectorAll('input[type="checkbox"]')) {
+    input.disabled = loading;
   }
   if (text !== null) {
     setImportText(text);
@@ -522,12 +624,96 @@ function nextFrame() {
 }
 
 function render() {
+  renderScenarioRepairOptions();
   renderShadowFilterOptions();
   renderScenarioRangeReview();
   renderPointDetails();
   renderCleaningAlgorithm();
-  renderAlgorithmDialog();
+  if (elements.algorithmDialog.open) renderAlgorithmDialog();
   renderMap();
+}
+
+function renderScenarioRepairOptions() {
+  state.enabledScenarioRepairIds = enabledScenarioRepairIds(state.enabledScenarioRepairIds);
+  const selectedIds = new Set(state.enabledScenarioRepairIds);
+  const allChecked = selectedIds.size === SCENARIO_REPAIR_OPTIONS.length;
+  const summary = scenarioRepairSummary(state.enabledScenarioRepairIds);
+  elements.scenarioRepairSummary.textContent = `修复 ${summary}`;
+  if (elements.cleaningConfigState) {
+    elements.cleaningConfigState.textContent = summary;
+  }
+  elements.scenarioRepairOptions.innerHTML = [
+    scenarioRepairOptionMarkup('all', '全部修复', allChecked, 'all'),
+    ...SCENARIO_REPAIR_OPTIONS.map((option) =>
+      scenarioRepairOptionMarkup(option.id, option.label, selectedIds.has(option.id), option.kind))
+  ].join('');
+}
+
+function scenarioRepairOptionMarkup(id, label, checked, kind) {
+  const kindLabel = kind === 'all' ? '全部' : kind === 'diagnostic' ? '标注' : '改线';
+  return `
+    <label class="scenario-repair-option shadow-filter-option" data-repair-kind="${escapeHtml(kind)}">
+      <input
+        type="checkbox"
+        value="${escapeHtml(id)}"
+        ${checked ? 'checked' : ''}
+      />
+      <span>${escapeHtml(label)}<small>${escapeHtml(kindLabel)}</small></span>
+    </label>
+  `;
+}
+
+async function handleScenarioRepairChange(event) {
+  const input = event.target.closest('input[type="checkbox"]');
+  if (!input) return;
+  if (input.value === 'all') {
+    state.enabledScenarioRepairIds = input.checked
+      ? SCENARIO_REPAIR_OPTIONS.map((option) => option.id)
+      : [];
+  } else {
+    state.enabledScenarioRepairIds = Array.from(elements.scenarioRepairOptions
+      .querySelectorAll('input[type="checkbox"]:checked'))
+      .map((checkbox) => checkbox.value)
+      .filter((value) => value !== 'all');
+  }
+  await applyScenarioRepairConfig();
+}
+
+async function applyScenarioRepairConfig() {
+  state.enabledScenarioRepairIds = enabledScenarioRepairIds(state.enabledScenarioRepairIds);
+  if (state.datasets.length === 0) {
+    state.lastScenarioRepairImpact = null;
+    render();
+    return;
+  }
+  const generation = ++state.scenarioRepairApplyGeneration;
+  const config = currentCleaningConfig();
+  const summary = scenarioRepairSummary(state.enabledScenarioRepairIds);
+  setLoading(true, `正在应用情景修复：${summary}`);
+  await nextFrame();
+  try {
+    const beforeDatasets = state.datasets.map(snapshotDatasetProduct);
+    const nextDatasets = [];
+    for (let index = 0; index < state.datasets.length; index++) {
+      if (generation !== state.scenarioRepairApplyGeneration) return;
+      const dataset = state.datasets[index];
+      setLoading(true,
+        `正在应用情景修复：${summary} (${index + 1}/${state.datasets.length})`);
+      nextDatasets.push(await rebuildDatasetWithCleaningConfigInWorker(dataset, config));
+      await nextFrame();
+    }
+    if (generation !== state.scenarioRepairApplyGeneration) return;
+    state.datasets = nextDatasets;
+    state.lastScenarioRepairImpact = summarizeScenarioRepairImpact(beforeDatasets,
+      state.datasets, summary);
+    state.selectedPoint = null;
+    setImportText(scenarioRepairImpactMessage(state.lastScenarioRepairImpact));
+    render();
+  } finally {
+    if (generation === state.scenarioRepairApplyGeneration) {
+      setLoading(false);
+    }
+  }
 }
 
 function renderShadowFilterOptions() {
@@ -750,8 +936,9 @@ function renderCleaningAlgorithm() {
 }
 
 function algorithmBlock() {
-  const config = FIXED_CLEANING_CONFIG;
+  const config = currentCleaningConfig();
   const dataset = selectedDataset();
+  const repairSummary = scenarioRepairSummary(state.enabledScenarioRepairIds);
   return `
     <section class="summary-block algorithm-block">
       <h3>清洗规则</h3>
@@ -768,8 +955,14 @@ function algorithmBlock() {
         ${scenarioCoverageSummaryRows(dataset).map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
       </div>
       <div class="algorithm-section">
+        <b>情景修复</b>
+        <span>当前 ${escapeHtml(repairSummary)}；勾选变化会立即重算清洗轨迹、统计和线样式</span>
+        <span>情景区域始终来自全量识别结果，不随修复勾选过滤或消失</span>
+        ${scenarioRepairStateRows(config).map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
+      </div>
+      <div class="algorithm-section">
         <b>固定策略口径</b>
-        <span>Web UI 不提供手动参数覆盖；导入后始终使用六层算法默认配置复算</span>
+        <span>情景修复开关只控制当前清洗轨迹、统计和线样式；采样、精度、GAP、交通和爬升阈值仍使用默认配置</span>
         <span>弱点云 ${formatPlainNumber(config.weakCloudAccuracyMeters)}m；GAP ${formatPlainNumber(config.gapSeconds)}s；静止基础距离 ${formatPlainNumber(config.stationaryDistanceMeters)}m</span>
         <span>accuracy 上限 ${formatPlainNumber(config.maxIntakeAccuracyMeters)}m；低精度连续救回 <= ${formatPlainNumber(config.lowAccuracyRescueMaxAccuracyMeters)}m</span>
         <span>交通风险 ${formatPlainNumber(config.transportSpeedMetersPerSecond)}m/s + ${formatPlainNumber(config.transportMinDistanceMeters)}m；只做诊断，不进徒步真值</span>
@@ -777,6 +970,119 @@ function algorithmBlock() {
       <button id="openAlgorithmDialogButton" class="secondary-button" type="button">查看完整规则说明</button>
     </section>
   `;
+}
+
+function scenarioRepairStateRows(config) {
+  const enabled = [];
+  const disabled = [];
+  for (const option of SCENARIO_REPAIR_OPTIONS) {
+    (config[option.configKey] ? enabled : disabled).push(option.label);
+  }
+  return [
+    ...scenarioRepairImpactRows(state.lastScenarioRepairImpact),
+    `启用 ${enabled.length > 0 ? enabled.join('、') : '-'}`,
+    `关闭 ${disabled.length > 0 ? disabled.join('、') : '-'}`
+  ];
+}
+
+function scenarioRepairImpactRows(impact) {
+  if (!impact) {
+    return ['本次影响 导入样本或勾选修复后显示清洗线、点数和统计变化'];
+  }
+  const changedText = impact.changedDatasetCount > 0
+    ? `改线 ${impact.changedDatasetCount}/${impact.datasetCount} 个文件`
+    : `未改线 ${impact.datasetCount} 个文件`;
+  return [
+    `本次影响 ${changedText}；清洗点 ${formatSignedCount(impact.delta.trustedPointCount)}；运动里程 ${formatSignedMeters(impact.delta.totalDistanceMeters)}；地图连线 ${formatSignedMeters(impact.delta.routeDistanceMeters)}；运动耗时 ${formatSignedDuration(impact.delta.movingTimeSeconds)}`,
+    impact.examples.length > 0
+      ? `变化示例 ${impact.examples.join('；')}`
+      : '说明 当前样本未命中被切换的改线修复，或只切换了诊断标注项；地图线不会发生肉眼变化'
+  ];
+}
+
+function summarizeScenarioRepairImpact(beforeDatasets, afterDatasets, summary) {
+  const beforeById = new Map(beforeDatasets.map((dataset) => [dataset.id, dataset]));
+  const delta = {
+    trustedPointCount: 0,
+    routeDistanceMeters: 0,
+    totalDistanceMeters: 0,
+    movingTimeSeconds: 0,
+    scenarioCount: 0
+  };
+  const examples = [];
+  let changedDatasetCount = 0;
+  for (const after of afterDatasets) {
+    const before = beforeById.get(after.id);
+    const beforeProduct = before?.targetProduct || {};
+    const afterProduct = after.targetProduct || {};
+    const itemDelta = productDelta(beforeProduct, afterProduct);
+    for (const key of Object.keys(delta)) {
+      delta[key] += itemDelta[key] || 0;
+    }
+    const trackChanged = trackSignature(beforeProduct.track)
+      !== trackSignature(afterProduct.track);
+    if (trackChanged) {
+      changedDatasetCount++;
+      if (examples.length < 3) {
+        examples.push(`${after.fileName} 清洗点 ${formatSignedCount(itemDelta.trustedPointCount)} / 运动里程 ${formatSignedMeters(itemDelta.totalDistanceMeters)}`);
+      }
+    }
+  }
+  return {
+    summary,
+    datasetCount: afterDatasets.length,
+    changedDatasetCount,
+    delta: Object.fromEntries(Object.entries(delta)
+      .map(([key, value]) => [key, normalizeTinyDelta(value)])),
+    examples
+  };
+}
+
+function normalizeTinyDelta(value) {
+  return Math.abs(value) < 0.000001 ? 0 : value;
+}
+
+function productDelta(beforeProduct, afterProduct) {
+  const beforeStats = beforeProduct?.stats || {};
+  const afterStats = afterProduct?.stats || {};
+  return {
+    trustedPointCount: numberOrZero(afterStats.trustedPointCount)
+      - numberOrZero(beforeStats.trustedPointCount),
+    routeDistanceMeters: numberOrZero(afterStats.routeDistanceMeters)
+      - numberOrZero(beforeStats.routeDistanceMeters),
+    totalDistanceMeters: numberOrZero(afterStats.totalDistanceMeters)
+      - numberOrZero(beforeStats.totalDistanceMeters),
+    movingTimeSeconds: numberOrZero(afterStats.movingTimeSeconds)
+      - numberOrZero(beforeStats.movingTimeSeconds),
+    scenarioCount: numberOrZero(afterProduct?.scenarios?.length)
+      - numberOrZero(beforeProduct?.scenarios?.length)
+  };
+}
+
+function trackSignature(track = []) {
+  return (track || []).map((point) => [
+    point.trackPointId,
+    point.sourceRawPointId,
+    point.result,
+    point.reason,
+    point.segmentId,
+    roundSignatureNumber(point.lat, 7),
+    roundSignatureNumber(point.lng, 7),
+    roundSignatureNumber(point.distanceDeltaMeters, 2),
+    roundSignatureNumber(point.movingTimeDeltaSeconds, 2)
+  ].join(':')).join('|');
+}
+
+function roundSignatureNumber(value, digits) {
+  return Number.isFinite(value) ? value.toFixed(digits) : '-';
+}
+
+function scenarioRepairImpactMessage(impact) {
+  if (!impact) return '已重算情景修复';
+  const changedText = impact.changedDatasetCount > 0
+    ? `改线 ${impact.changedDatasetCount}/${impact.datasetCount}`
+    : `未改线 ${impact.datasetCount}/${impact.datasetCount}`;
+  return `已按“${impact.summary}”重算：${changedText}，运动里程 ${formatSignedMeters(impact.delta.totalDistanceMeters)}，清洗点 ${formatSignedCount(impact.delta.trustedPointCount)}`;
 }
 
 function targetProductSummaryRows(dataset) {
@@ -875,9 +1181,9 @@ function sessionProfileSummaryRows(dataset) {
 }
 
 function scenarioCoverageSummaryRows(dataset) {
-  const coverage = dataset?.targetProduct?.scenarioCoverage || [];
+  const coverage = dataset?.scenarioProduct?.scenarioCoverage || [];
   if (coverage.length === 0) {
-    return ['导入 evidence.jsonl 后显示每个情景覆盖的清洗点区间和 raw 区间'];
+    return ['导入 evidence.jsonl 后显示全量情景覆盖的清洗点区间和 raw 区间'];
   }
   const scenarioNames = [...new Set(coverage.map((item) => item.scenario))];
   const rows = [
@@ -1278,6 +1584,12 @@ function formatSignedCount(value) {
   return `${value > 0 ? '+' : ''}${formatPlainNumber(value)}`;
 }
 
+function formatSignedDuration(value) {
+  if (!Number.isFinite(value)) return '-';
+  if (Object.is(value, -0) || value === 0) return formatDuration(0);
+  return `${value > 0 ? '+' : '-'}${formatDuration(Math.abs(value))}`;
+}
+
 function formatHeading(value) {
   return Number.isFinite(value) ? `${value.toFixed(0)}deg` : '-';
 }
@@ -1339,12 +1651,14 @@ function renderAlgorithmDialog() {
 }
 
 function fullAlgorithmMarkup() {
-  const config = FIXED_CLEANING_CONFIG;
+  const config = currentCleaningConfig();
   return `
     <section class="summary-block algorithm-block">
       <div class="algorithm-section">
         <b>固定策略口径</b>
-        <span>Web UI 不提供手动参数覆盖；导入后始终使用六层算法默认配置复算</span>
+        <span>当前情景修复：${escapeHtml(scenarioRepairSummary(state.enabledScenarioRepairIds))}</span>
+        <span>情景修复开关只控制当前清洗轨迹、统计和线样式；情景区域保持全量识别覆盖</span>
+        <span>采样、精度、GAP、交通和爬升阈值仍使用默认配置</span>
         <span>弱点云 ${formatPlainNumber(config.weakCloudAccuracyMeters)}m；GAP ${formatPlainNumber(config.gapSeconds)}s；静止基础距离 ${formatPlainNumber(config.stationaryDistanceMeters)}m</span>
         <span>accuracy 上限 ${formatPlainNumber(config.maxIntakeAccuracyMeters)}m；低精度连续救回 <= ${formatPlainNumber(config.lowAccuracyRescueMaxAccuracyMeters)}m</span>
         <span>交通风险 ${formatPlainNumber(config.transportSpeedMetersPerSecond)}m/s + ${formatPlainNumber(config.transportMinDistanceMeters)}m；只做诊断，不进徒步真值</span>
@@ -1968,9 +2282,9 @@ function addMapLayers() {
     type: 'line',
     source: 'cleaned-lines',
     paint: {
-      'line-color': '#ef4444',
-      'line-width': 4,
-      'line-opacity': 0.95
+      'line-color': ['coalesce', ['get', 'lineColor'], '#ef4444'],
+      'line-width': ['coalesce', ['get', 'lineWidth'], 4],
+      'line-opacity': ['coalesce', ['get', 'lineOpacity'], 0.95]
     }
   });
   state.map.addLayer({
@@ -2258,10 +2572,7 @@ function bindMapEvents() {
 function renderMap() {
   if (!state.mapLoaded) return;
   const visible = state.datasets.filter((dataset) => dataset.visible);
-  state.map.getSource('scenario-polygons').setData(
-    elements.showScenarios.checked
-      ? buildScenarioPolygonFeatureCollection(visible)
-      : emptyFeatureCollection());
+  state.map.getSource('scenario-polygons').setData(scenarioPolygonFeatureCollection(visible));
   state.map.getSource('raw-lines').setData(elements.showRaw.checked ? rawFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('trusted-lines').setData(elements.showTrusted.checked ? trustedFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('cleaned-lines').setData(elements.showCleaned.checked ? cleanedFeatureCollection(visible) : emptyFeatureCollection());
@@ -2315,12 +2626,21 @@ function trustedFeatureCollection(datasets) {
 function cleanedFeatureCollection(datasets) {
   return {
     type: 'FeatureCollection',
-    features: datasets
-      .map((dataset) => lineFeature(dataset,
-        pointsFromIds(dataset.targetTrackPointById,
-          dataset.mapRender?.cleanedLineTrackPointIds), 'cleaned'))
+    features: datasets.flatMap((dataset) => buildCleanedLineFeatures(dataset,
+      pointsFromIds(dataset.targetTrackPointById,
+        dataset.mapRender?.cleanedLineTrackPointIds), {
+        enabledScenarioRepairIds: state.enabledScenarioRepairIds
+      }))
       .filter((feature) => feature.geometry.coordinates.length > 1)
   };
+}
+
+function scenarioPolygonFeatureCollection(datasets) {
+  const features = datasets
+    .flatMap((dataset) => dataset.scenarioPolygonFeatures || buildScenarioPolygonFeatures(dataset))
+    .sort((left, right) =>
+      (right.properties?.areaMeters2 || 0) - (left.properties?.areaMeters2 || 0));
+  return { type: 'FeatureCollection', features };
 }
 
 function shadowFeatureCollection(datasets) {

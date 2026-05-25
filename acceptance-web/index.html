@@ -41,12 +41,18 @@
           <div class="map-filter-panel" aria-label="地图筛选条件">
             <label class="toggle"><input id="showRaw" type="checkbox" checked /> raw</label>
             <label class="toggle"><input id="showCleaned" type="checkbox" checked /> 清洗轨迹</label>
-            <label class="toggle"><input id="showScenarios" type="checkbox" checked /> 情景区域</label>
+            <label class="toggle disabled" title="情景区域始终显示全量触发范围">
+              <input id="showScenarios" type="checkbox" checked disabled /> 情景区域
+            </label>
             <label class="toggle"><input id="showTerrain" type="checkbox" checked /> 地形</label>
             <label class="toggle"><input id="showContours" type="checkbox" checked /> 等高线</label>
             <label class="toggle"><input id="showDirection" type="checkbox" checked /> 方向</label>
             <label class="toggle"><input id="showCleanedPoints" type="checkbox" /> 清洗点</label>
             <label class="toggle"><input id="showPoints" type="checkbox" /> 点</label>
+            <details class="scenario-repair-filter shadow-filter">
+              <summary id="scenarioRepairSummary">修复 全部修复</summary>
+              <div id="scenarioRepairOptions" class="scenario-repair-options shadow-filter-options"></div>
+            </details>
             <input id="showTrusted" type="checkbox" hidden />
             <input id="showShadow" type="checkbox" hidden />
             <input id="showLowQualityCandidates" type="checkbox" hidden />
@@ -62,6 +68,7 @@
           <div class="map-legend">
             <span><i class="line raw"></i>raw 轨迹</span>
             <span><i class="line cleaned"></i>算法清洗轨迹</span>
+            <span><i class="line repaired"></i>启用修复段</span>
             <span><i class="polygon scenario"></i>情景触发区域</span>
             <span><i class="terrain-swatch"></i>地形阴影</span>
             <span><i class="contour-swatch"></i>等高线</span>
@@ -77,7 +84,7 @@
           <section class="panel">
             <div class="panel-title">
               <h2>策略说明</h2>
-              <span>固定默认</span>
+              <span id="cleaningConfigState">全部修复</span>
             </div>
             <div id="cleaningAlgorithm" class="summary-list algorithm-list"></div>
           </section>
