@@ -67,6 +67,9 @@ https://tiles.mapterhorn.com/tilejson.json
   `../docs/outdoor-track-scenario-recognizers.md`。
 - 六层算法同步输出 `scenarioCoverage[]`，把每个情景投影到清洗点区间和 raw 区间，
   方便核对“某段清洗点到底进入了哪些情景”。
+- 地图默认叠加“情景区域”多边形：连续情景按 raw 覆盖范围标记触发区域，GAP
+  恢复边界、交通混入等离散情景按显式触发点拆分成独立区域，点击多边形可查看情景、
+  清洗点范围、raw 范围、置信度和动作解释。
 - 右侧“区间复核”可以输入清洗点范围，例如 `1836-1919`，直接查看该区间命中的
   复合情景、raw 范围、主解释点数和关联点数。
 - 点详情优先展示 `primaryExplanation`，并通过 `scenarioContexts[]` 展示同一点所在的

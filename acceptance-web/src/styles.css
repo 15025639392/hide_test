@@ -333,6 +333,7 @@ button:disabled {
 }
 
 .line,
+.polygon,
 .terrain-swatch,
 .contour-swatch,
 .dot {
@@ -391,6 +392,19 @@ button:disabled {
 
 .line.low-quality {
   background: repeating-linear-gradient(90deg, #f97316 0 6px, transparent 6px 10px);
+}
+
+.polygon {
+  width: 22px;
+  height: 12px;
+  border: 2px dashed #38bdf8;
+  border-radius: 3px;
+  background: rgba(56, 189, 248, 0.24);
+}
+
+.polygon.scenario {
+  border-color: #f59e0b;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.30), rgba(56, 189, 248, 0.24));
 }
 
 .direction-arrow {

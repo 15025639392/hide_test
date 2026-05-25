@@ -10,6 +10,9 @@ import {
   normalizeSixLayerTrackConfig,
   reviewTrackPointScenarioCoverage
 } from './sixLayerTrackProduct.mjs';
+import {
+  buildScenarioPolygonFeatureCollection
+} from './scenarioPolygons.mjs';
 
 const COLORS = ['#2dd4bf', '#fb7185', '#facc15', '#60a5fa', '#c084fc', '#34d399', '#f97316', '#e879f9'];
 const MAP_LINE_POINT_LIMIT = 6000;
@@ -123,6 +126,7 @@ const elements = {
   showRaw: document.querySelector('#showRaw'),
   showTrusted: document.querySelector('#showTrusted'),
   showCleaned: document.querySelector('#showCleaned'),
+  showScenarios: document.querySelector('#showScenarios'),
   showShadow: document.querySelector('#showShadow'),
   showTerrain: document.querySelector('#showTerrain'),
   showContours: document.querySelector('#showContours'),
@@ -180,6 +184,7 @@ for (const input of [
   elements.showRaw,
   elements.showTrusted,
   elements.showCleaned,
+  elements.showScenarios,
   elements.showShadow,
   elements.showDirection,
   elements.showLowQualityCandidates,
@@ -1896,6 +1901,7 @@ function contourIntervalForLevel(level, zoom) {
 
 function addMapLayers() {
   ensureDirectionArrowImage();
+  state.map.addSource('scenario-polygons', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('raw-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('trusted-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('cleaned-lines', { type: 'geojson', data: emptyFeatureCollection() });
@@ -1906,6 +1912,36 @@ function addMapLayers() {
   state.map.addSource('cleaned-points', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('shadow-diff-points', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('points', { type: 'geojson', data: emptyFeatureCollection() });
+  state.map.addLayer({
+    id: 'scenario-polygons-fill',
+    type: 'fill',
+    source: 'scenario-polygons',
+    paint: {
+      'fill-color': ['get', 'color'],
+      'fill-opacity': [
+        'interpolate', ['linear'], ['zoom'],
+        10, 0.18,
+        15, 0.25,
+        20, 0.32
+      ]
+    }
+  });
+  state.map.addLayer({
+    id: 'scenario-polygons-outline',
+    type: 'line',
+    source: 'scenario-polygons',
+    paint: {
+      'line-color': ['get', 'color'],
+      'line-width': [
+        'interpolate', ['linear'], ['zoom'],
+        10, 1.1,
+        15, 1.9,
+        20, 3
+      ],
+      'line-opacity': 0.88,
+      'line-dasharray': [2, 1]
+    }
+  });
   state.map.addLayer({
     id: 'raw-lines',
     type: 'line',
@@ -1982,6 +2018,37 @@ function addMapLayers() {
       ],
       'line-opacity': 0.94,
       'line-dasharray': [1.1, 1.1]
+    }
+  });
+  state.map.addLayer({
+    id: 'scenario-polygons-labels',
+    type: 'symbol',
+    source: 'scenario-polygons',
+    layout: {
+      'text-field': ['get', 'label'],
+      'text-font': [
+        'Arial',
+        'Helvetica Neue',
+        'PingFang SC',
+        'Microsoft YaHei',
+        'Noto Sans CJK SC',
+        'sans-serif'
+      ],
+      'text-size': [
+        'interpolate', ['linear'], ['zoom'],
+        10, 10,
+        15, 12,
+        20, 14
+      ],
+      'text-allow-overlap': false,
+      'text-ignore-placement': false,
+      'text-padding': 3
+    },
+    paint: {
+      'text-color': '#f8fafc',
+      'text-halo-color': 'rgba(2, 8, 10, 0.9)',
+      'text-halo-width': 1.5,
+      'text-opacity': 0.96
     }
   });
   state.map.addLayer({
@@ -2137,6 +2204,11 @@ function bindMapEvents() {
     if (!feature) return;
     selectLowQualityCandidate(feature);
   });
+  state.map.on('click', 'scenario-polygons-fill', (event) => {
+    const feature = event.features?.[0];
+    if (!feature) return;
+    selectScenarioPolygon(feature, event.lngLat);
+  });
   for (const layerId of CONTOUR_LINE_LAYER_IDS) {
     if (!state.map.getLayer(layerId)) continue;
     state.map.on('click', layerId, (event) => {
@@ -2163,6 +2235,9 @@ function bindMapEvents() {
   state.map.on('mouseenter', 'low-quality-candidate-lines', () => {
     state.map.getCanvas().style.cursor = 'pointer';
   });
+  state.map.on('mouseenter', 'scenario-polygons-fill', () => {
+    state.map.getCanvas().style.cursor = 'pointer';
+  });
   state.map.on('mouseleave', 'points', () => {
     state.map.getCanvas().style.cursor = '';
   });
@@ -2175,11 +2250,18 @@ function bindMapEvents() {
   state.map.on('mouseleave', 'low-quality-candidate-lines', () => {
     state.map.getCanvas().style.cursor = '';
   });
+  state.map.on('mouseleave', 'scenario-polygons-fill', () => {
+    state.map.getCanvas().style.cursor = '';
+  });
 }
 
 function renderMap() {
   if (!state.mapLoaded) return;
   const visible = state.datasets.filter((dataset) => dataset.visible);
+  state.map.getSource('scenario-polygons').setData(
+    elements.showScenarios.checked
+      ? buildScenarioPolygonFeatureCollection(visible)
+      : emptyFeatureCollection());
   state.map.getSource('raw-lines').setData(elements.showRaw.checked ? rawFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('trusted-lines').setData(elements.showTrusted.checked ? trustedFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('cleaned-lines').setData(elements.showCleaned.checked ? cleanedFeatureCollection(visible) : emptyFeatureCollection());
@@ -2573,6 +2655,34 @@ function selectLowQualityCandidate(feature) {
     .addTo(state.map);
 }
 
+function selectScenarioPolygon(feature, lngLat) {
+  if (!state.popup) return;
+  const properties = feature.properties || {};
+  const regionIndex = Number(properties.regionIndex);
+  const regionCount = Number(properties.regionCount);
+  const regionText = Number.isFinite(regionIndex) && Number.isFinite(regionCount)
+    && regionCount > 1
+    ? `区域 ${regionIndex + 1}/${regionCount}`
+    : '触发区域';
+  const confidence = Number(properties.confidence);
+  const areaMeters2 = Number(properties.areaMeters2);
+  state.popup
+    .setLngLat([lngLat.lng, lngLat.lat])
+    .setHTML([
+      `<strong>${escapeHtml(properties.fileName || '-')}</strong>`,
+      `${escapeHtml(properties.label || properties.scenario || '-')} ${escapeHtml(regionText)}`,
+      `情景 #${escapeHtml(String(properties.scenarioId || '-'))} ${escapeHtml(properties.scenario || '')}`,
+      `清洗 ${escapeHtml(properties.trackCoverage || '-')} / ${escapeHtml(properties.rawRange || 'Raw#-')}`,
+      `点数 ${escapeHtml(String(properties.pointCount || 0))}；面积 ${escapeHtml(formatAreaMeters2(areaMeters2))}`,
+      Number.isFinite(confidence) ? `置信 ${escapeHtml(formatPercent(confidence))}` : null,
+      properties.actionLabel || properties.localRebuildLabel
+        ? `${escapeHtml(properties.actionLabel || '-')}；${escapeHtml(properties.localRebuildLabel || '-')}`
+        : null,
+      properties.summary ? escapeHtml(properties.summary) : null
+    ].filter(Boolean).join('<br/>'))
+    .addTo(state.map);
+}
+
 function focusRawPoint(datasetId, rawPointId) {
   const dataset = state.datasets.find((item) => item.id === datasetId);
   const point = dataset?.rawPointById?.get(rawPointId);
@@ -2657,6 +2767,13 @@ function formatMeters(value) {
   if (!Number.isFinite(value)) return '-';
   if (Math.abs(value) >= 1000) return `${(value / 1000).toFixed(2)} km`;
   return `${value.toFixed(1)} m`;
+}
+
+function formatAreaMeters2(value) {
+  if (!Number.isFinite(value) || value < 0) return '-';
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)} km2`;
+  if (value >= 10_000) return `${(value / 10_000).toFixed(2)} ha`;
+  return `${value.toFixed(0)} m2`;
 }
 
 function formatProfileMeters(value) {
