@@ -117,7 +117,6 @@ const state = {
   enabledScenarioRepairIds: [...DEFAULT_SCENARIO_REPAIR_IDS],
   lastScenarioRepairImpact: null,
   scenarioRepairApplyGeneration: 0,
-  selectedShadowIds: [],
   selectedContour: null,
   map: null,
   mapLoaded: false,
@@ -136,7 +135,6 @@ const elements = {
   showTrusted: document.querySelector('#showTrusted'),
   showCleaned: document.querySelector('#showCleaned'),
   showScenarios: document.querySelector('#showScenarios'),
-  showShadow: document.querySelector('#showShadow'),
   showTerrain: document.querySelector('#showTerrain'),
   showContours: document.querySelector('#showContours'),
   contourDataPanel: document.querySelector('#contourDataPanel'),
@@ -144,11 +142,7 @@ const elements = {
   contourDataSelected: document.querySelector('#contourDataSelected'),
   scenarioRepairSummary: document.querySelector('#scenarioRepairSummary'),
   scenarioRepairOptions: document.querySelector('#scenarioRepairOptions'),
-  shadowFilterSummary: document.querySelector('#shadowFilterSummary'),
-  shadowFilterOptions: document.querySelector('#shadowFilterOptions'),
   showDirection: document.querySelector('#showDirection'),
-  showLowQualityCandidates: document.querySelector('#showLowQualityCandidates'),
-  showShadowDiffs: document.querySelector('#showShadowDiffs'),
   showCleanedPoints: document.querySelector('#showCleanedPoints'),
   showPoints: document.querySelector('#showPoints'),
   cleaningAlgorithm: document.querySelector('#cleaningAlgorithm'),
@@ -176,7 +170,6 @@ elements.fileInput.addEventListener('change', async (event) => {
 });
 elements.clearButton.addEventListener('click', clearAll);
 elements.fitBoundsButton.addEventListener('click', fitAllBounds);
-elements.cleaningAlgorithm.addEventListener('click', handleCleaningAlgorithmClick);
 elements.scenarioRangeReviewButton.addEventListener('click', applyScenarioRangeReview);
 elements.scenarioRangeInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') applyScenarioRangeReview();
@@ -184,7 +177,6 @@ elements.scenarioRangeInput.addEventListener('keydown', (event) => {
 elements.showTerrain.addEventListener('change', renderTerrain);
 elements.showContours.addEventListener('change', renderContours);
 elements.scenarioRepairOptions.addEventListener('change', handleScenarioRepairChange);
-elements.shadowFilterOptions.addEventListener('change', handleShadowFilterChange);
 elements.closeAlgorithmDialogButton.addEventListener('click', closeAlgorithmDialog);
 elements.algorithmDialog.addEventListener('click', (event) => {
   if (event.target === elements.algorithmDialog) closeAlgorithmDialog();
@@ -198,10 +190,7 @@ for (const input of [
   elements.showTrusted,
   elements.showCleaned,
   elements.showScenarios,
-  elements.showShadow,
   elements.showDirection,
-  elements.showLowQualityCandidates,
-  elements.showShadowDiffs,
   elements.showCleanedPoints,
   elements.showPoints
 ]) {
@@ -356,11 +345,6 @@ function attachDatasetIndexes(dataset) {
     .map((point) => [point.trackPointId, point]));
   dataset.scenarioTrackPointById = new Map((dataset.scenarioProduct?.track || [])
     .map((point) => [point.trackPointId, point]));
-  dataset.shadowTrackPointById = new Map((primaryAdaptiveShadow(dataset)?.track || [])
-    .map((point) => [point.trackPointId, point]));
-  dataset.shadowDifferencesByRawId = buildShadowDifferencesByRawId(dataset);
-  dataset.shadowDifferenceByRawId = new Map(Array.from(dataset.shadowDifferencesByRawId.entries())
-    .map(([rawPointId, differences]) => [rawPointId, differences[0]]));
   dataset.rawDecisionById = buildRawDecisionIndex(dataset.targetProduct);
   if (dataset.scenarioPolygonProduct !== dataset.scenarioProduct) {
     dataset.scenarioPolygonFeatures = buildScenarioPolygonFeatures(dataset);
@@ -482,62 +466,12 @@ function buildRawDecisionIndex(targetProduct) {
 function buildMapRenderIndexes(dataset) {
   const rawPoints = dataset.model?.points || [];
   const track = dataset.targetProduct?.track || [];
-  const shadowTrack = primaryAdaptiveShadow(dataset)?.track || [];
-  const shadowDifferenceIds = new Set(adaptiveShadowDifferencesForDataset(dataset)
-    .map((difference) => difference.rawPointId)
-    .filter(Number.isFinite));
   return {
     rawLinePointIds: sampleIds(rawPoints, MAP_LINE_POINT_LIMIT, 'rawPointId'),
-    rawPointIds: sampleIds(rawPoints, MAP_RAW_POINT_LIMIT, 'rawPointId', shadowDifferenceIds),
+    rawPointIds: sampleIds(rawPoints, MAP_RAW_POINT_LIMIT, 'rawPointId'),
     cleanedLineTrackPointIds: sampleIds(track, MAP_LINE_POINT_LIMIT, 'trackPointId'),
-    cleanedPointTrackPointIds: sampleIds(track, MAP_TRACK_POINT_LIMIT, 'trackPointId'),
-    shadowLineTrackPointIds: sampleIds(shadowTrack, MAP_LINE_POINT_LIMIT, 'trackPointId')
+    cleanedPointTrackPointIds: sampleIds(track, MAP_TRACK_POINT_LIMIT, 'trackPointId')
   };
-}
-
-function adaptiveShadowsForDataset(dataset) {
-  const shadows = dataset?.targetProduct?.adaptiveShadows;
-  if (Array.isArray(shadows) && shadows.length > 0) return shadows;
-  return dataset?.targetProduct?.adaptiveShadow ? [dataset.targetProduct.adaptiveShadow] : [];
-}
-
-function selectedAdaptiveShadowsForDataset(dataset) {
-  const shadows = adaptiveShadowsForDataset(dataset);
-  if (state.selectedShadowIds.length === 0) return shadows;
-  const selectedIds = new Set(state.selectedShadowIds);
-  return shadows.filter((shadow) => selectedIds.has(shadow.id || 'adaptive-shadow'));
-}
-
-function primaryAdaptiveShadow(dataset) {
-  return adaptiveShadowsForDataset(dataset)[0] || null;
-}
-
-function adaptiveShadowDifferencesForDataset(dataset) {
-  return adaptiveShadowDifferencesFromShadows(selectedAdaptiveShadowsForDataset(dataset));
-}
-
-function allAdaptiveShadowDifferencesForDataset(dataset) {
-  return adaptiveShadowDifferencesFromShadows(adaptiveShadowsForDataset(dataset));
-}
-
-function adaptiveShadowDifferencesFromShadows(shadows) {
-  return shadows.flatMap((shadow) =>
-    (shadow.differences || []).map((difference) => ({
-      ...difference,
-      shadowId: shadow.id || 'adaptive-shadow',
-      shadowLabel: shadow.label || '自适应影子'
-    })));
-}
-
-function buildShadowDifferencesByRawId(dataset) {
-  const differencesByRawId = new Map();
-  for (const difference of allAdaptiveShadowDifferencesForDataset(dataset)) {
-    if (!Number.isFinite(difference.rawPointId)) continue;
-    const current = differencesByRawId.get(difference.rawPointId) || [];
-    current.push(difference);
-    differencesByRawId.set(difference.rawPointId, current);
-  }
-  return differencesByRawId;
 }
 
 function sampleIds(points, limit, idField, extraIds = new Set()) {
@@ -570,7 +504,6 @@ function clearAll() {
   state.selectedPoint = null;
   state.scenarioReviewRangeText = '';
   state.lastScenarioRepairImpact = null;
-  state.selectedShadowIds = [];
   elements.folderInput.value = '';
   elements.fileInput.value = '';
   elements.scenarioRangeInput.value = '';
@@ -613,19 +546,12 @@ function setLoading(loading, text = null) {
   }
 }
 
-function handleCleaningAlgorithmClick(event) {
-  const button = event.target.closest('[data-shadow-raw-point-id]');
-  if (!button) return;
-  focusRawPoint(button.dataset.shadowDatasetId, Number(button.dataset.shadowRawPointId));
-}
-
 function nextFrame() {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
 function render() {
   renderScenarioRepairOptions();
-  renderShadowFilterOptions();
   renderScenarioRangeReview();
   renderPointDetails();
   renderCleaningAlgorithm();
@@ -650,7 +576,7 @@ function renderScenarioRepairOptions() {
 function scenarioRepairOptionMarkup(id, label, checked, kind) {
   const kindLabel = kind === 'diagnostic' ? '标注' : '改线';
   return `
-    <label class="scenario-repair-option shadow-filter-option" data-repair-kind="${escapeHtml(kind)}">
+    <label class="scenario-repair-option option-menu-option" data-repair-kind="${escapeHtml(kind)}">
       <input
         type="checkbox"
         value="${escapeHtml(id)}"
@@ -705,73 +631,6 @@ async function applyScenarioRepairConfig() {
       setLoading(false);
     }
   }
-}
-
-function renderShadowFilterOptions() {
-  const options = shadowFilterOptions();
-  const candidateIds = new Set(options.map((option) => option.id));
-  state.selectedShadowIds = state.selectedShadowIds.filter((id) => candidateIds.has(id));
-  elements.shadowFilterSummary.textContent = shadowFilterSummaryText(options);
-  elements.shadowFilterOptions.innerHTML = [
-    shadowFilterOptionMarkup('all', '全部候选', state.selectedShadowIds.length === 0),
-    ...options.map((option) =>
-      shadowFilterOptionMarkup(option.id, option.label, state.selectedShadowIds.includes(option.id)))
-  ].join('');
-}
-
-function shadowFilterOptionMarkup(id, label, checked) {
-  return `
-    <label class="shadow-filter-option">
-      <input
-        type="checkbox"
-        value="${escapeHtml(id)}"
-        ${checked ? 'checked' : ''}
-      />
-      <span>${escapeHtml(label)}</span>
-    </label>
-  `;
-}
-
-function handleShadowFilterChange(event) {
-  const input = event.target.closest('input[type="checkbox"]');
-  if (!input) return;
-  if (input.value === 'all') {
-    state.selectedShadowIds = [];
-    render();
-    return;
-  }
-  state.selectedShadowIds = Array.from(elements.shadowFilterOptions
-    .querySelectorAll('input[type="checkbox"]:checked'))
-    .map((checkbox) => checkbox.value)
-    .filter((value) => value !== 'all');
-  render();
-}
-
-function shadowFilterStatusText() {
-  if (state.selectedShadowIds.length === 0) return '全部候选';
-  const labelsById = new Map(shadowFilterOptions().map((option) => [option.id, option.label]));
-  return state.selectedShadowIds
-    .map((id) => labelsById.get(id) || id)
-    .join('、');
-}
-
-function shadowFilterSummaryText(options) {
-  if (state.selectedShadowIds.length === 0) return '影子 全部';
-  if (state.selectedShadowIds.length === 1) return `影子 ${shadowFilterStatusText()}`;
-  return `影子 ${state.selectedShadowIds.length}/${options.length}`;
-}
-
-function shadowFilterOptions() {
-  const byId = new Map();
-  for (const dataset of state.datasets) {
-    for (const shadow of adaptiveShadowsForDataset(dataset)) {
-      const id = shadow.id || 'adaptive-shadow';
-      if (!byId.has(id)) {
-        byId.set(id, { id, label: shadow.label || id });
-      }
-    }
-  }
-  return Array.from(byId.values());
 }
 
 function renderScenarioRangeReview() {
@@ -1215,352 +1074,8 @@ function formatScenarioRawRange(range) {
   return 'Raw#-';
 }
 
-function adaptiveShadowSummaryRows(dataset) {
-  const shadows = selectedAdaptiveShadowsForDataset(dataset);
-  if (shadows.length === 0) return ['导入 evidence.jsonl 后显示固定阈值和多套自适应阈值的旁路对比'];
-  const rows = ['读法：每套影子只做旁路对比，不改变当前成品轨迹'];
-  for (const shadow of shadows) {
-    rows.push(`${shadow.label || shadow.id || '自适应影子'}：${shadow.assessment?.label || '-'}；${shadow.assessment?.summary || '-'}`);
-    if (shadow.mode === 'diagnostic_only') {
-      rows.push(...weakSignalDirectionHoldRows(shadow));
-      rows.push(`阈值变化：${adaptiveShadowThresholdChangeText(shadow)}`);
-      rows.push(...adaptiveShadowAssessmentReasonRows(shadow.assessment));
-      continue;
-    }
-    rows.push(...adaptiveShadowImpactRows(shadow.impact));
-    rows.push(`阈值变化：${adaptiveShadowThresholdChangeText(shadow)}`);
-    rows.push(...weakSignalDirectionHoldRows(shadow));
-    rows.push(`判点分歧：${shadow.summary.changedCount} / ${shadow.summary.rawPointCount}；可能救回 ${shadow.summary.promotedToTrustedCount}，可能降级 ${shadow.summary.demotedFromTrustedCount}，原因变化 ${shadow.summary.reasonChangedCount}`);
-    for (const difference of (shadow.differences || []).slice(0, 2)) {
-      rows.push(`例：${shadow.label || shadow.id} raw#${difference.rawPointId} ${shadowDecisionLabel(difference.fixed)} -> ${shadowDecisionLabel(difference.adaptive)}`);
-    }
-    if (shadow.summary.truncated) {
-      rows.push(`${shadow.label || shadow.id} 仅显示前 ${shadow.summary.reportedDifferenceCount} 个分歧`);
-    }
-    rows.push(...adaptiveShadowAssessmentReasonRows(shadow.assessment));
-  }
-  return rows;
-}
-
-function weakSignalDirectionHoldRows(shadow) {
-  const hold = shadow?.weakSignalDirectionHold;
-  if (!hold) return [];
-  if ((hold.hintCount || 0) === 0) {
-    return [
-      `方向保持：未生成方向提示；候选段 ${hold.candidateRunCount || 0}，缺少稳定历史 ${hold.skippedNoHistoryCount || 0}`
-    ];
-  }
-  const rows = [
-    `方向保持：${hold.hintCount} 段；只给下一步主方向线索，不改轨迹、里程或判点`
-  ];
-  for (const hint of (hold.hints || []).slice(0, 2)) {
-    rows.push(`方向提示：raw#${hint.startRawPointId}-${hint.endRawPointId}；航向 ${formatHeading(hint.headingDegrees)}；置信 ${directionHoldConfidenceLabel(hint.confidence)}；状态 ${directionHoldStatusLabel(hint.status)}`);
-  }
-  if ((hold.hints || []).length > 2) {
-    rows.push(`还有 ${hold.hints.length - 2} 段方向提示未展开`);
-  }
-  return rows;
-}
-
-function adaptiveShadowNavigatorMarkup(dataset) {
-  if (!dataset) return '';
-  const differences = adaptiveShadowDifferencesForDataset(dataset);
-  if (differences.length === 0) {
-    return '<span>当前选中文件没有影子分歧点</span>';
-  }
-  const buttons = differences.slice(0, 8).map((difference) => `
-    <button
-      class="shadow-diff-button"
-      type="button"
-      data-shadow-dataset-id="${escapeHtml(dataset.id)}"
-      data-shadow-raw-point-id="${escapeHtml(String(difference.rawPointId))}"
-      data-shadow-change-type="${escapeHtml(difference.changeType)}"
-    >
-      raw#${escapeHtml(String(difference.rawPointId))}
-      ${escapeHtml(difference.shadowLabel || '')}
-      ${escapeHtml(adaptiveShadowChangeLabel(difference.changeType))}
-      ${escapeHtml(shadowDecisionLabel(difference.fixed))} -> ${escapeHtml(shadowDecisionLabel(difference.adaptive))}
-    </button>
-  `).join('');
-  const truncated = differences.length > 8
-    ? `<span>还有 ${differences.length - 8} 个分歧点未列出，可在地图上继续点分歧标记</span>`
-    : '';
-  return `<div class="shadow-diff-list">${buttons}</div>${truncated}`;
-}
-
-function adaptiveShadowAssessmentRows(assessment) {
-  if (!assessment) return [];
-  const rows = [`启用前判断：${assessment.label}；${assessment.summary}`];
-  rows.push(...adaptiveShadowAssessmentReasonRows(assessment));
-  return rows;
-}
-
-function adaptiveShadowAssessmentReasonRows(assessment) {
-  const rows = [];
-  for (const reason of (assessment?.reasons || []).slice(0, 3)) {
-    rows.push(`复核原因：${reason.message}`);
-  }
-  if ((assessment?.reasons || []).length > 3) {
-    rows.push(`还有 ${assessment.reasons.length - 3} 个复核原因未展开`);
-  }
-  return rows;
-}
-
-function adaptiveShadowBatchSummaryRows(datasets) {
-  if (!Array.isArray(datasets) || datasets.length === 0) {
-    return ['导入多个 evidence.jsonl 后显示多套影子候选的一致、继续观察、需要复核和暂不适合启用分布'];
-  }
-  const batch = adaptiveShadowBatchSummary(datasets);
-  const rows = [
-    `候选分布：影子一致 ${batch.levelCounts.same}；继续观察 ${batch.levelCounts.observe}；需要复核 ${batch.levelCounts.review}；暂不适合 ${batch.levelCounts.blocked}`,
-    `总分歧：${batch.changedCount} / ${batch.rawPointCount}；可能救回 ${batch.promotedToTrustedCount}，可能降级 ${batch.demotedFromTrustedCount}，原因变化 ${batch.reasonChangedCount}`,
-    `累计影响：可信点 ${formatSignedCount(batch.delta.trustedPointCount)}；地图连线 ${formatSignedMeters(batch.delta.routeDistanceMeters)}；运动里程 ${formatSignedMeters(batch.delta.totalDistanceMeters)}；断点 ${formatSignedCount(batch.delta.gapCount)}；疑似交通点 ${formatSignedCount(batch.delta.transportCount)}`
-  ];
-  for (const candidate of batch.candidates) {
-    rows.push(`候选方向：${candidate.label}；文件 ${candidate.fileCount}；一致/观察/复核/暂缓 ${candidate.levelCounts.same}/${candidate.levelCounts.observe}/${candidate.levelCounts.review}/${candidate.levelCounts.blocked}；分歧 ${candidate.changedCount}/${candidate.rawPointCount}；降级 ${candidate.demotedFromTrustedCount}；运动里程 ${formatSignedMeters(candidate.delta.totalDistanceMeters)}；断点 ${formatSignedCount(candidate.delta.gapCount)}`);
-  }
-  const reviewTargets = batch.items
-    .filter((item) => item.level !== 'same' && item.level !== 'unknown')
-    .sort((left, right) =>
-      adaptiveShadowLevelPriority(right.level) - adaptiveShadowLevelPriority(left.level)
-      || right.changedCount - left.changedCount);
-  if (reviewTargets.length === 0) {
-    rows.push('当前批量没有发现需要复核的自适应差异');
-    return rows;
-  }
-  for (const item of reviewTargets.slice(0, 3)) {
-    rows.push(`复核候选：${item.fileName} / ${item.shadowLabel}；${item.label}；分歧 ${item.changedCount}；运动里程 ${formatSignedMeters(item.delta.totalDistanceMeters)}；断点 ${formatSignedCount(item.delta.gapCount)}`);
-  }
-  if (reviewTargets.length > 3) {
-    rows.push(`还有 ${reviewTargets.length - 3} 个有差异候选未展开`);
-  }
-  return rows;
-}
-
-function adaptiveShadowBatchSummary(datasets) {
-  const levelCounts = { same: 0, observe: 0, review: 0, blocked: 0, unknown: 0 };
-  const delta = {
-    routeDistanceMeters: 0,
-    totalDistanceMeters: 0,
-    trustedPointCount: 0,
-    gapCount: 0,
-    transportCount: 0
-  };
-  const items = [];
-  const candidatesById = new Map();
-  let rawPointCount = 0;
-  let changedCount = 0;
-  let promotedToTrustedCount = 0;
-  let demotedFromTrustedCount = 0;
-  let reasonChangedCount = 0;
-
-  for (const dataset of datasets) {
-    const shadows = selectedAdaptiveShadowsForDataset(dataset);
-    if (shadows.length === 0) {
-      levelCounts.unknown++;
-      continue;
-    }
-    for (const shadow of shadows) {
-      const level = knownAdaptiveShadowLevel(shadow?.assessment?.level);
-      levelCounts[level]++;
-      rawPointCount += numberOrZero(shadow?.summary?.rawPointCount);
-      changedCount += numberOrZero(shadow?.summary?.changedCount);
-      promotedToTrustedCount += numberOrZero(shadow?.summary?.promotedToTrustedCount);
-      demotedFromTrustedCount += numberOrZero(shadow?.summary?.demotedFromTrustedCount);
-      reasonChangedCount += numberOrZero(shadow?.summary?.reasonChangedCount);
-      for (const key of Object.keys(delta)) {
-        delta[key] += numberOrZero(shadow?.impact?.delta?.[key]);
-      }
-      accumulateAdaptiveShadowCandidateSummary(candidatesById, shadow, level);
-      items.push({
-        fileName: dataset?.fileName || dataset?.filePath || '-',
-        shadowLabel: shadow?.label || shadow?.id || '自适应影子',
-        level,
-        label: shadow?.assessment?.label || '无影子判断',
-        changedCount: numberOrZero(shadow?.summary?.changedCount),
-        delta: {
-          totalDistanceMeters: numberOrZero(shadow?.impact?.delta?.totalDistanceMeters),
-          gapCount: numberOrZero(shadow?.impact?.delta?.gapCount)
-        }
-      });
-    }
-  }
-
-  return {
-    levelCounts,
-    rawPointCount,
-    changedCount,
-    promotedToTrustedCount,
-    demotedFromTrustedCount,
-    reasonChangedCount,
-    delta,
-    candidates: Array.from(candidatesById.values()),
-    items
-  };
-}
-
-function accumulateAdaptiveShadowCandidateSummary(candidatesById, shadow, level) {
-  const id = shadow?.id || 'adaptive-shadow';
-  if (!candidatesById.has(id)) {
-    candidatesById.set(id, {
-      id,
-      label: shadow?.label || id,
-      fileCount: 0,
-      levelCounts: { same: 0, observe: 0, review: 0, blocked: 0, unknown: 0 },
-      delta: {
-        routeDistanceMeters: 0,
-        totalDistanceMeters: 0,
-        trustedPointCount: 0,
-        gapCount: 0,
-        transportCount: 0
-      },
-      rawPointCount: 0,
-      changedCount: 0,
-      promotedToTrustedCount: 0,
-      demotedFromTrustedCount: 0,
-      reasonChangedCount: 0
-    });
-  }
-  const summary = candidatesById.get(id);
-  summary.fileCount++;
-  summary.levelCounts[level]++;
-  summary.rawPointCount += numberOrZero(shadow?.summary?.rawPointCount);
-  summary.changedCount += numberOrZero(shadow?.summary?.changedCount);
-  summary.promotedToTrustedCount += numberOrZero(shadow?.summary?.promotedToTrustedCount);
-  summary.demotedFromTrustedCount += numberOrZero(shadow?.summary?.demotedFromTrustedCount);
-  summary.reasonChangedCount += numberOrZero(shadow?.summary?.reasonChangedCount);
-  for (const key of Object.keys(summary.delta)) {
-    summary.delta[key] += numberOrZero(shadow?.impact?.delta?.[key]);
-  }
-}
-
-function knownAdaptiveShadowLevel(level) {
-  return ['same', 'observe', 'review', 'blocked'].includes(level) ? level : 'unknown';
-}
-
-function adaptiveShadowLevelPriority(level) {
-  if (level === 'blocked') return 4;
-  if (level === 'review') return 3;
-  if (level === 'observe') return 2;
-  if (level === 'same') return 1;
-  return 0;
-}
-
 function numberOrZero(value) {
   return Number.isFinite(value) ? value : 0;
-}
-
-function adaptiveShadowImpactRows(impact) {
-  const delta = impact?.delta;
-  if (!delta) return [];
-  return [
-    `整体影响：可信点 ${formatSignedCount(delta.trustedPointCount)}；地图连线 ${formatSignedMeters(delta.routeDistanceMeters)}；运动里程 ${formatSignedMeters(delta.totalDistanceMeters)}；断点 ${formatSignedCount(delta.gapCount)}`,
-    `排除变化：弱信号 ${formatSignedCount(delta.weakPointCount)}；硬拒绝 ${formatSignedCount(delta.rejectedPointCount)}；入口拒绝 ${formatSignedCount(delta.intakeRejectedPointCount)}；疑似交通点 ${formatSignedCount(delta.transportCount)}`
-  ];
-}
-
-function adaptiveShadowThresholdChangeText(shadow) {
-  const fixed = shadow?.thresholds?.fixed || {};
-  const adaptive = shadow?.thresholds?.adaptive || {};
-  const fields = shadow?.changedFields || [];
-  const labels = {
-    weakCloudAccuracyMeters: '弱点云',
-    gapSeconds: 'GAP',
-    stationaryDistanceMeters: '静止基础距离',
-    transportSpeedMetersPerSecond: '交通速度',
-    transportMinDistanceMeters: '交通最小距离',
-    continuityRescueMaxSpeedMetersPerSecond: '连续救回速度',
-    lowAccuracyRescueMaxAccuracyMeters: '低精度救回 accuracy',
-    lowAccuracyRescueMinDistanceMeters: '低精度救回最小距离',
-    weakSignalDirectionHoldEnabled: '弱信号方向保持'
-  };
-  const formatters = {
-    weakCloudAccuracyMeters: formatThresholdMeters,
-    gapSeconds: formatThresholdDuration,
-    stationaryDistanceMeters: formatThresholdMeters,
-    transportSpeedMetersPerSecond: formatThresholdSpeed,
-    transportMinDistanceMeters: formatThresholdMeters,
-    continuityRescueMaxSpeedMetersPerSecond: formatThresholdSpeed,
-    lowAccuracyRescueMaxAccuracyMeters: formatThresholdMeters,
-    lowAccuracyRescueMinDistanceMeters: formatThresholdMeters,
-    weakSignalDirectionHoldEnabled: formatThresholdToggle
-  };
-  return fields.map((field) => {
-    const formatter = formatters[field] || formatPlainNumber;
-    return `${labels[field] || field} ${formatter(fixed[field])} -> ${formatter(adaptive[field])}`;
-  }).join('；') || '无阈值变化';
-}
-
-function formatThresholdToggle(value) {
-  return value ? '开启' : '关闭';
-}
-
-function shadowDecisionLabel(decision) {
-  if (!decision) return 'missing';
-  return `${decision.result}/${decision.reason}`;
-}
-
-function adaptiveShadowRowsForRawPoint(dataset, rawPointId) {
-  const differences = adaptiveShadowDifferences(dataset, rawPointId);
-  if (differences.length === 0) {
-    return ['该 raw 点固定阈值和自适应影子判断一致，或未进入影子对比样本'];
-  }
-  return [
-    ...differences.slice(0, 5).map((difference) =>
-      `${difference.shadowLabel || '自适应影子'} ${adaptiveShadowChangeLabel(difference.changeType)}：固定 ${shadowDecisionLabel(difference.fixed)} -> 影子 ${shadowDecisionLabel(difference.adaptive)}`),
-    differences.length > 5 ? `还有 ${differences.length - 5} 套候选分歧未展开` : null,
-    '说明 影子结果只做旁路对比，不改变当前成品轨迹'
-  ].filter(Boolean);
-}
-
-function adaptiveShadowRowsForCleanedPoint(dataset, point) {
-  const rawPointIds = [
-    point.sourceRawPointId,
-    ...(point.contributingRawPointIds || [])
-  ].filter((value, index, values) => Number.isFinite(value) && values.indexOf(value) === index);
-  const differences = rawPointIds
-    .flatMap((rawPointId) => adaptiveShadowDifferences(dataset, rawPointId));
-  if (differences.length === 0) {
-    return ['该清洗点覆盖的 raw 点固定阈值和自适应影子判断一致，或未进入影子对比样本'];
-  }
-  return [
-    `相关候选分歧 ${differences.length} 条`,
-    ...differences.slice(0, 4).map((difference) =>
-      `${difference.shadowLabel || '自适应影子'} raw#${difference.rawPointId} ${adaptiveShadowChangeLabel(difference.changeType)}：${shadowDecisionLabel(difference.fixed)} -> ${shadowDecisionLabel(difference.adaptive)}`),
-    differences.length > 4 ? '仅显示前 4 个相关分歧' : null,
-    '说明 影子结果只做旁路对比，不改变当前成品轨迹'
-  ].filter(Boolean);
-}
-
-function adaptiveShadowDifference(dataset, rawPointId) {
-  if (!Number.isFinite(rawPointId)) return null;
-  return adaptiveShadowDifferences(dataset, rawPointId)[0] || null;
-}
-
-function adaptiveShadowDifferences(dataset, rawPointId) {
-  if (!Number.isFinite(rawPointId)) return [];
-  const differences = dataset?.shadowDifferencesByRawId?.get(rawPointId) || [];
-  if (state.selectedShadowIds.length === 0) return differences;
-  const selectedIds = new Set(state.selectedShadowIds);
-  return differences.filter((difference) => selectedIds.has(difference.shadowId));
-}
-
-function adaptiveShadowChangeLabel(changeType) {
-  if (changeType === 'promoted_to_trusted') return '可能救回';
-  if (changeType === 'demoted_from_trusted') return '可能降级';
-  return '原因变化';
-}
-
-function formatThresholdMeters(value) {
-  return Number.isFinite(value) ? formatMeters(value) : '-';
-}
-
-function formatThresholdDuration(value) {
-  return Number.isFinite(value) ? formatDuration(value) : '-';
-}
-
-function formatThresholdSpeed(value) {
-  return Number.isFinite(value) ? formatSpeed(value) : '-';
 }
 
 function formatSignedMeters(value) {
@@ -1579,36 +1094,6 @@ function formatSignedDuration(value) {
   if (!Number.isFinite(value)) return '-';
   if (Object.is(value, -0) || value === 0) return formatDuration(0);
   return `${value > 0 ? '+' : '-'}${formatDuration(Math.abs(value))}`;
-}
-
-function formatHeading(value) {
-  return Number.isFinite(value) ? `${value.toFixed(0)}deg` : '-';
-}
-
-function directionHoldConfidenceLabel(confidence) {
-  if (confidence === 'high') return '高';
-  if (confidence === 'medium') return '中';
-  return '低';
-}
-
-function directionHoldStatusLabel(status) {
-  if (status === 'confirmed_by_exit') return '出口确认';
-  if (status === 'exit_deviates_from_held_direction') return '出口偏离';
-  if (status === 'weak_region_has_little_forward_progress') return '前进不足';
-  if (status === 'weak_region_lateral_noise_high') return '横向噪声高';
-  return '仅历史方向';
-}
-
-function adaptiveShadowColor(index) {
-  return ['#38bdf8', '#a78bfa', '#22c55e', '#f97316', '#eab308'][index % 5];
-}
-
-function adaptiveShadowColorById(id, fallbackIndex = 0) {
-  const order = shadowFilterOptions()
-    .filter((option) => option.id !== 'all')
-    .map((option) => option.id);
-  const index = order.indexOf(id);
-  return adaptiveShadowColor(index >= 0 ? index : fallbackIndex);
 }
 
 function ascentBreakdown(dataset) {
@@ -2210,12 +1695,8 @@ function addMapLayers() {
   state.map.addSource('raw-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('trusted-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('cleaned-lines', { type: 'geojson', data: emptyFeatureCollection() });
-  state.map.addSource('shadow-lines', { type: 'geojson', data: emptyFeatureCollection() });
-  state.map.addSource('weak-direction-hints', { type: 'geojson', data: emptyFeatureCollection() });
-  state.map.addSource('low-quality-candidate-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('direction-arrows', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('cleaned-points', { type: 'geojson', data: emptyFeatureCollection() });
-  state.map.addSource('shadow-diff-points', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('points', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addLayer({
     id: 'scenario-polygons-fill',
@@ -2276,53 +1757,6 @@ function addMapLayers() {
       'line-color': ['coalesce', ['get', 'lineColor'], '#ef4444'],
       'line-width': ['coalesce', ['get', 'lineWidth'], 4],
       'line-opacity': ['coalesce', ['get', 'lineOpacity'], 0.95]
-    }
-  });
-  state.map.addLayer({
-    id: 'shadow-lines',
-    type: 'line',
-    source: 'shadow-lines',
-    paint: {
-      'line-color': ['coalesce', ['get', 'shadowColor'], '#38bdf8'],
-      'line-width': 4,
-      'line-opacity': 0.92,
-      'line-dasharray': [1.2, 1.2]
-    }
-  });
-  state.map.addLayer({
-    id: 'weak-direction-hints',
-    type: 'line',
-    source: 'weak-direction-hints',
-    paint: {
-      'line-color': ['coalesce', ['get', 'shadowColor'], '#22c55e'],
-      'line-width': [
-        'interpolate', ['linear'], ['zoom'],
-        10, 4,
-        16, 6,
-        20, 8
-      ],
-      'line-opacity': 0.94,
-      'line-dasharray': [0.4, 1.2]
-    }
-  });
-  state.map.addLayer({
-    id: 'low-quality-candidate-lines',
-    type: 'line',
-    source: 'low-quality-candidate-lines',
-    paint: {
-      'line-color': [
-        'case',
-        ['==', ['get', 'kind'], 'raw_interval_review'], '#f97316',
-        '#c084fc'
-      ],
-      'line-width': [
-        'interpolate', ['linear'], ['zoom'],
-        10, 3,
-        16, 5,
-        20, 7
-      ],
-      'line-opacity': 0.94,
-      'line-dasharray': [1.1, 1.1]
     }
   });
   state.map.addLayer({
@@ -2409,27 +1843,6 @@ function addMapLayers() {
     }
   });
   state.map.addLayer({
-    id: 'shadow-diff-points',
-    type: 'circle',
-    source: 'shadow-diff-points',
-    paint: {
-      'circle-color': [
-        'case',
-        ['==', ['get', 'changeType'], 'promoted_to_trusted'], '#22c55e',
-        ['==', ['get', 'changeType'], 'demoted_from_trusted'], '#fb7185',
-        '#38bdf8'
-      ],
-      'circle-radius': [
-        'case',
-        ['==', ['get', 'selected'], true], 9,
-        7
-      ],
-      'circle-stroke-color': '#ffffff',
-      'circle-stroke-width': ['case', ['==', ['get', 'selected'], true], 3, 2],
-      'circle-opacity': 0.98
-    }
-  });
-  state.map.addLayer({
     id: 'cleaned-points',
     type: 'circle',
     source: 'cleaned-points',
@@ -2499,16 +1912,6 @@ function bindMapEvents() {
     selectCleanedPoint(String(feature.properties.datasetId),
       Number(feature.properties.trackPointId), true);
   });
-  state.map.on('click', 'shadow-diff-points', (event) => {
-    const feature = event.features?.[0];
-    if (!feature) return;
-    selectPoint(String(feature.properties.datasetId), Number(feature.properties.rawPointId), true);
-  });
-  state.map.on('click', 'low-quality-candidate-lines', (event) => {
-    const feature = event.features?.[0];
-    if (!feature) return;
-    selectLowQualityCandidate(feature);
-  });
   state.map.on('click', 'scenario-polygons-fill', (event) => {
     const feature = event.features?.[0];
     if (!feature) return;
@@ -2534,12 +1937,6 @@ function bindMapEvents() {
   state.map.on('mouseenter', 'cleaned-points', () => {
     state.map.getCanvas().style.cursor = 'pointer';
   });
-  state.map.on('mouseenter', 'shadow-diff-points', () => {
-    state.map.getCanvas().style.cursor = 'pointer';
-  });
-  state.map.on('mouseenter', 'low-quality-candidate-lines', () => {
-    state.map.getCanvas().style.cursor = 'pointer';
-  });
   state.map.on('mouseenter', 'scenario-polygons-fill', () => {
     state.map.getCanvas().style.cursor = 'pointer';
   });
@@ -2547,12 +1944,6 @@ function bindMapEvents() {
     state.map.getCanvas().style.cursor = '';
   });
   state.map.on('mouseleave', 'cleaned-points', () => {
-    state.map.getCanvas().style.cursor = '';
-  });
-  state.map.on('mouseleave', 'shadow-diff-points', () => {
-    state.map.getCanvas().style.cursor = '';
-  });
-  state.map.on('mouseleave', 'low-quality-candidate-lines', () => {
     state.map.getCanvas().style.cursor = '';
   });
   state.map.on('mouseleave', 'scenario-polygons-fill', () => {
@@ -2567,20 +1958,11 @@ function renderMap() {
   state.map.getSource('raw-lines').setData(elements.showRaw.checked ? rawFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('trusted-lines').setData(elements.showTrusted.checked ? trustedFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('cleaned-lines').setData(elements.showCleaned.checked ? cleanedFeatureCollection(visible) : emptyFeatureCollection());
-  state.map.getSource('shadow-lines').setData(elements.showShadow.checked ? shadowFeatureCollection(visible) : emptyFeatureCollection());
-  state.map.getSource('weak-direction-hints').setData(
-    elements.showShadow.checked ? weakDirectionHintFeatureCollection(visible) : emptyFeatureCollection());
-  state.map.getSource('low-quality-candidate-lines').setData(
-    elements.showLowQualityCandidates.checked
-      ? lowQualityCandidateFeatureCollection(visible)
-      : emptyFeatureCollection());
   renderDirectionArrows(visible);
   state.map.getSource('cleaned-points').setData(
     elements.showCleaned.checked && elements.showCleanedPoints.checked
       ? cleanedPointFeatureCollection(visible)
       : emptyFeatureCollection());
-  state.map.getSource('shadow-diff-points').setData(
-    elements.showShadowDiffs.checked ? shadowDiffPointFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('points').setData(elements.showPoints.checked ? pointFeatureCollection(visible) : emptyFeatureCollection());
 }
 
@@ -2634,96 +2016,6 @@ function scenarioPolygonFeatureCollection(datasets) {
   return { type: 'FeatureCollection', features };
 }
 
-function shadowFeatureCollection(datasets) {
-  return {
-    type: 'FeatureCollection',
-    features: datasets
-      .flatMap((dataset) => selectedAdaptiveShadowsForDataset(dataset).map((shadow, shadowIndex) =>
-        lineFeature(dataset, shadow.track || [], 'shadow', shadow.id || null, {
-          shadowId: shadow.id || '',
-          shadowLabel: shadow.label || '自适应影子',
-          shadowColor: adaptiveShadowColorById(shadow.id, shadowIndex)
-        })))
-      .filter((feature) => feature.geometry.coordinates.length > 1)
-  };
-}
-
-function weakDirectionHintFeatureCollection(datasets) {
-  return {
-    type: 'FeatureCollection',
-    features: datasets
-      .flatMap((dataset) => selectedAdaptiveShadowsForDataset(dataset)
-        .flatMap((shadow, shadowIndex) =>
-          (shadow.weakSignalDirectionHold?.hints || []).map((hint) =>
-            weakDirectionHintFeature(dataset, shadow, shadowIndex, hint))))
-      .filter((feature) => feature.geometry.coordinates.length > 1)
-  };
-}
-
-function weakDirectionHintFeature(dataset, shadow, shadowIndex, hint) {
-  return {
-    type: 'Feature',
-    properties: {
-      datasetId: dataset.id,
-      shadowId: shadow.id || '',
-      shadowLabel: shadow.label || '自适应影子',
-      shadowColor: adaptiveShadowColorById(shadow.id, shadowIndex),
-      kind: hint.kind || 'weak_signal_direction_hold',
-      startRawPointId: hint.startRawPointId ?? null,
-      endRawPointId: hint.endRawPointId ?? null,
-      confidence: hint.confidence || 'low',
-      status: hint.status || ''
-    },
-    geometry: {
-      type: 'LineString',
-      coordinates: [
-        [hint.startLng, hint.startLat],
-        [hint.endLng, hint.endLat]
-      ].filter(([lng, lat]) => Number.isFinite(lng) && Number.isFinite(lat))
-    }
-  };
-}
-
-function lowQualityCandidateFeatureCollection(datasets) {
-  return {
-    type: 'FeatureCollection',
-    features: datasets.flatMap((dataset) =>
-      lowQualityCandidatesForDataset(dataset).map((candidate, candidateIndex) =>
-        lowQualityCandidateLineFeature(dataset, candidate, candidateIndex)))
-      .filter((feature) => feature.geometry.coordinates.length > 1)
-  };
-}
-
-function lowQualityCandidatesForDataset(dataset) {
-  const rebuild = dataset?.targetProduct?.lowQualityMotionRebuild;
-  if (!rebuild) return [];
-  return [
-    ...(rebuild.candidates || []),
-    ...(rebuild.rawIntervalCandidates || [])
-  ];
-}
-
-function lowQualityCandidateLineFeature(dataset, candidate, candidateIndex) {
-  const points = pointsFromIds(dataset.rawPointById, candidate.rawPointIds || [])
-    .filter(hasValidLngLat);
-  const linePoints = points.length > MAP_LINE_POINT_LIMIT
-    ? samplePointsForLine(points, MAP_LINE_POINT_LIMIT)
-    : points;
-  const rawPointIds = candidate.rawPointIds || [];
-  return {
-    type: 'Feature',
-    properties: {
-      datasetId: dataset.id,
-      candidateIndex,
-      kind: candidate.kind || 'boundary_rebuild',
-      startRawPointId: rawPointIds[0] ?? null,
-      endRawPointId: rawPointIds[rawPointIds.length - 1] ?? null,
-      rawCount: rawPointIds.length
-    },
-    geometry: { type: 'LineString', coordinates: linePoints.map(lngLat) }
-  };
-}
-
 function directionArrowFeatureCollection(datasets) {
   return {
     type: 'FeatureCollection',
@@ -2756,15 +2048,6 @@ function directionArrowFeaturesForDataset(dataset) {
         dataset.mapRender?.cleanedLineTrackPointIds)
     });
   }
-  if (elements.showShadow.checked) {
-    for (const shadow of selectedAdaptiveShadowsForDataset(dataset)) {
-      lines.push({
-        kind: 'shadow',
-        points: shadow.track || [],
-        segmentId: shadow.id || null
-      });
-    }
-  }
 
   const visibleLines = lines.filter((line) => (line.points || []).length > 1);
   if (visibleLines.length === 0) return [];
@@ -2780,34 +2063,6 @@ function directionArrowLineFeature(dataset, points, kind, segmentId) {
     type: 'Feature',
     properties: { datasetId: dataset.id, kind, color: dataset.color, segmentId },
     geometry: { type: 'LineString', coordinates: linePoints.filter(hasValidLngLat).map(lngLat) }
-  };
-}
-
-function shadowDiffPointFeatureCollection(datasets) {
-  return {
-    type: 'FeatureCollection',
-    features: datasets.flatMap((dataset) => adaptiveShadowDifferencesForDataset(dataset)
-      .map((difference) => {
-        const point = dataset.rawPointById?.get(difference.rawPointId);
-        if (!point) return null;
-        return {
-          type: 'Feature',
-          properties: {
-            datasetId: dataset.id,
-            rawPointId: point.rawPointId,
-            shadowId: difference.shadowId || '',
-            shadowLabel: difference.shadowLabel || '自适应影子',
-            changeType: difference.changeType,
-            fixed: shadowDecisionLabel(difference.fixed),
-            adaptive: shadowDecisionLabel(difference.adaptive),
-            selected: state.selectedPoint?.dataset.id === dataset.id
-              && state.selectedPoint?.cleaned !== true
-              && state.selectedPoint?.point.rawPointId === point.rawPointId
-          },
-          geometry: { type: 'Point', coordinates: lngLat(point) }
-        };
-      })
-      .filter(Boolean))
   };
 }
 
@@ -2944,26 +2199,6 @@ function selectPoint(datasetId, rawPointId, showPopup = false) {
       .addTo(state.map);
   }
   render();
-}
-
-function selectLowQualityCandidate(feature) {
-  const datasetId = String(feature.properties.datasetId);
-  const rawPointId = Number(feature.properties.startRawPointId);
-  const dataset = state.datasets.find((item) => item.id === datasetId);
-  const point = dataset?.rawPointById?.get(rawPointId);
-  if (!dataset || !point) return;
-  selectPoint(datasetId, rawPointId, false);
-  if (!state.popup) return;
-  const startRawPointId = Number(feature.properties.startRawPointId);
-  const endRawPointId = Number(feature.properties.endRawPointId);
-  const rawCount = Number(feature.properties.rawCount);
-  const kind = feature.properties.kind === 'raw_interval_review'
-    ? '广义 raw 区间'
-    : '可入轨候选';
-  state.popup
-    .setLngLat(lngLat(point))
-    .setHTML(`<strong>${escapeHtml(dataset.fileName)}</strong><br/>${kind} raw#${startRawPointId}-${endRawPointId}<br/>${rawCount} 个 raw 点，点击起点查看详情`)
-    .addTo(state.map);
 }
 
 function selectScenarioPolygon(feature, lngLat) {
