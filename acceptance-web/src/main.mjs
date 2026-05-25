@@ -636,21 +636,19 @@ function render() {
 function renderScenarioRepairOptions() {
   state.enabledScenarioRepairIds = enabledScenarioRepairIds(state.enabledScenarioRepairIds);
   const selectedIds = new Set(state.enabledScenarioRepairIds);
-  const allChecked = selectedIds.size === SCENARIO_REPAIR_OPTIONS.length;
   const summary = scenarioRepairSummary(state.enabledScenarioRepairIds);
   elements.scenarioRepairSummary.textContent = `修复 ${summary}`;
   if (elements.cleaningConfigState) {
     elements.cleaningConfigState.textContent = summary;
   }
-  elements.scenarioRepairOptions.innerHTML = [
-    scenarioRepairOptionMarkup('all', '全部修复', allChecked, 'all'),
-    ...SCENARIO_REPAIR_OPTIONS.map((option) =>
+  elements.scenarioRepairOptions.innerHTML = SCENARIO_REPAIR_OPTIONS
+    .map((option) =>
       scenarioRepairOptionMarkup(option.id, option.label, selectedIds.has(option.id), option.kind))
-  ].join('');
+    .join('');
 }
 
 function scenarioRepairOptionMarkup(id, label, checked, kind) {
-  const kindLabel = kind === 'all' ? '全部' : kind === 'diagnostic' ? '标注' : '改线';
+  const kindLabel = kind === 'diagnostic' ? '标注' : '改线';
   return `
     <label class="scenario-repair-option shadow-filter-option" data-repair-kind="${escapeHtml(kind)}">
       <input
@@ -666,16 +664,9 @@ function scenarioRepairOptionMarkup(id, label, checked, kind) {
 async function handleScenarioRepairChange(event) {
   const input = event.target.closest('input[type="checkbox"]');
   if (!input) return;
-  if (input.value === 'all') {
-    state.enabledScenarioRepairIds = input.checked
-      ? SCENARIO_REPAIR_OPTIONS.map((option) => option.id)
-      : [];
-  } else {
-    state.enabledScenarioRepairIds = Array.from(elements.scenarioRepairOptions
-      .querySelectorAll('input[type="checkbox"]:checked'))
-      .map((checkbox) => checkbox.value)
-      .filter((value) => value !== 'all');
-  }
+  state.enabledScenarioRepairIds = Array.from(elements.scenarioRepairOptions
+    .querySelectorAll('input[type="checkbox"]:checked'))
+    .map((checkbox) => checkbox.value);
   await applyScenarioRepairConfig();
 }
 
