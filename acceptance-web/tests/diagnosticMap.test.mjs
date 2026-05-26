@@ -59,6 +59,10 @@ test('buildTargetOutput uses recomputed target product instead of recorded decis
   assert.equal(output.summaries.decision.rejectCount, 0);
   assert.ok(Array.isArray(output.denseAreaSettlementPlan));
   assert.ok(Array.isArray(output.denseIntentConflicts));
+  assert.ok(Array.isArray(output.forwardSpineCandidates));
+  assert.ok(Array.isArray(output.forwardSpineOverlaps));
+  assert.ok(Array.isArray(output.forwardSpineConflicts));
+  assert.ok(Array.isArray(output.forwardSpineDecisions));
   assert.ok(!output.findings.some((finding) => finding.includes('未解释 raw_location')));
 });
 

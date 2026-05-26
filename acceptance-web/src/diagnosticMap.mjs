@@ -246,6 +246,10 @@ export function buildTargetOutput(model, targetProduct = null) {
     },
     denseAreaSettlementPlan: targetProduct?.denseAreaSettlementPlan || [],
     denseIntentConflicts: targetProduct?.denseIntentConflicts || [],
+    forwardSpineCandidates: targetProduct?.forwardSpineCandidates || [],
+    forwardSpineOverlaps: targetProduct?.forwardSpineOverlaps || [],
+    forwardSpineConflicts: targetProduct?.forwardSpineConflicts || [],
+    forwardSpineDecisions: targetProduct?.forwardSpineDecisions || [],
     findings
   };
 }

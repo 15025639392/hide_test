@@ -52,6 +52,10 @@ function compactTargetOutput(output) {
       output?.summaries?.pressure?.locationAltitudeTotalAscentMeters ?? null,
     denseAreaSettlementPlan: output?.denseAreaSettlementPlan || [],
     denseIntentConflicts: output?.denseIntentConflicts || [],
+    forwardSpineCandidates: output?.forwardSpineCandidates || [],
+    forwardSpineOverlaps: output?.forwardSpineOverlaps || [],
+    forwardSpineConflicts: output?.forwardSpineConflicts || [],
+    forwardSpineDecisions: output?.forwardSpineDecisions || [],
     findings: output?.findings || []
   };
 }

@@ -163,10 +163,12 @@ V16.1 中 `dense_area_intent` 是上层调度诊断：`forward_motion` 已用于
 强制阻断原有场景识别。`rest_photo_micro_move` 对 2 分钟以上、bbox/path 都很小的
 拍照休息片段，允许把约 12m 内首尾净距视作近静止微移动并塌成休息锚点。
 
-V17 准备方向是密集区保方向候选仲裁：同一 dense raw 区间可以产生多个主前进骨架候选，
-但同一 raw 子区间最终只能有一个 active 主脊线；一致候选合并，冲突候选 review-only
-或降级为解释上下文。V17.0 先做 review-only 结构和真实样本验收清单，不默认扩大改线范围。
-计划见
+V17.0 已落盘密集区保方向候选仲裁的 review-only 结构：同一 dense raw 区间可以产生
+多个主前进骨架候选，但同一 raw 子区间最终只能有一个 active 主脊线；一致候选合并，
+冲突候选 review-only 或降级为解释上下文。当前 V17.0 输出
+`forwardSpineCandidates[]`、`forwardSpineOverlaps[]`、`forwardSpineConflicts[]` 和
+`forwardSpineDecisions[]`，但普通 overlap / endpoint-touch 只保留为内部调试证据，
+不直接上图或进入冲突详情；不默认扩大改线范围。计划见
 `docs/outdoor-track-v17-conflict-aware-settlement-plan.md`。
 
 详细触发证据、局部重建动作和测试要求见

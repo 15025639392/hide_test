@@ -474,6 +474,13 @@ test('buildSixLayerTrackProduct preserves dense area main route skeleton first',
   assert.equal(scenario.localRebuild, 'dense_main_route_skeleton');
   assert.ok(scenario.evidence.outputTrackPointCount < scenario.evidence.inputTrackPointCount);
   assert.ok(scenario.evidence.simplifiedPathMeters < scenario.evidence.pathMeters);
+  assert.ok(product.forwardSpineCandidates.some((candidate) =>
+    candidate.source === 'dense_area_intent'
+    && candidate.plannedSettlement === 'dense_main_route_settlement'));
+  assert.ok(Array.isArray(product.forwardSpineOverlaps));
+  assert.ok(Array.isArray(product.forwardSpineConflicts));
+  assert.ok(product.forwardSpineDecisions.some((decision) =>
+    decision.reason === 'single_forward_spine_candidate'));
   assert.ok(settledPoints.length >= 2);
   assert.equal(settledPoints[0].reason, 'dense_main_route_start');
   assert.equal(settledPoints.at(-1).reason, 'dense_main_route_end');

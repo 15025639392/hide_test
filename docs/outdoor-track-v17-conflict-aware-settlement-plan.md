@@ -19,10 +19,10 @@ GPX 和高度门控仍属于基础安全边界；本阶段只处理 dense forwar
 six-layer-evidence-v16.1
 ```
 
-V17 目标方向：
+当前 V17.0 review-only 版本：
 
 ```text
-six-layer-evidence-v17
+six-layer-evidence-v17.0
 ```
 
 V17 工作名：
@@ -73,8 +73,8 @@ V16.1 已经完成：
 | 产物 | 作用 |
 | --- | --- |
 | `forwardSpineCandidates[]` | 所有保方向候选，包含 rawRange、trackPointRange、入口出口、方向角、path/net、bbox、来源场景。 |
-| `forwardSpineOverlaps[]` | 候选之间的重叠、包含、端点相接、空间相交关系。 |
-| `forwardSpineConflicts[]` | 无法直接合并的候选冲突，记录冲突类型和证据。 |
+| `forwardSpineOverlaps[]` | 候选之间的重叠、包含、端点相接、空间相交关系；V17.0 只作调试证据，不直接上图。 |
+| `forwardSpineConflicts[]` | 高置信、人工可复盘的候选冲突；V17.0 不把普通 overlap / endpoint-touch 自动升级为冲突。 |
 | `forwardSpineDecisions[]` | 每个 raw 子区间的仲裁结果：merge、select、split、downgrade、review_only。 |
 
 这些结构可以先从现有 `dense_main_route_settlement`、`denseAreaSettlementPlan[]` 和
@@ -172,9 +172,9 @@ V16.1 已经完成：
 
 | 冲突类型 | 默认处理 |
 | --- | --- |
-| `overlapping_forward_spine_candidates` | 同向或包含重叠；优先 merge/select。 |
-| `crossing_forward_spine_candidates` | 空间相交但时间/方向不一致；review-only，切片后选主候选。 |
-| `nested_forward_spine_candidate` | 短候选落在长候选内；默认短候选降级为 context。 |
+| `overlapping_forward_spine_candidates` | 暂只保留在 `forwardSpineOverlaps[]`，不上图，不进入冲突详情。 |
+| `crossing_forward_spine_candidates` | 暂只保留在 `forwardSpineOverlaps[]`，等待人工确认，不进入冲突详情。 |
+| `nested_forward_spine_candidate` | 暂只保留在 `forwardSpineOverlaps[]`，不上图，不进入冲突详情。 |
 | `round_trip_overrides_forward_spine` | 往返信号强于主前进；转交往返情景。 |
 | `local_micro_move_overrides_forward_spine` | 休息/拍照微移动覆盖局部主方向；沿用 V16.1 稳定行为。 |
 
@@ -188,6 +188,7 @@ V17 第一轮继续使用真实 evidence 做锚点。
 | `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#2461-2483` | 不出现短折返线。 |
 | `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#2795-2834` | 不出现短折返线。 |
 | `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#3192-3946` | 往返 + 轻微移动保持 bounded distance；多个局部方向不能叠加放大距离。 |
+| `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#3862-3929` | 不应归类为局部休息覆盖 forward；更适合进入主前进 / forward spine 仲裁。 |
 | `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#4562-4610` | 静止/休息微移动保持塌缩。 |
 | `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#5050-5094` | 局部休息微移动继续覆盖粗粒度 forward。 |
 | `0ddf2d35-02e2-454c-9057-667265fe8a71` | `Raw#256-312` | 静止漂移保持单锚点。 |
@@ -209,9 +210,14 @@ V17 启动阶段不做这些事：
 
 ### V17.0 Review-Only
 
+状态：已落盘为 `six-layer-evidence-v17.0`。
+
 - 从现有 dense main route settlement 生成 `forwardSpineCandidates[]`。
 - 识别候选之间的 overlap、nested、crossing、endpoint-touch。
-- 生成 `forwardSpineConflicts[]` 和中文 review finding。
+- 普通 overlap / endpoint-touch 只保留在 `forwardSpineOverlaps[]`，不直接生成 UI 冲突。
+- 只把人工已确认方向的高置信问题生成 `forwardSpineConflicts[]` 和中文 review finding。
+- UI 和地图只展示 `forwardSpineConflicts[]`；`forwardSpineOverlaps[]` 是内部候选关系证据，
+  不等于冲突，也不应直接上图。
 - 不改变当前清洗轨迹。
 
 ### V17.1 Active Merge/Select
@@ -240,10 +246,15 @@ V17 任一 active 改线必须满足：
 
 ## 下一步执行建议
 
-下一步先实现 V17.0 review-only：
+V17.0 已完成：
 
-1. 为 `dense_main_route_settlement` 产出 `forwardSpineCandidates[]`。
-2. 按 rawRange sweep-line 切出候选重叠子区间。
-3. 识别同向、包含、交叉、端点相交、往返相交。
-4. UI 冲突详情展示 forward spine conflict，并可点击定位地图。
-5. 不改变当前清洗轨迹，先验证冲突列表是否准确反映“多个保方向互相叠加”的位置。
+1. 为 dense forward intent 和 `dense_main_route_settlement` 产出
+   `forwardSpineCandidates[]`。
+2. 输出 `forwardSpineOverlaps[]`、高置信 `forwardSpineConflicts[]` 和
+   `forwardSpineDecisions[]`。
+3. UI 冲突详情展示 forward spine conflict，并可点击定位地图。
+4. 不改变当前清洗轨迹，先验证冲突列表是否准确反映“多个保方向互相叠加”的位置。
+
+下一步进入 V17.1 前，应先人工复盘 `forwardSpineOverlaps[]`，把真正可靠的同向重叠和
+包含候选提升为高置信 `forwardSpineConflicts[]`，再考虑 active merge/select；crossing
+和往返覆盖主方向继续 review-only。

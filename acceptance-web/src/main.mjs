@@ -244,6 +244,10 @@ function compactTargetOutput(output) {
       output?.summaries?.pressure?.locationAltitudeTotalAscentMeters ?? null,
     denseAreaSettlementPlan: output?.denseAreaSettlementPlan || [],
     denseIntentConflicts: output?.denseIntentConflicts || [],
+    forwardSpineCandidates: output?.forwardSpineCandidates || [],
+    forwardSpineOverlaps: output?.forwardSpineOverlaps || [],
+    forwardSpineConflicts: output?.forwardSpineConflicts || [],
+    forwardSpineDecisions: output?.forwardSpineDecisions || [],
     findings: output?.findings || []
   };
 }
@@ -650,10 +654,17 @@ function denseIntentConflictListMarkup(conflicts) {
 
 function denseIntentConflictOverviewMarkup(dataset) {
   const conflicts = dataset?.targetOutput?.denseIntentConflicts || [];
-  if (conflicts.length === 0) {
-    return '<span>当前没有密集区主意图冲突</span>';
+  const forwardSpineConflicts = dataset?.targetOutput?.forwardSpineConflicts || [];
+  const blocks = [];
+  if (conflicts.length > 0) {
+    blocks.push(denseIntentConflictListMarkup(conflicts.slice(0, 12)));
   }
-  return denseIntentConflictListMarkup(conflicts.slice(0, 12));
+  if (forwardSpineConflicts.length > 0) {
+    blocks.push(forwardSpineConflictListMarkup(forwardSpineConflicts.slice(0, 12)));
+  }
+  return blocks.length > 0
+    ? blocks.join('')
+    : '<span>当前没有密集区主意图冲突</span>';
 }
 
 function denseIntentConflictMarkup(conflict) {
@@ -712,6 +723,90 @@ function humanConflictAction(conflict) {
     return '处理结果：保留少量微移动锚点，删除多余折返。';
   }
   return `处理结果：${conflict.action || '-'}；${conflict.localRebuild || '-'}`;
+}
+
+function forwardSpineConflictListMarkup(conflicts) {
+  return `
+    <div class="scenario-hit-list">
+      ${conflicts.map((conflict) => forwardSpineConflictMarkup(conflict)).join('')}
+    </div>
+  `;
+}
+
+function forwardSpineConflictMarkup(conflict) {
+  return `
+    <button
+      class="scenario-hit conflict-hit"
+      type="button"
+      data-conflict-start-raw="${escapeHtml(String(conflict.rawRange?.startRawPointId ?? ''))}"
+      data-conflict-end-raw="${escapeHtml(String(conflict.rawRange?.endRawPointId ?? ''))}"
+    >
+      <div class="scenario-hit-title">
+        <strong>${escapeHtml(formatScenarioRawRange(conflict.rawRange))}</strong>
+        <span>${escapeHtml(humanForwardSpineResolution(conflict.resolution))}</span>
+      </div>
+      <div class="scenario-hit-meta">
+        <span>V17 保方向仲裁</span>
+        <span>${escapeHtml(humanForwardSpineConflict(conflict.conflict))}</span>
+        <span>点击定位地图</span>
+      </div>
+      <p>${escapeHtml(humanForwardSpineConflictSummary(conflict))}</p>
+      ${forwardSpineEvidenceMarkup(conflict)}
+      <p class="scenario-hit-action">${escapeHtml('处理结果：先复盘，不改变当前清洗轨迹。')}</p>
+    </button>
+  `;
+}
+
+function forwardSpineEvidenceMarkup(conflict) {
+  const evidence = conflict.evidence || {};
+  const cells = [
+    ['路径', formatMeters(Number(evidence.pathMeters))],
+    ['首尾净距', formatMeters(Number(evidence.netDistanceMeters))],
+    ['范围', formatMeters(Number(evidence.bboxDiagonalMeters))],
+    ['候选', (conflict.candidateIds || []).join('、') || '-']
+  ];
+  return `
+    <div class="conflict-evidence">
+      ${cells.map(([label, value]) =>
+    `<span>${escapeHtml(label)} ${escapeHtml(value)}</span>`).join('')}
+    </div>
+  `;
+}
+
+function humanForwardSpineConflict(conflict) {
+  return ({
+    overlapping_forward_spine_candidates: '同向保方向重叠',
+    nested_forward_spine_candidate: '保方向包含',
+    crossing_forward_spine_candidates: '保方向交叉',
+    endpoint_touch_forward_spine_candidates: '端点相接',
+    local_micro_move_overrides_forward_spine: '局部微移动 vs 主前进'
+  })[conflict] || conflict || '-';
+}
+
+function humanForwardSpineResolution(resolution) {
+  return ({
+    review_merge_or_select_same_direction: '复盘合并/择优',
+    review_downgrade_nested_candidate: '复盘降级短候选',
+    review_split_before_active: '复盘切段',
+    review_keep_endpoint: '保留端点复盘',
+    review_forward_spine_preferred: '倾向主前进复盘'
+  })[resolution] || resolution || '复盘';
+}
+
+function humanForwardSpineConflictSummary(conflict) {
+  if (conflict.conflict === 'local_micro_move_overrides_forward_spine') {
+    return '这段局部形态像休息/拍照微移动，但它夹在主前进/回环骨架内；V17 先按保方向候选冲突复盘，不再直接当作休息覆盖 forward。';
+  }
+  if (conflict.conflict === 'endpoint_touch_forward_spine_candidates') {
+    return '两个保方向候选只在端点附近相接；端点应保留，两侧是否合并需要看前后方向和真实语义。';
+  }
+  if (conflict.conflict === 'nested_forward_spine_candidate') {
+    return '一个短保方向候选落在长候选内部；默认短候选降级为解释，除非它能避开局部漂移。';
+  }
+  if (conflict.conflict === 'crossing_forward_spine_candidates') {
+    return '保方向候选在空间上交叉，但交点不等于真实路线点；需要按 raw 时间轴切段后仲裁。';
+  }
+  return '多个保方向候选覆盖同一 raw 子区间；V17 会先复盘候选关系，再决定合并、择优或降级。';
 }
 
 function handleScenarioRangeReviewClick(event) {
@@ -810,7 +905,7 @@ function scenarioHitMarkup(item, useMatchedRange) {
       </div>
       <div class="scenario-hit-meta">
         <span>${escapeHtml(trackRange)}</span>
-        <span>${escapeHtml(formatScenarioRawRange(item.rawRange))}</span>
+        <span>${escapeHtml(formatScenarioRawCoverage(item))}</span>
         <span>主解释点 ${escapeHtml(String(item.primaryTrackPointCount || 0))}</span>
         <span>关联点 ${escapeHtml(String(item.contextTrackPointCount || 0))}</span>
       </div>
@@ -1003,7 +1098,7 @@ function scenarioCoverageSummaryRows(dataset) {
     `情景覆盖 ${coverage.length} 段；类型 ${formatScenarioNames(scenarioNames)}`
   ];
   for (const item of coverage.slice(0, 8)) {
-    rows.push(`${item.scenarioLabel || scenarioLabel(item)}：${formatScenarioTrackCoverage(item)} / ${formatScenarioRawRange(item.rawRange)}；主解释点 ${item.primaryTrackPointCount}，关联点 ${item.contextTrackPointCount}；${item.summary || '-'}`);
+    rows.push(`${item.scenarioLabel || scenarioLabel(item)}：${formatScenarioTrackCoverage(item)} / ${formatScenarioRawCoverage(item)}；主解释点 ${item.primaryTrackPointCount}，关联点 ${item.contextTrackPointCount}；${item.summary || '-'}`);
   }
   if (coverage.length > 8) {
     rows.push(`还有 ${coverage.length - 8} 段情景覆盖未展开，可点击对应清洗点查看关联情景`);
@@ -1016,6 +1111,8 @@ function denseIntentSummaryRows(dataset) {
     return ['导入 evidence.jsonl 后显示密集区主意图、处理计划和冲突区间'];
   }
   const conflicts = dataset.targetOutput?.denseIntentConflicts || [];
+  const forwardSpineConflicts = dataset.targetOutput?.forwardSpineConflicts || [];
+  const forwardSpineOverlaps = dataset.targetOutput?.forwardSpineOverlaps || [];
   const plan = dataset.targetOutput?.denseAreaSettlementPlan || [];
   const rows = [];
   if (conflicts.length > 0) {
@@ -1023,6 +1120,7 @@ function denseIntentSummaryRows(dataset) {
   } else {
     rows.push('冲突 0 段');
   }
+  rows.push(`V17 保方向上图冲突 ${forwardSpineConflicts.length} 段；候选关系 ${forwardSpineOverlaps.length} 段仅作内部证据`);
   if (plan.length > 0) {
     rows.push(`处理计划 ${plan.length} 段`);
     for (const item of plan.slice(0, 5)) {
@@ -1077,6 +1175,26 @@ function formatScenarioRawRange(range) {
     return `Raw#${range.startRawPointId}-${range.endRawPointId}`;
   }
   return 'Raw#-';
+}
+
+function formatScenarioRawCoverage(item) {
+  if (item?.continuousCoverage === false) {
+    const ids = uniqueNumbers([
+      ...(item.rawPointIds || []),
+      ...(item.anchorRawPointIds || []),
+      ...(item.evidence?.rawPointIds || []),
+      ...(item.evidence?.keptRawPointIds || []),
+      ...(item.evidence?.weakRawPointIds || []),
+      ...(item.evidence?.rejectedRawPointIds || [])
+    ]);
+    if (ids.length > 0) return `Raw点 ${formatIdPreview(ids)}`;
+  }
+  return formatScenarioRawRange(item?.rawRange);
+}
+
+function uniqueNumbers(values) {
+  return [...new Set((values || []).filter(Number.isFinite))]
+    .sort((left, right) => left - right);
 }
 
 function numberOrZero(value) {
@@ -1599,6 +1717,7 @@ function addMapLayers() {
   state.map.addSource('trusted-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('cleaned-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('dense-intent-conflicts', { type: 'geojson', data: emptyFeatureCollection() });
+  state.map.addSource('forward-spine-conflicts', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('direction-arrows', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('cleaned-points', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('points', { type: 'geojson', data: emptyFeatureCollection() });
@@ -1677,6 +1796,23 @@ function addMapLayers() {
       ],
       'line-opacity': 0.96,
       'line-blur': 0.4
+    }
+  });
+  state.map.addLayer({
+    id: 'forward-spine-conflicts',
+    type: 'line',
+    source: 'forward-spine-conflicts',
+    paint: {
+      'line-color': '#a855f7',
+      'line-width': [
+        'interpolate', ['linear'], ['zoom'],
+        10, 3,
+        15, 6,
+        20, 10
+      ],
+      'line-opacity': 0.92,
+      'line-blur': 0.25,
+      'line-dasharray': [1.4, 0.8]
     }
   });
   state.map.addLayer({
@@ -1842,6 +1978,11 @@ function bindMapEvents() {
     if (!feature) return;
     selectDenseIntentConflict(feature, event.lngLat);
   });
+  state.map.on('click', 'forward-spine-conflicts', (event) => {
+    const feature = event.features?.[0];
+    if (!feature) return;
+    selectForwardSpineConflict(feature, event.lngLat);
+  });
   for (const layerId of CONTOUR_LINE_LAYER_IDS) {
     if (!state.map.getLayer(layerId)) continue;
     state.map.on('click', layerId, (event) => {
@@ -1868,6 +2009,9 @@ function bindMapEvents() {
   state.map.on('mouseenter', 'dense-intent-conflicts', () => {
     state.map.getCanvas().style.cursor = 'pointer';
   });
+  state.map.on('mouseenter', 'forward-spine-conflicts', () => {
+    state.map.getCanvas().style.cursor = 'pointer';
+  });
   state.map.on('mouseleave', 'points', () => {
     state.map.getCanvas().style.cursor = '';
   });
@@ -1880,6 +2024,9 @@ function bindMapEvents() {
   state.map.on('mouseleave', 'dense-intent-conflicts', () => {
     state.map.getCanvas().style.cursor = '';
   });
+  state.map.on('mouseleave', 'forward-spine-conflicts', () => {
+    state.map.getCanvas().style.cursor = '';
+  });
 }
 
 function renderMap() {
@@ -1890,6 +2037,7 @@ function renderMap() {
   state.map.getSource('trusted-lines').setData(elements.showTrusted.checked ? trustedFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('cleaned-lines').setData(elements.showCleaned.checked ? cleanedFeatureCollection(visible) : emptyFeatureCollection());
   state.map.getSource('dense-intent-conflicts').setData(denseIntentConflictFeatureCollection(visible));
+  state.map.getSource('forward-spine-conflicts').setData(forwardSpineConflictFeatureCollection(visible));
   renderDirectionArrows(visible);
   state.map.getSource('cleaned-points').setData(
     elements.showCleaned.checked && elements.showCleanedPoints.checked
@@ -1976,6 +2124,35 @@ function denseIntentConflictFeature(dataset, conflict, index) {
     bboxDiagonalMeters: conflict.bboxDiagonalMeters,
     lowSpeedRatio: conflict.lowSpeedRatio,
     denseAreaIntents: (conflict.denseAreaIntents || []).join('、')
+  });
+}
+
+function forwardSpineConflictFeatureCollection(datasets) {
+  return {
+    type: 'FeatureCollection',
+    features: datasets.flatMap((dataset) =>
+      (dataset.targetOutput?.forwardSpineConflicts || [])
+        .map((conflict, index) => forwardSpineConflictFeature(dataset, conflict, index))
+        .filter(Boolean))
+  };
+}
+
+function forwardSpineConflictFeature(dataset, conflict, index) {
+  const points = rawPointsInRange(dataset, conflict.rawRange).filter(hasValidLngLat);
+  if (points.length < 2) return null;
+  return lineFeature(dataset, points, 'forward_spine_conflict', null, {
+    conflictIndex: index,
+    conflict: conflict.conflict,
+    resolution: conflict.resolution,
+    relationship: conflict.relationship,
+    rawRange: formatScenarioRawRange(conflict.rawRange),
+    startRawPointId: conflict.rawRange?.startRawPointId,
+    endRawPointId: conflict.rawRange?.endRawPointId,
+    candidateIds: (conflict.candidateIds || []).join('、'),
+    directionDeltaDegrees: conflict.directionDeltaDegrees,
+    pathMeters: conflict.evidence?.pathMeters,
+    netDistanceMeters: conflict.evidence?.netDistanceMeters,
+    bboxDiagonalMeters: conflict.evidence?.bboxDiagonalMeters
   });
 }
 
@@ -2228,6 +2405,27 @@ function selectDenseIntentConflict(feature, lngLat) {
         escapeHtml(properties.rawRange || 'Raw#-'),
         `intent ${escapeHtml(properties.denseAreaIntents || '-')}`,
         `resolution ${escapeHtml(properties.resolution || '-')}`,
+        `path ${escapeHtml(formatMeters(Number(properties.pathMeters)))} / net ${escapeHtml(formatMeters(Number(properties.netDistanceMeters)))} / bbox ${escapeHtml(formatMeters(Number(properties.bboxDiagonalMeters)))}`
+      ].join('<br/>'))
+      .addTo(state.map);
+  }
+}
+
+function selectForwardSpineConflict(feature, lngLat) {
+  const properties = feature.properties || {};
+  const datasetId = String(properties.datasetId || '');
+  const startRawPointId = Number(properties.startRawPointId);
+  const endRawPointId = Number(properties.endRawPointId);
+  focusDenseIntentConflict(startRawPointId, endRawPointId, datasetId);
+  if (state.popup && lngLat) {
+    state.popup
+      .setLngLat(lngLat)
+      .setHTML([
+        '<strong>V17 保方向仲裁</strong>',
+        escapeHtml(properties.rawRange || 'Raw#-'),
+        escapeHtml(humanForwardSpineConflict(properties.conflict)),
+        `resolution ${escapeHtml(humanForwardSpineResolution(properties.resolution))}`,
+        `candidates ${escapeHtml(properties.candidateIds || '-')}`,
         `path ${escapeHtml(formatMeters(Number(properties.pathMeters)))} / net ${escapeHtml(formatMeters(Number(properties.netDistanceMeters)))} / bbox ${escapeHtml(formatMeters(Number(properties.bboxDiagonalMeters)))}`
       ].join('<br/>'))
       .addTo(state.map);

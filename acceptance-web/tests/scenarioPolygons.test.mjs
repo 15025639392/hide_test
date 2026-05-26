@@ -112,6 +112,7 @@ test('discrete scenario coverage splits distant trigger points into separate pol
   assert.equal(features.length, 2);
   assert.deepEqual(features.map((feature) => feature.properties.regionIndex), [0, 1]);
   assert.ok(features.every((feature) => feature.properties.regionCount === 2));
+  assert.ok(features.every((feature) => feature.properties.rawRange === 'Raw点 10, 50'));
   assert.ok(features.every((feature) => feature.properties.areaMeters2 > 0));
 });
 

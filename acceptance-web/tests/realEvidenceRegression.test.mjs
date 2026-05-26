@@ -63,6 +63,18 @@ test('real evidence session 5cc key dense rest ranges stay collapsed', (t) => {
   assert.ok(output.denseIntentConflicts.some((conflict) =>
     conflict.rawRange.startRawPointId === 5050
     && conflict.rawRange.endRawPointId === 5094));
+  assert.equal(product.denseIntentConflicts.some((conflict) =>
+    conflict.rawRange.startRawPointId === 3862
+    && conflict.rawRange.endRawPointId === 3929), false);
+  assert.ok(product.forwardSpineConflicts.some((conflict) =>
+    conflict.conflict === 'local_micro_move_overrides_forward_spine'
+    && conflict.rawRange.startRawPointId === 3862
+    && conflict.rawRange.endRawPointId === 3929));
+  assert.ok(product.forwardSpineOverlaps.length > product.forwardSpineConflicts.length);
+  assert.equal(product.forwardSpineConflicts.some((conflict) =>
+    conflict.conflict === 'endpoint_touch_forward_spine_candidates'
+    || conflict.conflict === 'overlapping_forward_spine_candidates'
+    || conflict.conflict === 'nested_forward_spine_candidate'), false);
   for (const [startRawPointId, endRawPointId] of [
     [1944, 2014],
     [2461, 2483],

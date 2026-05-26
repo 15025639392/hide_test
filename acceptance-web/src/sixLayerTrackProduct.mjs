@@ -5,7 +5,7 @@ const START_TOLERANCE_NANOS = 1_000_000_000;
 const MOTION_LOOKBACK_NANOS = 5_000_000_000;
 const NANOS_PER_SECOND = 1_000_000_000;
 
-export const SIX_LAYER_TRACK_ALGORITHM_VERSION = 'six-layer-evidence-v16.1';
+export const SIX_LAYER_TRACK_ALGORITHM_VERSION = 'six-layer-evidence-v17.0';
 
 export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   maxIntakeAccuracyMeters: 80,
@@ -354,6 +354,7 @@ export function buildSixLayerTrackProduct(modelOrEvents, options = {}) {
   addPostSettlementScenarios(product);
   product.denseAreaSettlementPlan = buildDenseAreaSettlementPlan(product, denseAreaIntents);
   product.denseIntentConflicts = buildDenseIntentConflicts(product);
+  applyForwardSpineArbitrationReview(product, denseAreaIntents);
   attachExplanationModel(product);
   product.scenarioCoverage = buildScenarioCoverage(product);
   product.findings = buildFindings(product, evidence);
@@ -1179,6 +1180,7 @@ function denseAreaSettlementPriority(intent) {
 function buildDenseIntentConflicts(product) {
   return product.scenarios
     .filter((scenario) => scenario.evidence?.localMicroMoveOverridesDenseForward === true)
+    .filter((scenario) => !restMicroMoveConflictShouldPreferForwardSpine(product, scenario))
     .map((scenario) => ({
       conflict: 'local_micro_move_overrides_dense_forward',
       rawRange: scenario.rawRange,
@@ -1193,6 +1195,275 @@ function buildDenseIntentConflicts(product) {
       resolution: 'prefer_local_rest_photo_micro_move'
     }))
     .sort((a, b) => a.rawRange.startRawPointId - b.rawRange.startRawPointId);
+}
+
+function restMicroMoveConflictShouldPreferForwardSpine(product, scenario) {
+  if (scenario.scenario !== 'rest_photo_micro_move') return false;
+  const intents = scenario.evidence?.denseAreaIntents || [];
+  if (intents.length === 0 || intents.some((intent) => intent !== 'forward_motion')) {
+    return false;
+  }
+  return product.scenarios.some((candidate) =>
+    candidate.scenario === 'enclosed_loop_cluster_settlement'
+      && rawRangesOverlap(candidate.rawRange, scenario.rawRange));
+}
+
+function applyForwardSpineArbitrationReview(product, denseAreaIntents = []) {
+  const candidates = buildForwardSpineCandidates(product, denseAreaIntents);
+  const overlaps = buildForwardSpineOverlaps(candidates);
+  const conflicts = buildForwardSpineConflicts(product, candidates, overlaps);
+  product.forwardSpineCandidates = candidates;
+  product.forwardSpineOverlaps = overlaps;
+  product.forwardSpineConflicts = conflicts;
+  product.forwardSpineDecisions = buildForwardSpineDecisions(candidates, overlaps, conflicts);
+}
+
+function buildForwardSpineCandidates(product, denseAreaIntents = []) {
+  const denseIntentCandidates = denseAreaIntents
+    .filter((intent) => intent.intent === 'forward_motion')
+    .map((intent, index) => forwardSpineCandidateFromIntent(product, intent, index))
+    .filter(Boolean);
+  const denseMainRouteCandidates = product.scenarios
+    .filter((scenario) => scenario.scenario === 'dense_main_route_settlement')
+    .map((scenario, index) => forwardSpineCandidateFromScenario(product, scenario, index))
+    .filter(Boolean);
+  return [...denseIntentCandidates, ...denseMainRouteCandidates]
+    .map((candidate, index) => ({
+      ...candidate,
+      candidateId: `fsp-${index + 1}`
+    }));
+}
+
+function forwardSpineCandidateFromIntent(product, intent, index) {
+  const rawRange = intent.rawRange;
+  if (!validRawRange(rawRange)) return null;
+  const points = rawDecisionPointsInRange(product, rawRange);
+  const endpoints = endpointPair(points);
+  return {
+    source: 'dense_area_intent',
+    sourceScenario: 'dense_area_intent',
+    sourceIndex: index,
+    rawRange,
+    trackPointRange: trackPointRangeForRawRange(product, rawRange),
+    directionDegrees: directionDegreesForPoints(endpoints),
+    pathMeters: scenarioNumber(intent.evidence?.pathMeters ?? trackPathMeters(points)),
+    netDistanceMeters: scenarioNumber(intent.evidence?.netDistanceMeters
+      ?? trackNetDistanceMeters(points)),
+    bboxDiagonalMeters: scenarioNumber(intent.evidence?.bboxDiagonalMeters
+      ?? bboxDiagonalMeters(points)),
+    confidence: scenarioNumber(intent.confidence),
+    plannedSettlement: denseAreaIntentPlannedSettlement(intent.intent),
+    reviewOnly: true
+  };
+}
+
+function forwardSpineCandidateFromScenario(product, scenario, index) {
+  const rawRange = scenario.rawRange;
+  if (!validRawRange(rawRange)) return null;
+  const points = rawDecisionPointsInRange(product, rawRange);
+  const endpoints = endpointPair(points);
+  return {
+    source: 'dense_main_route_settlement',
+    sourceScenario: scenario.scenario,
+    sourceScenarioId: scenario.scenarioId,
+    sourceIndex: index,
+    rawRange,
+    trackPointRange: trackPointRangeForRawRange(product, rawRange),
+    directionDegrees: directionDegreesForPoints(endpoints),
+    pathMeters: scenarioNumber(scenario.evidence?.pathMeters ?? trackPathMeters(points)),
+    netDistanceMeters: scenarioNumber(scenario.evidence?.netDistanceMeters
+      ?? trackNetDistanceMeters(points)),
+    bboxDiagonalMeters: scenarioNumber(scenario.evidence?.bboxDiagonalMeters
+      ?? bboxDiagonalMeters(points)),
+    confidence: scenarioNumber(scenario.confidence),
+    plannedSettlement: scenario.scenario,
+    reviewOnly: false
+  };
+}
+
+function buildForwardSpineOverlaps(candidates) {
+  const overlaps = [];
+  for (let leftIndex = 0; leftIndex < candidates.length; leftIndex++) {
+    for (let rightIndex = leftIndex + 1; rightIndex < candidates.length; rightIndex++) {
+      const left = candidates[leftIndex];
+      const right = candidates[rightIndex];
+      const overlap = forwardSpineOverlap(left, right);
+      if (overlap) overlaps.push(overlap);
+    }
+  }
+  return overlaps;
+}
+
+function forwardSpineOverlap(left, right) {
+  const rawOverlap = rawRangeIntersection(left.rawRange, right.rawRange);
+  const rawGap = rawRangeGap(left.rawRange, right.rawRange);
+  if (!rawOverlap && rawGap > 8) return null;
+  const directionDeltaDegrees = angleDeltaDegrees(left.directionDegrees, right.directionDegrees);
+  const relationship = rawOverlap
+    ? forwardSpineRawOverlapRelationship(left.rawRange, right.rawRange, directionDeltaDegrees)
+    : 'endpoint_touch';
+  return {
+    leftCandidateId: left.candidateId,
+    rightCandidateId: right.candidateId,
+    relationship,
+    rawRange: rawOverlap || rawRangeBetween(left.rawRange, right.rawRange),
+    rawOverlapCount: rawOverlap
+      ? rawOverlap.endRawPointId - rawOverlap.startRawPointId + 1
+      : 0,
+    rawGap,
+    directionDeltaDegrees: scenarioNumber(directionDeltaDegrees)
+  };
+}
+
+function forwardSpineRawOverlapRelationship(left, right, directionDeltaDegrees) {
+  if (rawRangeContains(left, right) || rawRangeContains(right, left)) {
+    return 'nested';
+  }
+  if (Number.isFinite(directionDeltaDegrees) && directionDeltaDegrees > 45) {
+    return 'crossing';
+  }
+  return 'overlap';
+}
+
+function buildForwardSpineConflicts(product, candidates, overlaps) {
+  const conflicts = [];
+  for (const scenario of product.scenarios) {
+    if (scenario.scenario !== 'rest_photo_micro_move') continue;
+    if (!restMicroMoveConflictShouldPreferForwardSpine(product, scenario)) continue;
+    conflicts.push({
+      conflict: 'local_micro_move_overrides_forward_spine',
+      rawRange: scenario.rawRange,
+      candidateIds: candidates
+        .filter((candidate) => rawRangesOverlap(candidate.rawRange, scenario.rawRange))
+        .map((candidate) => candidate.candidateId),
+      scenario: scenario.scenario,
+      action: scenario.action,
+      resolution: 'review_forward_spine_preferred',
+      reviewOnly: true,
+      evidence: {
+        pathMeters: scenario.evidence?.pathMeters,
+        netDistanceMeters: scenario.evidence?.netDistanceMeters,
+        bboxDiagonalMeters: scenario.evidence?.bboxDiagonalMeters,
+        denseAreaIntents: scenario.evidence?.denseAreaIntents || []
+      }
+    });
+  }
+  return conflicts.sort((a, b) =>
+    a.rawRange.startRawPointId - b.rawRange.startRawPointId
+    || String(a.conflict).localeCompare(String(b.conflict)));
+}
+
+function buildForwardSpineDecisions(candidates, overlaps, conflicts) {
+  const conflictedCandidateIds = new Set(conflicts.flatMap((conflict) =>
+    conflict.candidateIds || []));
+  const decisions = conflicts.map((conflict) => ({
+    rawRange: conflict.rawRange,
+    candidateIds: conflict.candidateIds || [],
+    decision: conflict.reviewOnly ? 'review_only' : forwardSpineDecisionForConflict(conflict),
+    reason: conflict.conflict,
+    reviewOnly: conflict.reviewOnly !== false
+  }));
+  for (const candidate of candidates) {
+    if (conflictedCandidateIds.has(candidate.candidateId)) continue;
+    decisions.push({
+      rawRange: candidate.rawRange,
+      candidateIds: [candidate.candidateId],
+      decision: 'select',
+      reason: 'single_forward_spine_candidate',
+      reviewOnly: true
+    });
+  }
+  return decisions.sort((a, b) =>
+    a.rawRange.startRawPointId - b.rawRange.startRawPointId
+    || a.candidateIds.join(',').localeCompare(b.candidateIds.join(',')));
+}
+
+function forwardSpineDecisionForConflict(conflict) {
+  return 'review_only';
+}
+
+function rawDecisionPointsInRange(product, rawRange) {
+  if (!validRawRange(rawRange)) return [];
+  return product.rawPointDecisions
+    .filter((point) => point.rawPointId >= rawRange.startRawPointId
+      && point.rawPointId <= rawRange.endRawPointId
+      && hasValidLngLat(point))
+    .map((point) => ({
+      ...point,
+      sourceRawPointId: point.rawPointId
+    }));
+}
+
+function trackPointRangeForRawRange(product, rawRange) {
+  const ids = product.track
+    .filter((point) => trackPointTouchesRawRange(point, rawRange))
+    .map((point) => point.trackPointId);
+  return ids.length > 0
+    ? { startTrackPointId: Math.min(...ids), endTrackPointId: Math.max(...ids) }
+    : { startTrackPointId: null, endTrackPointId: null };
+}
+
+function trackPointTouchesRawRange(point, rawRange) {
+  if (!validRawRange(rawRange)) return false;
+  if (point.sourceRawPointId >= rawRange.startRawPointId
+      && point.sourceRawPointId <= rawRange.endRawPointId) {
+    return true;
+  }
+  return (point.contributingRawPointIds || []).some((rawPointId) =>
+    rawPointId >= rawRange.startRawPointId && rawPointId <= rawRange.endRawPointId);
+}
+
+function endpointPair(points) {
+  const valid = (points || []).filter(hasValidLngLat);
+  return valid.length >= 2 ? [valid[0], valid.at(-1)] : [];
+}
+
+function directionDegreesForPoints(points) {
+  if (!Array.isArray(points) || points.length < 2) return null;
+  const [start, end] = points;
+  if (!hasValidLngLat(start) || !hasValidLngLat(end)) return null;
+  const lat1 = start.lat * Math.PI / 180;
+  const lat2 = end.lat * Math.PI / 180;
+  const deltaLng = (end.lng - start.lng) * Math.PI / 180;
+  const y = Math.sin(deltaLng) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2)
+    - Math.sin(lat1) * Math.cos(lat2) * Math.cos(deltaLng);
+  return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
+}
+
+function angleDeltaDegrees(left, right) {
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return null;
+  const delta = Math.abs(left - right) % 360;
+  return delta > 180 ? 360 - delta : delta;
+}
+
+function rawRangeIntersection(left, right) {
+  if (!validRawRange(left) || !validRawRange(right) || !rawRangesOverlap(left, right)) {
+    return null;
+  }
+  return {
+    startRawPointId: Math.max(left.startRawPointId, right.startRawPointId),
+    endRawPointId: Math.min(left.endRawPointId, right.endRawPointId)
+  };
+}
+
+function rawRangeGap(left, right) {
+  if (!validRawRange(left) || !validRawRange(right) || rawRangesOverlap(left, right)) return 0;
+  if (left.endRawPointId < right.startRawPointId) return right.startRawPointId - left.endRawPointId;
+  return left.startRawPointId - right.endRawPointId;
+}
+
+function rawRangeBetween(left, right) {
+  return {
+    startRawPointId: Math.min(left.endRawPointId, right.endRawPointId),
+    endRawPointId: Math.max(left.startRawPointId, right.startRawPointId)
+  };
+}
+
+function validRawRange(rawRange) {
+  return Number.isFinite(rawRange?.startRawPointId)
+    && Number.isFinite(rawRange?.endRawPointId)
+    && rawRange.startRawPointId <= rawRange.endRawPointId;
 }
 
 function settleDenseMainRouteSpans(product, config, denseAreaIntents = []) {
@@ -4215,6 +4486,7 @@ function sortUniqueScenarios(scenarios) {
 }
 
 function scenarioContext(scenario) {
+  const continuousCoverage = scenarioUsesContinuousRawRange(scenario.scenario);
   return {
     scenarioId: scenario.scenarioId,
     scenario: scenario.scenario,
@@ -4225,6 +4497,7 @@ function scenarioContext(scenario) {
     localRebuild: scenario.localRebuild,
     localRebuildLabel: localRebuildChineseLabel(scenario.localRebuild),
     rawRange: scenario.rawRange,
+    rawPointIds: continuousCoverage ? [] : scenarioRawPointIds(scenario),
     summary: scenarioExplanationSummary(scenario)
   };
 }
@@ -4726,6 +4999,13 @@ function buildFindings(product, evidence) {
       .map((scenario) =>
         `Raw#${scenario.rawRange.startRawPointId}-${scenario.rawRange.endRawPointId}`);
     findings.push(`dense intent conflict ${denseIntentConflicts.length} 段：局部休息/拍照微移动覆盖粗粒度 forward 判断（${ranges.join(', ')}）`);
+  }
+  const forwardSpineConflicts = product.forwardSpineConflicts || [];
+  if (forwardSpineConflicts.length > 0) {
+    const ranges = forwardSpineConflicts.slice(0, 5)
+      .map((conflict) =>
+        `Raw#${conflict.rawRange.startRawPointId}-${conflict.rawRange.endRawPointId}`);
+    findings.push(`forward spine arbitration review ${forwardSpineConflicts.length} 段：多个保方向候选需要仲裁（${ranges.join(', ')}）`);
   }
   if (product.scenarios.length > 0) {
     const scenarioNames = [...new Set(product.scenarios.map((scenario) => scenario.scenario))];

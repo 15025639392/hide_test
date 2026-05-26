@@ -82,7 +82,7 @@ function scenarioPolygonFeature(dataset, coverage, scenario, points, coverageInd
       confidence: Number.isFinite(coverage.confidence) ? coverage.confidence : null,
       continuousCoverage: coverage.continuousCoverage === true,
       trackCoverage: formatTrackCoverage(coverage),
-      rawRange: formatRawRange(coverage.rawRange),
+      rawRange: formatRawCoverage(coverage, scenario),
       actionLabel: coverage.actionLabel || coverage.action || scenario?.action || '',
       localRebuildLabel: coverage.localRebuildLabel || coverage.localRebuild
         || scenario?.localRebuild || '',
@@ -475,4 +475,20 @@ function formatRawRange(range) {
     return `Raw#${range.startRawPointId}-${range.endRawPointId}`;
   }
   return 'Raw#-';
+}
+
+function formatRawCoverage(coverage, scenario = null) {
+  if (coverage?.continuousCoverage === false) {
+    const ids = uniqueNumbers([
+      ...(coverage.rawPointIds || []),
+      ...scenarioExplicitRawPointIds(scenario)
+    ]);
+    if (ids.length > 0) return `Raw点 ${formatIdPreview(ids)}`;
+  }
+  return formatRawRange(coverage?.rawRange);
+}
+
+function formatIdPreview(ids, limit = 6) {
+  const visible = ids.slice(0, limit).join(', ');
+  return ids.length > limit ? `${visible} ... +${ids.length - limit}` : visible;
 }

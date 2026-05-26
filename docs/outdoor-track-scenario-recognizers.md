@@ -507,7 +507,7 @@ V16.1 行为：
   `0ddf2d35-02e2-454c-9057-667265fe8a71` 的 `Raw#256-312` 必须塌成一个
   `stationary_drift_anchor`。这些测试只在本机原始 evidence 文件存在时运行。
 - V17 启动计划见 `docs/outdoor-track-v17-conflict-aware-settlement-plan.md`。
-  V17.0 应先把多个 `dense_main_route_settlement` / 保方向候选整理为 review-only
+  V17.0 已把多个 `dense_main_route_settlement` / 保方向候选整理为 review-only
   `forwardSpineCandidates[]`、`forwardSpineConflicts[]` 和 `forwardSpineDecisions[]`，
-  不直接扩大 active 改线范围。
+  普通候选 overlap 只留在 `forwardSpineOverlaps[]` 调试，不直接扩大 active 改线范围。
 - 策略版本、文档和测试必须同改；不能只改阈值或只改报告文案。
