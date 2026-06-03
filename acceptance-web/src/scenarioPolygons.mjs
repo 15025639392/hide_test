@@ -9,6 +9,10 @@ const SCENARIO_COLORS = {
   stationary_drift_collapse: '#84cc16',
   rest_photo_micro_move: '#fb7185',
   enclosed_gap_cluster: '#a78bfa',
+  enclosed_loop_cluster_settlement: '#c084fc',
+  dense_main_route_settlement: '#2dd4bf',
+  position_snap_recovery: '#f97316',
+  moving_spike_cleanup: '#f43f5e',
   same_road_round_trip: '#14b8a6',
   closed_loop_round_trip: '#f59e0b',
   round_trip_line: '#facc15',
@@ -16,6 +20,38 @@ const SCENARIO_COLORS = {
   gap_recovery_boundary: '#60a5fa',
   transport_contamination: '#ef4444'
 };
+
+const MAP_REVIEW_ACTIONS = new Set([
+  'collapse_to_single_anchor',
+  'collapse_drift_cloud',
+  'preserve_dense_main_route_skeleton',
+  'preserve_endpoint_anchor',
+  'simplify_round_trip_line',
+  'collapse_same_road_round_trip',
+  'remove_single_point_spike',
+  'compress_enclosed_loop_low_speed_drift',
+  'reset_position_snap_recovery_delta',
+  'simplify_micro_move_shape',
+  'collapse_micro_move_to_rest_anchor',
+  'reset_segment_zero_delta',
+  'exclude_from_hiking_truth'
+]);
+
+const MAP_REVIEW_REBUILDS = new Set([
+  'stationary_session_anchor',
+  'stationary_drift_anchor',
+  'dense_main_route_skeleton',
+  'weak_recovery_shape_anchor',
+  'round_trip_line_simplified',
+  'same_road_round_trip_collapsed',
+  'moving_spike_line_bridge',
+  'enclosed_loop_anchor_settlement',
+  'position_snap_recovery_anchor',
+  'rest_photo_micro_move_simplifier',
+  'rest_photo_micro_move_anchor',
+  'gap_recovery_anchor',
+  'transport_diagnostic_continuity'
+]);
 
 export function buildScenarioPolygonFeatureCollection(datasets, options = {}) {
   const features = (datasets || [])
@@ -27,7 +63,8 @@ export function buildScenarioPolygonFeatureCollection(datasets, options = {}) {
 
 export function buildScenarioPolygonFeatures(dataset, options = {}) {
   const product = scenarioPolygonProduct(dataset);
-  const coverages = product?.scenarioCoverage || [];
+  const coverages = (product?.scenarioCoverage || [])
+    .filter((coverage) => scenarioCoverageShouldRenderOnMap(dataset, coverage));
   if (coverages.length === 0) return [];
   const scenarioById = new Map((product?.scenarios || [])
     .map((scenario) => [scenario.scenarioId, scenario]));
@@ -39,6 +76,38 @@ export function buildScenarioPolygonFeatures(dataset, options = {}) {
           regionIndex, regions.length, options))
       .filter(Boolean);
   });
+}
+
+export function scenarioCoverageShouldRenderOnMap(dataset, coverage) {
+  if (!coverage) return false;
+  if ((coverage.primaryTrackPointCount || 0) > 0
+      || (coverage.rawDecisionPrimaryCount || 0) > 0) {
+    return true;
+  }
+  if (MAP_REVIEW_ACTIONS.has(coverage.action)) return true;
+  if (MAP_REVIEW_REBUILDS.has(coverage.localRebuild)) return true;
+  return scenarioCoverageHasConflict(dataset, coverage);
+}
+
+function scenarioCoverageHasConflict(dataset, coverage) {
+  const rawRange = coverage?.rawRange;
+  if (!dataset || !Number.isFinite(rawRange?.startRawPointId)
+      || !Number.isFinite(rawRange?.endRawPointId)) {
+    return false;
+  }
+  return [
+    ...(dataset.targetOutput?.denseIntentConflicts || []),
+    ...(dataset.targetOutput?.forwardSpineConflicts || [])
+  ].some((conflict) => rawRangesOverlap(conflict.rawRange, rawRange));
+}
+
+function rawRangesOverlap(left, right) {
+  return Number.isFinite(left?.startRawPointId)
+    && Number.isFinite(left?.endRawPointId)
+    && Number.isFinite(right?.startRawPointId)
+    && Number.isFinite(right?.endRawPointId)
+    && left.startRawPointId <= right.endRawPointId
+    && right.startRawPointId <= left.endRawPointId;
 }
 
 export function scenarioPolygonForPoints(points, options = {}) {
@@ -59,11 +128,13 @@ export function scenarioPolygonForPoints(points, options = {}) {
 }
 
 export function scenarioColor(scenario) {
-  return SCENARIO_COLORS[scenario] || '#f8fafc';
+  return SCENARIO_COLORS[scenario] || null;
 }
 
 function scenarioPolygonFeature(dataset, coverage, scenario, points, coverageIndex,
                                 regionIndex, regionCount, options) {
+  const color = scenarioColor(coverage.scenario || scenario?.scenario);
+  if (!color) return null;
   const polygon = scenarioPolygonForPoints(points, options);
   if (!polygon) return null;
   return {
@@ -74,7 +145,7 @@ function scenarioPolygonFeature(dataset, coverage, scenario, points, coverageInd
       scenarioId: coverage.scenarioId,
       scenario: coverage.scenario || scenario?.scenario || '',
       label: coverage.scenarioLabel || coverage.scenario || scenario?.scenario || '',
-      color: scenarioColor(coverage.scenario || scenario?.scenario),
+      color,
       coverageIndex,
       regionIndex,
       regionCount,
@@ -87,13 +158,21 @@ function scenarioPolygonFeature(dataset, coverage, scenario, points, coverageInd
       localRebuildLabel: coverage.localRebuildLabel || coverage.localRebuild
         || scenario?.localRebuild || '',
       summary: coverage.summary || '',
-      areaMeters2: polygon.areaMeters2
+      areaMeters2: polygon.areaMeters2,
+      fallbackRegion: scenarioCoverageUsesFallbackRegion(coverage, scenario)
     },
     geometry: {
       type: 'Polygon',
       coordinates: [polygon.coordinates]
     }
   };
+}
+
+function scenarioCoverageUsesFallbackRegion(coverage, scenario) {
+  if (coverage?.continuousCoverage === true) return false;
+  if (scenarioExplicitRawPointIds(scenario).length > 0) return false;
+  if (uniqueNumbers(coverage?.trackPointIds || []).length > 0) return false;
+  return true;
 }
 
 function scenarioCoveragePointRegions(dataset, coverage, scenario, options) {
@@ -195,6 +274,9 @@ function scenarioExplicitRawPointIds(scenario) {
     scenario.evidence?.turnRawPointId,
     scenario.evidence?.endpointRawPointId,
     scenario.evidence?.representativeRawPointId,
+    scenario.evidence?.previousRawPointId,
+    scenario.evidence?.spikeRawPointId,
+    scenario.evidence?.nextRawPointId,
     scenario.evidence?.coreStartRawPointId,
     scenario.evidence?.coreEndRawPointId
   ]);

@@ -64,16 +64,39 @@ export function cleanedLineStyleForPoint(point, enabledIds = new Set()) {
   }
 
   const option = scenarioRepairOption(context.scenario);
+  const style = scenarioRepairLineStyle(option.kind);
   return {
-    lineStyle: option.kind === 'rewrite' ? 'scenario_rewrite' : 'scenario_diagnostic',
+    lineStyle: style.lineStyle,
     lineColor: scenarioColor(context.scenario),
-    lineWidth: option.kind === 'rewrite' ? 6 : 5,
-    lineOpacity: option.kind === 'rewrite' ? 0.98 : 0.86,
+    lineWidth: style.lineWidth,
+    lineOpacity: style.lineOpacity,
     scenario: context.scenario,
     scenarioLabel: context.scenarioLabel || context.scenario,
     repairKind: option.kind,
     repairLabel: scenarioRepairLabel(context.scenario),
     repairEnabled: true
+  };
+}
+
+function scenarioRepairLineStyle(kind) {
+  if (kind === 'rewrite') {
+    return {
+      lineStyle: 'scenario_rewrite',
+      lineWidth: 6,
+      lineOpacity: 0.98
+    };
+  }
+  if (kind === 'hybrid') {
+    return {
+      lineStyle: 'scenario_hybrid',
+      lineWidth: 6,
+      lineOpacity: 0.94
+    };
+  }
+  return {
+    lineStyle: 'scenario_diagnostic',
+    lineWidth: 5,
+    lineOpacity: 0.86
   };
 }
 

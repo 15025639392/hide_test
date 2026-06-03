@@ -1995,7 +1995,9 @@ function weakRecoveryEndpointConfidence(candidate) {
 }
 
 function simplifyRoundTripLineSpans(product, config, denseAreaIntents = []) {
-  if (!config.roundTripLineSimplifyEnabled) return false;
+  if (!config.roundTripLineSimplifyEnabled && !config.roundTripSameRoadCollapseEnabled) {
+    return false;
+  }
   const candidates = [];
   for (let index = 0; index < product.track.length; index++) {
     if (product.track[index].reason !== 'weak_recovery_shape_anchor') continue;
@@ -2007,8 +2009,11 @@ function simplifyRoundTripLineSpans(product, config, denseAreaIntents = []) {
   const accepted = nonOverlappingRoundTripCandidates(candidates);
   if (accepted.length === 0) return false;
 
+  let changed = false;
+  const collapsedRawPointRanges = [];
   for (const candidate of accepted.sort((a, b) => b.startIndex - a.startIndex)) {
     const sameRoad = isRoundTripSameRoadCorridor(candidate, config);
+    if (!sameRoad && !config.roundTripLineSimplifyEnabled) continue;
     const collapsed = sameRoad
       ? roundTripSameRoadPoints(candidate, config)
       : roundTripLinePoints(candidate, config);
@@ -2016,18 +2021,21 @@ function simplifyRoundTripLineSpans(product, config, denseAreaIntents = []) {
       candidate.endIndex - candidate.startIndex + 1, ...collapsed);
     addScenario(product, roundTripLineScenario(candidate, collapsed, sameRoad, config,
       denseAreaIntents));
-  }
-
-  renumberTrackPoints(product);
-  rebuildRawPointDecisions(product);
-  product.roundTripLineSimplify = {
-    collapsedSpanCount: accepted.length,
-    collapsedRawPointRanges: accepted.map((candidate) => ({
+    collapsedRawPointRanges.push({
       startRawPointId: candidate.start.sourceRawPointId,
       turnRawPointId: candidate.turn.sourceRawPointId,
       endRawPointId: candidate.end.sourceRawPointId,
       collapsedTrackPointCount: candidate.span.length
-    }))
+    });
+    changed = true;
+  }
+  if (!changed) return false;
+
+  renumberTrackPoints(product);
+  rebuildRawPointDecisions(product);
+  product.roundTripLineSimplify = {
+    collapsedSpanCount: collapsedRawPointRanges.length,
+    collapsedRawPointRanges: collapsedRawPointRanges.reverse()
   };
   return true;
 }
@@ -4424,6 +4432,8 @@ function scenarioRawPointIds(scenario) {
     scenario.evidence?.turnRawPointId,
     scenario.evidence?.endpointRawPointId,
     scenario.evidence?.representativeRawPointId,
+    scenario.evidence?.spikeRawPointId,
+    scenario.evidence?.nextRawPointId,
     scenario.evidence?.coreStartRawPointId,
     scenario.evidence?.coreEndRawPointId
   ]);
@@ -4610,6 +4620,7 @@ function scenarioPriority(name) {
     case 'enclosed_loop_cluster_settlement': return 25;
     case 'enclosed_gap_cluster': return 26;
     case 'position_snap_recovery': return 28;
+    case 'moving_spike_cleanup': return 29;
     case 'same_road_round_trip': return 30;
     case 'closed_loop_round_trip': return 32;
     case 'round_trip_line': return 35;
@@ -4877,6 +4888,8 @@ function scenarioExplanationSummary(scenario) {
       return 'GAP 后恢复点作为边界重置，距离和运动时间为零。';
     case 'transport_contamination':
       return '疑似交通工具或高速污染被排除在徒步真值之外。';
+    case 'moving_spike_cleanup':
+      return '连续移动中的单个低速侧向尖刺被移除，由前后可信移动点桥接。';
     default:
       return `${scenario.scenario} 场景解释`;
   }

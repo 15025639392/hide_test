@@ -57,18 +57,18 @@ const DECISION_REASON_EXPLANATIONS = {
   },
   stationary_anchor: {
     title: '静止点云 anchor',
-    meaning: '静止点云稳定且有近期 device_motion_window 低运动证据后，输出零 delta anchor，用作可信静止位置。',
-    evidence: '重点看 cloudWeightedRadiusMeters、cloudSampleCount、device_motion_window 和 representativeRawPointId。'
+    meaning: '定位点已经稳定在一小片区域，手机运动线索也显示基本没动，因此保留一个代表位置。',
+    evidence: '重点看点云半径、样本数、代表 Raw 点，以及手机是否基本静止。'
   },
   stationary_cloud_jitter: {
     title: '静止点云漂移',
-    meaning: '点位接近静止区域，但没有足够 still-motion 支持成为 anchor；不累计距离，也不单独触发 PAUSED。',
-    evidence: '重点看点云半径、accuracy、device_motion_window 和距上一可信 TrackPoint 的距离，慢速移动也可能落在这里。'
+    meaning: '定位点看起来在停留区附近漂，但手机运动线索还不足以确认它代表稳定停留点。',
+    evidence: '重点看点云半径、定位精度、距上一清洗点距离，以及手机是否真的没动。'
   },
   stationary_continuity_jitter: {
     title: '静止连续漂移',
     meaning: '该点与上一可信点连续性看似合理，但处于静止点云范围且缺少真实移动支撑，因此按静止漂移剔除。',
-    evidence: '重点看距上一可信点距离、时间差、推算速度、stationaryThreshold 和近期 motion 是否仍然静止。'
+    evidence: '重点看距上一可信点距离、时间差、推算速度，以及手机是否仍然接近静止。'
   },
   stationary_anchor_redundant: {
     title: '重复静止 anchor',
@@ -81,9 +81,9 @@ const DECISION_REASON_EXPLANATIONS = {
     evidence: '重点看 GAP 后恢复点与 active stationary anchor 的距离、accuracy 和 sampling_policy 状态。'
   },
   stationary_session_anchor: {
-    title: '整段静止压缩',
-    meaning: '整段 motion 几乎全静止且静止 anchor 占主导，Web 将成品轨迹压缩为一个稳定中心点。',
-    evidence: '重点看 stationarySessionStillRatio、stationarySessionAnchorRatio，以及气压垂直运动是否阻止压缩。'
+    title: '整段基本没动',
+    meaning: '整段记录更像停在原地，Web 将成品轨迹压成一个稳定中心点。',
+    evidence: '重点看静止比例、静止代表点比例，以及气压垂直运动是否说明用户其实在移动。'
   },
   isolated_stationary_movement: {
     title: '孤立静止移动点',
@@ -91,9 +91,9 @@ const DECISION_REASON_EXPLANATIONS = {
     evidence: '重点看该点与下一 stationary_anchor 的距离，以及前后是否存在持续移动证据。'
   },
   motion_supported_low_speed: {
-    title: '运动支持低速点',
-    meaning: 'GPS 位移较小但近期 motion 显示设备在动，作为低速真实移动保留进成品轨迹。',
-    evidence: '重点看 device_motion_window、raw 位移、时间差、速度区间和是否随后形成连续移动。'
+    title: '手机在动的低速点',
+    meaning: 'GPS 位移不大，但手机运动线索显示设备在动，因此先按真实低速移动保留。',
+    evidence: '重点看原始位移、时间差、速度区间、后续是否连续，以及手机是否确实在动。'
   },
   stationary_low_speed_tail: {
     title: '静止低速尾巴',
@@ -530,7 +530,7 @@ function buildPointInsights(point) {
     if (motion) {
       insights.push({
         level: 'info',
-        text: `附近 device_motion_window accelRms=${formatOneDecimal(deviceMotionAccelRms(motion))}，gyroRms=${formatOneDecimal(numericField(motion, 'gyroscopeRmsRadps'))}。`
+        text: `附近手机运动线索：晃动 ${formatOneDecimal(deviceMotionAccelRms(motion))}，旋转 ${formatOneDecimal(numericField(motion, 'gyroscopeRmsRadps'))}。`
       });
     }
   }

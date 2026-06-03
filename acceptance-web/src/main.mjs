@@ -14,17 +14,18 @@ import {
 } from './scenarioPolygons.mjs';
 import {
   DEFAULT_SCENARIO_REPAIR_IDS,
-  SCENARIO_REPAIR_OPTIONS,
-  enabledScenarioRepairIds,
   fullScenarioRepairConfig,
-  scenarioRepairConfigFromIds,
-  scenarioRepairSummary
+  scenarioRepairOption,
 } from './scenarioRepairConfig.mjs';
 
 const COLORS = ['#2dd4bf', '#fb7185', '#facc15', '#60a5fa', '#c084fc', '#34d399', '#f97316', '#e879f9'];
 const MAP_LINE_POINT_LIMIT = 6000;
 const MAP_RAW_POINT_LIMIT = 7000;
 const MAP_TRACK_POINT_LIMIT = 5000;
+const REVIEW_PLACE_CLUSTER_RADIUS_METERS = 80;
+const REVIEW_PLACE_CONTEXT_RADIUS_METERS = 160;
+const REVIEW_PLACE_RAW_GAP = 80;
+const REVIEW_EPISODE_POLYGON_GAP_METERS = 24;
 const TERRAIN_EXAGGERATION = 1.15;
 const TERRAIN_TILEJSON_URL = 'https://tiles.mapterhorn.com/tilejson.json';
 const TERRAIN_TILE_TEMPLATE = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
@@ -50,10 +51,9 @@ const state = {
   selectedDatasetId: null,
   selectedPoint: null,
   scenarioReviewRangeText: '',
-  enabledScenarioRepairIds: [...DEFAULT_SCENARIO_REPAIR_IDS],
-  lastScenarioRepairImpact: null,
-  scenarioRepairApplyGeneration: 0,
-  selectedContour: null,
+  reviewFocusMode: false,
+  focusedMapRange: null,
+  currentProblemDrag: null,
   map: null,
   mapLoaded: false,
   contoursAvailable: false,
@@ -62,6 +62,7 @@ const state = {
 };
 
 const elements = {
+  workspace: document.querySelector('.workspace'),
   folderInput: document.querySelector('#folderInput'),
   fileInput: document.querySelector('#fileInput'),
   fitBoundsButton: document.querySelector('#fitBoundsButton'),
@@ -72,16 +73,14 @@ const elements = {
   showScenarios: document.querySelector('#showScenarios'),
   showTerrain: document.querySelector('#showTerrain'),
   showContours: document.querySelector('#showContours'),
-  contourDataPanel: document.querySelector('#contourDataPanel'),
-  contourDataStatus: document.querySelector('#contourDataStatus'),
-  contourDataSelected: document.querySelector('#contourDataSelected'),
-  scenarioRepairSummary: document.querySelector('#scenarioRepairSummary'),
-  scenarioRepairOptions: document.querySelector('#scenarioRepairOptions'),
   showDirection: document.querySelector('#showDirection'),
   showCleanedPoints: document.querySelector('#showCleanedPoints'),
   showPoints: document.querySelector('#showPoints'),
+  reviewDatasetState: document.querySelector('#reviewDatasetState'),
+  reviewDatasetOverview: document.querySelector('#reviewDatasetOverview'),
   cleaningAlgorithm: document.querySelector('#cleaningAlgorithm'),
   cleaningConfigState: document.querySelector('#cleaningConfigState'),
+  currentProblemPanel: document.querySelector('#currentProblemPanel'),
   importStatus: document.querySelector('#importStatus'),
   importSpinner: document.querySelector('#importSpinner'),
   importText: document.querySelector('#importText'),
@@ -89,6 +88,7 @@ const elements = {
   scenarioRangeReviewButton: document.querySelector('#scenarioRangeReviewButton'),
   scenarioRangeState: document.querySelector('#scenarioRangeState'),
   scenarioRangeReview: document.querySelector('#scenarioRangeReview'),
+  exitFocusButton: document.querySelector('#exitFocusButton'),
   selectedPointText: document.querySelector('#selectedPointText'),
   pointDetails: document.querySelector('#pointDetails'),
   mapView: document.querySelector('#mapView')
@@ -103,14 +103,17 @@ elements.fileInput.addEventListener('change', async (event) => {
 elements.clearButton.addEventListener('click', clearAll);
 elements.fitBoundsButton.addEventListener('click', fitAllBounds);
 elements.scenarioRangeReviewButton.addEventListener('click', applyScenarioRangeReview);
+elements.exitFocusButton.addEventListener('click', exitReviewFocusMode);
+elements.currentProblemPanel.querySelector('.panel-title')
+  .addEventListener('pointerdown', startCurrentProblemDrag);
 elements.scenarioRangeInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') applyScenarioRangeReview();
 });
+elements.reviewDatasetOverview.addEventListener('click', handleReviewDatasetClick);
 elements.scenarioRangeReview.addEventListener('click', handleScenarioRangeReviewClick);
 elements.cleaningAlgorithm.addEventListener('click', handleScenarioRangeReviewClick);
 elements.showTerrain.addEventListener('change', renderTerrain);
 elements.showContours.addEventListener('change', renderContours);
-elements.scenarioRepairOptions.addEventListener('change', handleScenarioRepairChange);
 for (const input of [
   elements.showRaw,
   elements.showTrusted,
@@ -164,7 +167,7 @@ async function importFiles(files, fromDirectory) {
 
 async function readEvidenceFile(file, index) {
   const filePath = file.webkitRelativePath || file.name;
-  const result = await readEvidenceFileInWorker(file, filePath, currentCleaningConfig(),
+  const result = await readEvidenceFileInWorker(file, filePath, fullScenarioConfig(),
     fullScenarioConfig());
   return finalizeDataset({
     ...result,
@@ -272,69 +275,8 @@ function attachDatasetIndexes(dataset) {
   dataset.mapRender = buildMapRenderIndexes(dataset);
 }
 
-function currentCleaningConfig() {
-  return scenarioRepairConfigFromIds(state.enabledScenarioRepairIds);
-}
-
 function fullScenarioConfig() {
   return fullScenarioRepairConfig();
-}
-
-function rebuildDatasetWithCleaningConfig(dataset, config) {
-  const targetProduct = buildSixLayerTrackProduct(dataset.model, { config });
-  dataset.targetProduct = targetProduct;
-  dataset.targetOutput = compactTargetOutput(buildTargetOutput(dataset.model, targetProduct));
-  attachDatasetIndexes(dataset);
-  return dataset;
-}
-
-async function rebuildDatasetWithCleaningConfigInWorker(dataset, config) {
-  if (!window.Worker) {
-    return rebuildDatasetWithCleaningConfig(dataset, config);
-  }
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('./importWorker.mjs', import.meta.url), { type: 'module' });
-    worker.onmessage = (event) => {
-      worker.terminate();
-      const message = event.data || {};
-      if (!message.ok) {
-        reject(new Error(message.error?.message || '后台重算失败'));
-        return;
-      }
-      resolve(finalizeRebuiltDataset(dataset, message.result));
-    };
-    worker.onerror = (event) => {
-      worker.terminate();
-      reject(new Error(event.message || '后台重算失败'));
-    };
-    worker.postMessage({
-      mode: 'rebuild',
-      fileName: dataset.fileName,
-      filePath: dataset.filePath,
-      model: dataset.model,
-      config
-    });
-  });
-}
-
-function finalizeRebuiltDataset(dataset, result) {
-  const nextDataset = {
-    ...dataset,
-    model: result.model || dataset.model,
-    scenarioProduct: dataset.scenarioProduct || result.scenarioProduct || result.targetProduct,
-    targetProduct: result.targetProduct,
-    targetOutput: result.targetOutput
-  };
-  attachDatasetIndexes(nextDataset);
-  return nextDataset;
-}
-
-function snapshotDatasetProduct(dataset) {
-  return {
-    id: dataset.id,
-    fileName: dataset.fileName,
-    targetProduct: dataset.targetProduct
-  };
 }
 
 function buildRawDecisionIndex(targetProduct) {
@@ -422,7 +364,8 @@ function clearAll() {
   state.selectedDatasetId = null;
   state.selectedPoint = null;
   state.scenarioReviewRangeText = '';
-  state.lastScenarioRepairImpact = null;
+  state.reviewFocusMode = false;
+  state.focusedMapRange = null;
   elements.folderInput.value = '';
   elements.fileInput.value = '';
   elements.scenarioRangeInput.value = '';
@@ -434,7 +377,14 @@ function clearAll() {
 
 function applyScenarioRangeReview() {
   state.scenarioReviewRangeText = elements.scenarioRangeInput.value.trim();
+  const parsed = parseScenarioRangeText(state.scenarioReviewRangeText);
+  state.reviewFocusMode = Boolean(parsed);
+  state.focusedMapRange = parsed
+    ? focusedMapRangeFromTrackRange(selectedDataset(), parsed.startTrackPointId,
+      parsed.endTrackPointId)
+    : null;
   renderScenarioRangeReview();
+  renderReviewFocusMode();
 }
 
 function setImportText(text) {
@@ -449,16 +399,11 @@ function setLoading(loading, text = null) {
     elements.fileInput,
     elements.fitBoundsButton,
     elements.clearButton,
-    elements.scenarioRepairSummary
-  ]) {
+  ].filter(Boolean)) {
     element.disabled = loading;
   }
   for (const label of document.querySelectorAll('.file-button')) {
     label.classList.toggle('disabled', loading);
-  }
-  for (const input of elements.scenarioRepairOptions
-    .querySelectorAll('input[type="checkbox"]')) {
-    input.disabled = loading;
   }
   if (text !== null) {
     setImportText(text);
@@ -470,99 +415,121 @@ function nextFrame() {
 }
 
 function render() {
-  renderScenarioRepairOptions();
+  renderReviewDatasetOverview();
   renderScenarioRangeReview();
   renderPointDetails();
   renderCleaningAlgorithm();
+  renderReviewFocusMode();
   renderMap();
 }
 
-function renderScenarioRepairOptions() {
-  state.enabledScenarioRepairIds = enabledScenarioRepairIds(state.enabledScenarioRepairIds);
-  const selectedIds = new Set(state.enabledScenarioRepairIds);
-  const summary = scenarioRepairSummary(state.enabledScenarioRepairIds);
-  elements.scenarioRepairSummary.textContent = `修复 ${summary}`;
-  if (elements.cleaningConfigState) {
-    elements.cleaningConfigState.textContent = summary;
+function renderReviewDatasetOverview() {
+  const dataset = selectedDataset();
+  if (!state.datasets.length) {
+    elements.reviewDatasetState.textContent = '等待导入';
+    elements.reviewDatasetOverview.innerHTML = '<p class="empty-note">等待 evidence.jsonl</p>';
+    return;
   }
-  elements.scenarioRepairOptions.innerHTML = SCENARIO_REPAIR_OPTIONS
-    .map((option) =>
-      scenarioRepairOptionMarkup(option.id, option.label, selectedIds.has(option.id), option.kind))
-    .join('');
+  const selectedIndex = Math.max(0, state.datasets.findIndex((item) =>
+    item.id === dataset?.id));
+  elements.reviewDatasetState.textContent =
+    `${selectedIndex + 1}/${state.datasets.length}`;
+  elements.reviewDatasetOverview.innerHTML = [
+    datasetSummaryMarkup(dataset),
+    state.datasets.length > 1 ? datasetSwitchMarkup() : ''
+  ].join('');
 }
 
-function scenarioRepairOptionMarkup(id, label, checked, kind) {
-  const kindLabel = kind === 'diagnostic' ? '标注' : '改线';
+function datasetSummaryMarkup(dataset) {
+  const stats = dataset?.targetProduct?.stats || {};
+  const scenarioCoverageCount = dataset?.scenarioProduct?.scenarioCoverage?.length || 0;
   return `
-    <label class="scenario-repair-option option-menu-option" data-repair-kind="${escapeHtml(kind)}">
-      <input
-        type="checkbox"
-        value="${escapeHtml(id)}"
-        ${checked ? 'checked' : ''}
-      />
-      <span>${escapeHtml(label)}<small>${escapeHtml(kindLabel)}</small></span>
-    </label>
+    <section class="summary-block review-current-dataset">
+      <h3>${escapeHtml(dataset?.fileName || '未选择样本')}</h3>
+      <div class="metric-grid">
+        ${metricCellMarkup('raw', formatPlainNumber(dataset?.model?.summary?.rawCount || 0))}
+        ${metricCellMarkup('清洗点', formatPlainNumber(stats.trustedPointCount || 0))}
+        ${metricCellMarkup('问题区间', formatPlainNumber(scenarioCoverageCount))}
+        ${metricCellMarkup('运动里程', formatMeters(stats.totalDistanceMeters))}
+        ${metricCellMarkup('运动耗时', formatDuration(stats.movingTimeSeconds))}
+        ${metricCellMarkup('累计爬升', formatAscent(stats.selectedTotalAscentMeters))}
+      </div>
+      <span>${escapeHtml(dataset?.filePath || '-')}</span>
+    </section>
   `;
 }
 
-async function handleScenarioRepairChange(event) {
-  const input = event.target.closest('input[type="checkbox"]');
-  if (!input) return;
-  state.enabledScenarioRepairIds = Array.from(elements.scenarioRepairOptions
-    .querySelectorAll('input[type="checkbox"]:checked'))
-    .map((checkbox) => checkbox.value);
-  await applyScenarioRepairConfig();
+function metricCellMarkup(label, value) {
+  return `
+    <span class="metric-cell">
+      <b>${escapeHtml(value)}</b>
+      <small>${escapeHtml(label)}</small>
+    </span>
+  `;
 }
 
-async function applyScenarioRepairConfig() {
-  state.enabledScenarioRepairIds = enabledScenarioRepairIds(state.enabledScenarioRepairIds);
-  if (state.datasets.length === 0) {
-    state.lastScenarioRepairImpact = null;
-    render();
-    return;
-  }
-  const generation = ++state.scenarioRepairApplyGeneration;
-  const config = currentCleaningConfig();
-  const summary = scenarioRepairSummary(state.enabledScenarioRepairIds);
-  setLoading(true, `正在应用情景修复：${summary}`);
-  await nextFrame();
-  try {
-    const beforeDatasets = state.datasets.map(snapshotDatasetProduct);
-    const nextDatasets = [];
-    for (let index = 0; index < state.datasets.length; index++) {
-      if (generation !== state.scenarioRepairApplyGeneration) return;
-      const dataset = state.datasets[index];
-      setLoading(true,
-        `正在应用情景修复：${summary} (${index + 1}/${state.datasets.length})`);
-      nextDatasets.push(await rebuildDatasetWithCleaningConfigInWorker(dataset, config));
-      await nextFrame();
-    }
-    if (generation !== state.scenarioRepairApplyGeneration) return;
-    state.datasets = nextDatasets;
-    state.lastScenarioRepairImpact = summarizeScenarioRepairImpact(beforeDatasets,
-      state.datasets, summary);
-    state.selectedPoint = null;
-    setImportText(scenarioRepairImpactMessage(state.lastScenarioRepairImpact));
-    render();
-  } finally {
-    if (generation === state.scenarioRepairApplyGeneration) {
-      setLoading(false);
-    }
-  }
+function datasetSwitchMarkup() {
+  return `
+    <section class="summary-block dataset-switcher">
+      <h3>样本列表</h3>
+      <div class="dataset-switcher-list">
+        ${state.datasets.map((dataset, index) => datasetSwitchButtonMarkup(dataset, index)).join('')}
+      </div>
+    </section>
+  `;
+}
+
+function datasetSwitchButtonMarkup(dataset, index) {
+  const selected = dataset.id === state.selectedDatasetId;
+  const stats = dataset.targetProduct?.stats || {};
+  const scenarioCoverageCount = dataset.scenarioProduct?.scenarioCoverage?.length || 0;
+  return `
+    <button
+      class="dataset-switch-button ${selected ? 'selected' : ''}"
+      type="button"
+      data-dataset-id="${escapeHtml(dataset.id)}"
+    >
+      <span class="dataset-switch-title">
+        <b>${escapeHtml(`${index + 1}. ${dataset.fileName}`)}</b>
+        <small>${escapeHtml(`${formatPlainNumber(scenarioCoverageCount)} 个问题区间`)}</small>
+      </span>
+      <span class="dataset-switch-metrics">
+        ${escapeHtml(formatMeters(stats.totalDistanceMeters))}
+        · ${escapeHtml(formatDuration(stats.movingTimeSeconds))}
+      </span>
+    </button>
+  `;
+}
+
+function handleReviewDatasetClick(event) {
+  const button = event.target.closest('[data-dataset-id]');
+  if (!button) return;
+  const dataset = state.datasets.find((item) => item.id === button.dataset.datasetId);
+  if (!dataset) return;
+  state.selectedDatasetId = dataset.id;
+  state.selectedPoint = null;
+  state.scenarioReviewRangeText = '';
+  state.reviewFocusMode = false;
+  state.focusedMapRange = null;
+  elements.scenarioRangeInput.value = '';
+  if (state.popup) state.popup.remove();
+  render();
+  focusDataset(dataset);
 }
 
 function renderScenarioRangeReview() {
   const dataset = selectedDataset();
   const rangeText = state.scenarioReviewRangeText;
+  elements.workspace.classList.toggle('problem-active', Boolean(rangeText));
   elements.scenarioRangeState.textContent = rangeText || '-';
   if (!dataset) {
     elements.scenarioRangeReview.innerHTML =
-      '<p class="empty-note">导入 evidence.jsonl 后复核清洗点区间</p>';
+      '<p class="empty-note">等待 evidence.jsonl</p>';
     return;
   }
   if (!rangeText) {
     elements.scenarioRangeReview.innerHTML =
-      '<p class="empty-note">清洗点范围格式示例：1836-1919</p>';
+      '<p class="empty-note">从复核任务中选择一个区间</p>';
     return;
   }
   const parsed = parseScenarioRangeText(rangeText);
@@ -573,10 +540,9 @@ function renderScenarioRangeReview() {
   }
   const review = reviewTrackPointScenarioCoverage(dataset.targetProduct,
     parsed.startTrackPointId, parsed.endTrackPointId);
-  review.denseIntentConflicts = denseIntentConflictsForRawRange(dataset, review.rawRange);
   elements.scenarioRangeState.textContent =
     `#${review.requestedTrackPointRange.startTrackPointId}-${review.requestedTrackPointRange.endTrackPointId}`;
-  elements.scenarioRangeReview.innerHTML = scenarioRangeReviewMarkup(review);
+  elements.scenarioRangeReview.innerHTML = scenarioRangeReviewMarkup(review, dataset);
 }
 
 function parseScenarioRangeText(text) {
@@ -597,33 +563,27 @@ function parseScenarioRangeText(text) {
   return null;
 }
 
-function scenarioRangeReviewMarkup(review) {
+function scenarioRangeReviewMarkup(review, dataset = null) {
   if (!review.valid) {
     return '<p class="empty-note">清洗点范围无效</p>';
   }
-  const overviewRows = [
+  const rangeRows = [
     `清洗点 ${review.requestedTrackPointRange.startTrackPointId}-${review.requestedTrackPointRange.endTrackPointId}`,
     `点数 ${review.trackPointCount}`,
     formatScenarioRawRange(review.rawRange),
-    `主解释 ${formatScenarioNames(review.primaryScenarios)}`,
-    `关联情景 ${formatScenarioNames(review.contextScenarios)}`
+    `情景 ${formatReviewerScenarioNames(review.primaryScenarios)}`
   ];
-  const hitMarkup = review.scenarioCoverage.length > 0
-    ? scenarioHitListMarkup(review.scenarioCoverage, true)
-    : '<p class="empty-note">该清洗点区间没有命中稳定情景</p>';
-  const conflictMarkup = review.denseIntentConflicts?.length > 0
-    ? denseIntentConflictListMarkup(review.denseIntentConflicts)
-    : '<p class="empty-note">该清洗点区间没有 dense intent conflict</p>';
+  const visibleCoverage = reviewerVisibleScenarioCoverage(review.scenarioCoverage);
+  const hitMarkup = visibleCoverage.length > 0
+    ? scenarioReasonListMarkup(visibleCoverage, true)
+    : '<p class="empty-note">这个区间没有稳定依据</p>';
   return [
-    summaryBlock('区间概览', overviewRows),
+    scenarioLineTreatmentMarkup(review, dataset, visibleCoverage),
     `<section class="summary-block scenario-hit-block">
-      <h3>命中情景</h3>
+      <h3>为什么这么处理</h3>
       ${hitMarkup}
     </section>`,
-    `<section class="summary-block scenario-hit-block">
-      <h3>密集区冲突</h3>
-      ${conflictMarkup}
-    </section>`
+    summaryBlock('范围', rangeRows)
   ].join('');
 }
 
@@ -653,22 +613,17 @@ function denseIntentConflictListMarkup(conflicts) {
 }
 
 function denseIntentConflictOverviewMarkup(dataset) {
-  const conflicts = dataset?.targetOutput?.denseIntentConflicts || [];
   const forwardSpineConflicts = dataset?.targetOutput?.forwardSpineConflicts || [];
   const blocks = [];
-  if (conflicts.length > 0) {
-    blocks.push(denseIntentConflictListMarkup(conflicts.slice(0, 12)));
-  }
   if (forwardSpineConflicts.length > 0) {
     blocks.push(forwardSpineConflictListMarkup(forwardSpineConflicts.slice(0, 12)));
   }
   return blocks.length > 0
     ? blocks.join('')
-    : '<span>当前没有密集区主意图冲突</span>';
+    : '<span>当前没有候选冲突</span>';
 }
 
 function denseIntentConflictMarkup(conflict) {
-  const intentText = humanDenseIntentList(conflict.denseAreaIntents);
   const scenarioText = scenarioNameLabel(conflict.scenario);
   const handlingText = humanConflictResolution(conflict.resolution);
   return `
@@ -683,11 +638,10 @@ function denseIntentConflictMarkup(conflict) {
         <span>${escapeHtml(handlingText)}</span>
       </div>
       <div class="scenario-hit-meta">
-        <span>粗判 ${escapeHtml(intentText)}</span>
         <span>局部 ${escapeHtml(scenarioText)}</span>
         <span>点击定位地图</span>
       </div>
-      <p>${escapeHtml(`这段密集点云整体像在前进，但局部轨迹更像拍照/休息时的小范围挪动，所以按局部休息微移动处理。`)}</p>
+      <p>${escapeHtml('这段是地图上需要优先复核的局部冲突，点击后对照原始轨迹线、清洗线和情景范围面。')}</p>
       <div class="conflict-evidence">
         <span>路径 ${escapeHtml(formatMeters(conflict.pathMeters))}</span>
         <span>首尾净距 ${escapeHtml(formatMeters(conflict.netDistanceMeters))}</span>
@@ -697,17 +651,6 @@ function denseIntentConflictMarkup(conflict) {
       <p class="scenario-hit-action">${escapeHtml(humanConflictAction(conflict))}</p>
     </button>
   `;
-}
-
-function humanDenseIntentList(intents) {
-  if (!Array.isArray(intents) || intents.length === 0) return '-';
-  return intents.map((intent) => ({
-    forward_motion: '主前进',
-    stationary: '停留',
-    round_trip: '往返',
-    gap_cluster: '遮挡/GAP 聚集',
-    mixed: '混合'
-  })[intent] || intent).join('、');
 }
 
 function humanConflictResolution(resolution) {
@@ -810,11 +753,48 @@ function humanForwardSpineConflictSummary(conflict) {
 }
 
 function handleScenarioRangeReviewClick(event) {
+  const scenarioButton = event.target.closest('[data-scenario-start-track][data-scenario-end-track]');
+  if (scenarioButton) {
+    const startTrackPointId = Number(scenarioButton.dataset.scenarioStartTrack);
+    const endTrackPointId = Number(scenarioButton.dataset.scenarioEndTrack);
+    const startRawPointId = Number(scenarioButton.dataset.scenarioStartRaw);
+    const endRawPointId = Number(scenarioButton.dataset.scenarioEndRaw);
+    focusScenarioCoverage(startTrackPointId, endTrackPointId, startRawPointId,
+      endRawPointId);
+    return;
+  }
   const button = event.target.closest('[data-conflict-start-raw][data-conflict-end-raw]');
   if (!button) return;
   const startRawPointId = Number(button.dataset.conflictStartRaw);
   const endRawPointId = Number(button.dataset.conflictEndRaw);
   focusDenseIntentConflict(startRawPointId, endRawPointId);
+}
+
+function focusScenarioCoverage(startTrackPointId, endTrackPointId, startRawPointId,
+  endRawPointId) {
+  const dataset = selectedDataset();
+  if (!dataset || !Number.isFinite(startTrackPointId) || !Number.isFinite(endTrackPointId)) {
+    return;
+  }
+  const trackStart = Math.min(startTrackPointId, endTrackPointId);
+  const trackEnd = Math.max(startTrackPointId, endTrackPointId);
+  state.scenarioReviewRangeText = `${trackStart}-${trackEnd}`;
+  state.reviewFocusMode = true;
+  state.focusedMapRange = focusedMapRangeFromRanges(dataset, trackStart, trackEnd,
+    startRawPointId, endRawPointId);
+  elements.scenarioRangeInput.value = state.scenarioReviewRangeText;
+  renderScenarioRangeReview();
+  renderReviewFocusMode();
+  const rawRange = Number.isFinite(startRawPointId) && Number.isFinite(endRawPointId)
+    ? {
+      startRawPointId: Math.min(startRawPointId, endRawPointId),
+      endRawPointId: Math.max(startRawPointId, endRawPointId)
+    }
+    : null;
+  const bounds = rawRange
+    ? rawRangeBounds(dataset, rawRange)
+    : trackPointRangeBounds(dataset, trackStart, trackEnd);
+  if (bounds) fitBounds(bounds);
 }
 
 function focusDenseIntentConflict(startRawPointId, endRawPointId, datasetId = null) {
@@ -830,14 +810,185 @@ function focusDenseIntentConflict(startRawPointId, endRawPointId, datasetId = nu
     endRawPointId: Math.max(startRawPointId, endRawPointId)
   };
   const trackRange = trackPointRangeTouchingRawRange(dataset, rawRange);
+  state.reviewFocusMode = true;
+  state.focusedMapRange = {
+    datasetId: dataset.id,
+    trackRange,
+    rawRange
+  };
   if (trackRange) {
     state.scenarioReviewRangeText =
       `${trackRange.startTrackPointId}-${trackRange.endTrackPointId}`;
     elements.scenarioRangeInput.value = state.scenarioReviewRangeText;
     renderScenarioRangeReview();
   }
+  renderReviewFocusMode();
   const bounds = rawRangeBounds(dataset, rawRange);
   if (bounds) fitBounds(bounds);
+}
+
+function exitReviewFocusMode() {
+  state.reviewFocusMode = false;
+  state.focusedMapRange = null;
+  renderReviewFocusMode();
+}
+
+function renderReviewFocusMode() {
+  elements.workspace.classList.toggle('focus-mode', state.reviewFocusMode);
+  elements.exitFocusButton.hidden = !state.reviewFocusMode;
+  renderFocusMapControls();
+  renderTerrain();
+  renderContours();
+  renderMap();
+}
+
+function startCurrentProblemDrag(event) {
+  if (event.button !== 0 || event.target.closest('button')) return;
+  const panel = elements.currentProblemPanel;
+  const mapArea = panel.closest('.map-area');
+  const panelRect = panel.getBoundingClientRect();
+  const areaRect = mapArea.getBoundingClientRect();
+  state.currentProblemDrag = {
+    pointerId: event.pointerId,
+    offsetX: event.clientX - panelRect.left,
+    offsetY: event.clientY - panelRect.top,
+    areaLeft: areaRect.left,
+    areaTop: areaRect.top,
+    areaWidth: areaRect.width,
+    areaHeight: areaRect.height
+  };
+  panel.classList.add('dragging');
+  panel.setPointerCapture(event.pointerId);
+  panel.addEventListener('pointermove', dragCurrentProblemPanel);
+  panel.addEventListener('pointerup', stopCurrentProblemDrag);
+  panel.addEventListener('pointercancel', stopCurrentProblemDrag);
+  event.preventDefault();
+}
+
+function dragCurrentProblemPanel(event) {
+  const drag = state.currentProblemDrag;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  const panel = elements.currentProblemPanel;
+  const maxLeft = Math.max(16, drag.areaWidth - panel.offsetWidth - 16);
+  const maxTop = Math.max(16, drag.areaHeight - panel.offsetHeight - 16);
+  const left = clamp(event.clientX - drag.areaLeft - drag.offsetX, 16, maxLeft);
+  const top = clamp(event.clientY - drag.areaTop - drag.offsetY, 16, maxTop);
+  panel.style.left = `${left}px`;
+  panel.style.top = `${top}px`;
+}
+
+function stopCurrentProblemDrag(event) {
+  const drag = state.currentProblemDrag;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  const panel = elements.currentProblemPanel;
+  state.currentProblemDrag = null;
+  panel.classList.remove('dragging');
+  panel.releasePointerCapture(event.pointerId);
+  panel.removeEventListener('pointermove', dragCurrentProblemPanel);
+  panel.removeEventListener('pointerup', stopCurrentProblemDrag);
+  panel.removeEventListener('pointercancel', stopCurrentProblemDrag);
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function renderFocusMapControls() {
+  for (const input of focusHiddenMapInputs()) {
+    input.disabled = state.reviewFocusMode;
+    const toggle = input.closest('.toggle');
+    if (toggle) {
+      toggle.classList.toggle('focus-hidden-map-control', state.reviewFocusMode);
+      toggle.title = state.reviewFocusMode ? '专注模式下临时隐藏，退出后恢复' : '';
+    }
+  }
+  renderContourControlState();
+}
+
+function focusHiddenMapInputs() {
+  return [
+    elements.showDirection,
+    elements.showCleanedPoints,
+    elements.showPoints,
+    elements.showTerrain,
+    elements.showContours,
+    elements.showTrusted
+  ].filter(Boolean);
+}
+
+function mapElementVisible(input, { hideInFocus = false } = {}) {
+  if (!input?.checked) return false;
+  return !(state.reviewFocusMode && hideInFocus);
+}
+
+function rawLineVisible() {
+  return state.reviewFocusMode || mapElementVisible(elements.showRaw);
+}
+
+function focusedMapRangeFromRanges(dataset, startTrackPointId, endTrackPointId,
+  startRawPointId, endRawPointId) {
+  if (!dataset) return null;
+  const trackRange = Number.isFinite(startTrackPointId) && Number.isFinite(endTrackPointId)
+    ? {
+      startTrackPointId: Math.min(startTrackPointId, endTrackPointId),
+      endTrackPointId: Math.max(startTrackPointId, endTrackPointId)
+    }
+    : null;
+  const rawRange = Number.isFinite(startRawPointId) && Number.isFinite(endRawPointId)
+    ? {
+      startRawPointId: Math.min(startRawPointId, endRawPointId),
+      endRawPointId: Math.max(startRawPointId, endRawPointId)
+    }
+    : rawRangeForTrackRange(dataset, trackRange);
+  return { datasetId: dataset.id, trackRange, rawRange };
+}
+
+function focusedMapRangeFromTrackRange(dataset, startTrackPointId, endTrackPointId) {
+  return focusedMapRangeFromRanges(dataset, startTrackPointId, endTrackPointId, NaN, NaN);
+}
+
+function rawRangeForTrackRange(dataset, trackRange) {
+  if (!dataset || !trackRange) return null;
+  const rawIds = [];
+  for (const point of dataset.targetProduct?.track || []) {
+    if (point.trackPointId < trackRange.startTrackPointId
+        || point.trackPointId > trackRange.endTrackPointId) {
+      continue;
+    }
+    if (Number.isFinite(point.sourceRawPointId)) rawIds.push(point.sourceRawPointId);
+    rawIds.push(...(point.contributingRawPointIds || []).filter(Number.isFinite));
+  }
+  if (rawIds.length === 0) return null;
+  return {
+    startRawPointId: Math.min(...rawIds),
+    endRawPointId: Math.max(...rawIds)
+  };
+}
+
+function focusedMapDatasets(datasets) {
+  const focus = state.reviewFocusMode ? state.focusedMapRange : null;
+  if (!focus?.datasetId) return datasets;
+  return datasets.filter((dataset) => dataset.id === focus.datasetId);
+}
+
+function inFocusedTrackRange(dataset, point) {
+  const focus = state.reviewFocusMode ? state.focusedMapRange : null;
+  if (!focus?.trackRange || dataset.id !== focus.datasetId) return true;
+  return point.trackPointId >= focus.trackRange.startTrackPointId
+    && point.trackPointId <= focus.trackRange.endTrackPointId;
+}
+
+function inFocusedRawRange(dataset, point) {
+  const focus = state.reviewFocusMode ? state.focusedMapRange : null;
+  if (!focus?.rawRange || dataset.id !== focus.datasetId) return true;
+  return point.rawPointId >= focus.rawRange.startRawPointId
+    && point.rawPointId <= focus.rawRange.endRawPointId;
+}
+
+function rawRangeOverlapsFocus(dataset, rawRange) {
+  const focus = state.reviewFocusMode ? state.focusedMapRange : null;
+  if (!focus?.rawRange || dataset.id !== focus.datasetId) return true;
+  return rawRangesOverlap(rawRange, focus.rawRange);
 }
 
 function trackPointRangeTouchingRawRange(dataset, rawRange) {
@@ -868,6 +1019,15 @@ function rawRangeBounds(dataset, rawRange) {
   return boundsForPoints(points);
 }
 
+function trackPointRangeBounds(dataset, startTrackPointId, endTrackPointId) {
+  const points = (dataset.targetProduct?.track || [])
+    .filter((point) =>
+      point.trackPointId >= startTrackPointId
+      && point.trackPointId <= endTrackPointId
+      && hasValidLngLat(point));
+  return boundsForPoints(points);
+}
+
 function boundsForPoints(points) {
   if (!points.length) return null;
   return points.reduce((bounds, point) => ({
@@ -883,25 +1043,58 @@ function boundsForPoints(points) {
   });
 }
 
-function scenarioHitListMarkup(items, useMatchedRange = false, limit = Infinity) {
+function scenarioHitListMarkup(items, useMatchedRange = false, limit = Infinity,
+  actionable = false, dataset = null) {
   return `
     <div class="scenario-hit-list">
-      ${items.slice(0, limit).map((item) => scenarioHitMarkup(item, useMatchedRange)).join('')}
+      ${items.slice(0, limit).map((item) =>
+    scenarioHitMarkup(item, useMatchedRange, actionable, dataset)).join('')}
     </div>
   `;
 }
 
-function scenarioHitMarkup(item, useMatchedRange) {
+function scenarioReasonListMarkup(items, useMatchedRange = false, limit = Infinity) {
+  return `
+    <div class="scenario-hit-list">
+      ${items.slice(0, limit).map((item) => scenarioReasonMarkup(item, useMatchedRange)).join('')}
+    </div>
+  `;
+}
+
+function scenarioReasonMarkup(item, useMatchedRange) {
+  const trackRange = useMatchedRange
+    ? formatMatchedScenarioTrackCoverage(item)
+    : formatScenarioTrackCoverage(item);
+  return `
+    <article class="scenario-hit scenario-coverage-hit" data-review-kind="context">
+      <div class="scenario-hit-title">
+        <strong>${escapeHtml(item.scenarioLabel || scenarioNameLabel(item.scenario))}</strong>
+      </div>
+      <div class="scenario-hit-meta">
+        <span>${escapeHtml(trackRange)}</span>
+        <span>${escapeHtml(formatScenarioRawCoverage(item))}</span>
+      </div>
+      <p>${escapeHtml(item.summary || lineReasonForScenario(item.scenario))}</p>
+    </article>
+  `;
+}
+
+function scenarioHitMarkup(item, useMatchedRange, actionable = false, dataset = null) {
   const trackRange = useMatchedRange
     ? formatMatchedScenarioTrackCoverage(item)
     : formatScenarioTrackCoverage(item);
   const action = item.actionLabel || item.action || '-';
   const rebuild = item.localRebuildLabel || item.localRebuild || '-';
+  const reviewLevel = scenarioReviewLevel(item, dataset);
+  const actionAttributes = actionable
+    ? scenarioCoverageActionAttributes(item, useMatchedRange)
+    : '';
+  const tagName = actionAttributes ? 'button' : 'article';
   return `
-    <article class="scenario-hit">
+    <${tagName} class="scenario-hit scenario-coverage-hit" data-review-kind="${escapeHtml(reviewLevel.kind)}" ${actionAttributes}>
       <div class="scenario-hit-title">
         <strong>${escapeHtml(item.scenarioLabel || item.scenario || '-')}</strong>
-        <span>${escapeHtml(`#${item.scenarioId} ${item.scenario || ''}`)}</span>
+        <span class="review-badge">${escapeHtml(reviewLevel.label)}</span>
       </div>
       <div class="scenario-hit-meta">
         <span>${escapeHtml(trackRange)}</span>
@@ -911,8 +1104,214 @@ function scenarioHitMarkup(item, useMatchedRange) {
       </div>
       <p>${escapeHtml(item.summary || '-')}</p>
       <p class="scenario-hit-action">${escapeHtml(action)}；${escapeHtml(rebuild)}</p>
-    </article>
+    </${tagName}>
   `;
+}
+
+function scenarioLineTreatmentMarkup(review, dataset, coverage) {
+  const rawRange = review.rawRange;
+  const rawPoints = rawRange && dataset
+    ? rawPointsInRange(dataset, rawRange).filter(hasValidLngLat)
+    : [];
+  const trackRange = review.requestedTrackPointRange;
+  const cleanedPoints = dataset
+    ? (dataset.targetProduct?.track || []).filter((point) =>
+      point.trackPointId >= trackRange.startTrackPointId
+      && point.trackPointId <= trackRange.endTrackPointId
+      && hasValidLngLat(point))
+    : [];
+  const rawPathMeters = pathMetersForPoints(rawPoints);
+  const cleanedPathMeters = pathMetersForPoints(cleanedPoints);
+  const pointChangeText = rawPoints.length > 0 && cleanedPoints.length > 0
+    ? `原始 ${formatPlainNumber(rawPoints.length)} 点 -> 清洗 ${formatPlainNumber(cleanedPoints.length)} 点`
+    : '原始线 -> 清洗线';
+  const scenarios = new Set((coverage || []).map((item) => item.scenario));
+  const treatment = lineTreatmentForScenarios(scenarios);
+  const rows = [
+    treatment.result,
+    treatment.review,
+    pointChangeText,
+    `原始段约 ${formatMeters(rawPathMeters)}；清洗段约 ${formatMeters(cleanedPathMeters)}`
+  ];
+  return summaryBlock('线处理结果', rows);
+}
+
+function lineTreatmentForScenarios(scenarios) {
+  if (scenarios.has('stationary_session_collapse')) {
+    return {
+      result: '把整段原地记录压成一个代表位置，避免原地抖动变成里程。',
+      review: '因为原始点长时间集中在同一区域，真实移动很少，散点更像定位抖动。'
+    };
+  }
+  if (scenarios.has('stationary_drift_collapse')) {
+    return {
+      result: '把停留时散开的漂移线压回停留点附近。',
+      review: '因为人基本停留在原地，但定位点向外发散，外圈折线不应算作真实行进。'
+    };
+  }
+  if (scenarios.has('enclosed_loop_cluster_settlement')
+      || scenarios.has('enclosed_gap_cluster')) {
+    return {
+      result: '原始轨迹线保留完整绕线；清洗成品线把遮挡后的低速回环压成锚点或短连接。',
+      review: '因为遮挡后原始线在小范围低速绕圈，重点是入口和出口能否接回真实路线。'
+    };
+  }
+  if (scenarios.has('position_snap_recovery')) {
+    return {
+      result: '把突然跳远再接回的线段重置为接回点，避免跳远距离进入清洗线。',
+      review: '因为中间点距离异常大，随后又回到路线附近，跳远段更像定位错误。'
+    };
+  }
+  if (scenarios.has('moving_spike_cleanup')) {
+    return {
+      result: '删除移动中的单点尖刺，用前后正常点连成短桥。',
+      review: '因为只有一个点偏离正常走向，前后点仍能形成连续路线。'
+    };
+  }
+  if (scenarios.has('same_road_round_trip')) {
+    return {
+      result: '把同一条路的来回两条线收成更稳定的中心线。',
+      review: '因为原始线表示同一路径的往返，保留两条抖动线会放大道路宽度和误差。'
+    };
+  }
+  if (scenarios.has('round_trip_line')) {
+    return {
+      result: '把过密的往返折线简化，减少重复抖动和细碎折返。',
+      review: '因为这段折线重复交织，但整体路线形状可以用更少点表达。'
+    };
+  }
+  if (scenarios.has('rest_photo_micro_move')) {
+    return {
+      result: '把休息或拍照时的小范围移动标成局部处理，必要时压成休息锚点。',
+      review: '因为原始线范围小、速度低，更像停留时拿手机移动或拍照。'
+    };
+  }
+  if (scenarios.has('weak_recovery_endpoint')) {
+    return {
+      result: '弱信号恢复处保留形状端点，让清洗线从合理位置接回。',
+      review: '因为弱信号结束后需要一个稳定端点承接前后路线，避免直接抹掉形状。'
+    };
+  }
+  if (scenarios.has('gap_recovery_boundary')) {
+    return {
+      result: '采样中断后重新接线，边界处不强行补不存在的运动。',
+      review: '因为中断期间缺少连续证据，不能把两个端点之间的距离直接当作真实走过。'
+    };
+  }
+  if (scenarios.has('transport_contamination')) {
+    return {
+      result: '把疑似交通工具移动排除在徒步清洗线之外。',
+      review: '因为速度或距离形态不符合徒步，纳入会污染徒步里程和配速。'
+    };
+  }
+  return {
+    result: '展示这段原始线经过情景处理后的清洗线形。',
+    review: '因为该区间触发了局部情景，需要用原始线和清洗线对照确认。'
+  };
+}
+
+function lineReasonForScenario(scenario) {
+  return lineTreatmentForScenarios(new Set([scenario])).review;
+}
+
+function pathMetersForPoints(points) {
+  if (!Array.isArray(points) || points.length < 2) return 0;
+  let meters = 0;
+  for (let index = 1; index < points.length; index++) {
+    meters += haversineMeters(points[index - 1], points[index]);
+  }
+  return meters;
+}
+
+function haversineMeters(left, right) {
+  if (!hasValidLngLat(left) || !hasValidLngLat(right)) return 0;
+  const radiusMeters = 6371000;
+  const lat1 = degreesToRadians(left.lat);
+  const lat2 = degreesToRadians(right.lat);
+  const deltaLat = degreesToRadians(right.lat - left.lat);
+  const deltaLng = degreesToRadians(right.lng - left.lng);
+  const a = Math.sin(deltaLat / 2) ** 2
+    + Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLng / 2) ** 2;
+  return 2 * radiusMeters * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function degreesToRadians(degrees) {
+  return degrees * Math.PI / 180;
+}
+
+function scenarioReviewLevel(item, dataset = null) {
+  if (scenarioCoverageHasConflict(item, dataset)) {
+    return { rank: 0, kind: 'conflict', label: '先看冲突' };
+  }
+  const optionKind = scenarioRepairOption(item?.scenario)?.kind || '';
+  if (optionKind === 'rewrite') {
+    return { rank: 1, kind: 'rewrite', label: '会改线' };
+  }
+  if (optionKind === 'hybrid') {
+    return { rank: 2, kind: 'hybrid', label: '标注/改线' };
+  }
+  if (isBoundaryOrRiskScenario(item?.scenario)) {
+    return { rank: 2, kind: 'risk', label: '风险边界' };
+  }
+  if (optionKind === 'diagnostic') {
+    return { rank: 3, kind: 'diagnostic', label: '解释标注' };
+  }
+  return { rank: 4, kind: 'context', label: '复合上下文' };
+}
+
+function scenarioCoverageHasConflict(item, dataset = null) {
+  const rawRange = item?.rawRange;
+  if (!dataset || !Number.isFinite(rawRange?.startRawPointId)
+      || !Number.isFinite(rawRange?.endRawPointId)) {
+    return false;
+  }
+  return [
+    ...(dataset.targetOutput?.forwardSpineConflicts || [])
+  ].some((conflict) => rawRangesOverlap(conflict.rawRange, rawRange));
+}
+
+function isBoundaryOrRiskScenario(scenario) {
+  return scenario === 'transport_contamination'
+    || scenario === 'gap_recovery_boundary'
+    || scenario === 'position_snap_recovery'
+    || scenario === 'moving_spike_cleanup';
+}
+
+function sortScenarioCoverageForReview(coverage, dataset) {
+  return (coverage || [])
+    .filter((item) => reviewerVisibleScenario(item?.scenario))
+    .map((item, index) => ({ item, index, level: scenarioReviewLevel(item, dataset) }))
+    .sort((left, right) =>
+      (left.item.rawRange?.startRawPointId ?? Infinity)
+        - (right.item.rawRange?.startRawPointId ?? Infinity)
+      || (left.item.trackPointRange?.startTrackPointId
+        ?? left.item.matchedTrackPointRange?.startTrackPointId
+        ?? Infinity)
+        - (right.item.trackPointRange?.startTrackPointId
+          ?? right.item.matchedTrackPointRange?.startTrackPointId
+          ?? Infinity)
+      || left.level.rank - right.level.rank
+      || left.index - right.index)
+    .map((entry) => entry.item);
+}
+
+function scenarioCoverageActionAttributes(item, useMatchedRange) {
+  const trackRange = useMatchedRange && item?.matchedTrackPointRange
+    ? item.matchedTrackPointRange
+    : item?.trackPointRange;
+  const rawRange = item?.rawRange;
+  const startTrack = trackRange?.startTrackPointId;
+  const endTrack = trackRange?.endTrackPointId;
+  const startRaw = rawRange?.startRawPointId;
+  const endRaw = rawRange?.endRawPointId;
+  if (!Number.isFinite(startTrack) || !Number.isFinite(endTrack)) return '';
+  return [
+    'type="button"',
+    `data-scenario-start-track="${escapeHtml(String(startTrack))}"`,
+    `data-scenario-end-track="${escapeHtml(String(endTrack))}"`,
+    `data-scenario-start-raw="${escapeHtml(String(Number.isFinite(startRaw) ? startRaw : ''))}"`,
+    `data-scenario-end-raw="${escapeHtml(String(Number.isFinite(endRaw) ? endRaw : ''))}"`
+  ].join(' ');
 }
 
 function formatScenarioNames(names) {
@@ -920,17 +1319,33 @@ function formatScenarioNames(names) {
   return names.map(scenarioNameLabel).join('、');
 }
 
+function formatReviewerScenarioNames(names) {
+  return formatScenarioNames((names || []).filter(reviewerVisibleScenario));
+}
+
+function reviewerVisibleScenarioCoverage(coverage) {
+  return (coverage || []).filter((item) => reviewerVisibleScenario(item?.scenario));
+}
+
+function reviewerVisibleScenario(scenario) {
+  return scenario !== 'dense_area_intent'
+    && scenario !== 'dense_main_route_settlement';
+}
+
 function scenarioNameLabel(name) {
   const labels = {
-    weak_recovery_endpoint: '弱信号端点保留',
-    same_road_round_trip: '同路往返交织',
-    closed_loop_round_trip: '闭合往返/回环',
-    round_trip_line: '往返线形',
-    enclosed_gap_cluster: '山洞/室内类遮挡聚集',
-    stationary_session_collapse: '整段静止压缩',
-    stationary_drift_collapse: '停留漂移压缩',
-    rest_photo_micro_move: '拍照/休息微移动',
-    gap_recovery_boundary: 'GAP 恢复边界',
+    weak_recovery_endpoint: '弱信号恢复点',
+    same_road_round_trip: '同路来回',
+    closed_loop_round_trip: '闭合来回标记',
+    round_trip_line: '来回路线太密',
+    enclosed_gap_cluster: '遮挡聚集标记',
+    enclosed_loop_cluster_settlement: '遮挡后绕线',
+    position_snap_recovery: '定位跳远后接回',
+    moving_spike_cleanup: '单点跳远',
+    stationary_session_collapse: '整段基本没动',
+    stationary_drift_collapse: '原地漂移',
+    rest_photo_micro_move: '休息/拍照小移动',
+    gap_recovery_boundary: '中断后恢复',
     transport_contamination: '交通工具混入'
   };
   return labels[name] || name || '-';
@@ -969,123 +1384,430 @@ function renderCleaningAlgorithm() {
 
 function algorithmBlock() {
   const dataset = selectedDataset();
+  const taskCount = reviewTaskCount(dataset);
+  if (elements.cleaningConfigState) {
+    elements.cleaningConfigState.textContent = dataset
+      ? `${formatPlainNumber(taskCount)} 个剧集`
+      : '等待导入';
+  }
   return `
     <section class="summary-block algorithm-block">
-      <h3>情景覆盖总览</h3>
-      <div class="algorithm-section">
-        <b>情景覆盖</b>
-        ${scenarioCoverageSummaryRows(dataset).map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
+      <h3>情景剧集</h3>
+      ${reviewTaskListMarkup(dataset)}
+    </section>
+  `;
+}
+
+function reviewTaskCount(dataset) {
+  return buildReviewPlaceGroups(dataset).length;
+}
+
+function reviewTaskListMarkup(dataset) {
+  const groups = buildReviewPlaceGroups(dataset);
+  if (!dataset) {
+    return '<span>导入 evidence.jsonl 后显示需要复核的问题</span>';
+  }
+  if (groups.length === 0) {
+    return '<span>当前样本没有需要优先复核的问题</span>';
+  }
+  return `
+    <div class="review-task-list">
+      ${groups.map((group, index) => reviewPlaceGroupMarkup(group, index, dataset)).join('')}
+    </div>
+  `;
+}
+
+function buildReviewPlaceGroups(dataset) {
+  const tasks = buildReviewTasks(dataset);
+  const groups = [];
+  for (const task of tasks) {
+    const center = taskCenterPoint(dataset, task);
+    const polygonBounds = taskScenarioPolygonBounds(dataset, task);
+    const group = groups.find((candidate) =>
+      reviewTaskBelongsToPlace(candidate, task, center, polygonBounds));
+    if (group) {
+      group.tasks.push(task);
+      group.center = averagePoint(group.center, center, group.tasks.length);
+      group.polygonBounds = mergeGeoBounds(group.polygonBounds, polygonBounds);
+      group.startRawPointId = Math.min(group.startRawPointId, task.startRawPointId);
+      group.endRawPointId = Math.max(group.endRawPointId, task.endRawPointId ?? task.startRawPointId);
+      group.placeKinds.add(reviewPlaceKind(task.item?.scenario));
+      continue;
+    }
+    groups.push({
+      center,
+      polygonBounds,
+      tasks: [task],
+      startRawPointId: task.startRawPointId,
+      endRawPointId: task.endRawPointId ?? task.startRawPointId,
+      placeKinds: new Set([reviewPlaceKind(task.item?.scenario)])
+    });
+  }
+  return groups.sort((left, right) =>
+    left.startRawPointId - right.startRawPointId
+    || left.tasks[0].title.localeCompare(right.tasks[0].title, 'zh-Hans-CN'));
+}
+
+function reviewTaskBelongsToPlace(group, task, center, polygonBounds) {
+  if (group.polygonBounds && polygonBounds) {
+    return geoBoundsTouch(group.polygonBounds, polygonBounds,
+      REVIEW_EPISODE_POLYGON_GAP_METERS);
+  }
+  const rawGap = rawRangeGap(group, task);
+  if (rawGap <= 0) return true;
+  const distance = group.center && center ? haversineMeters(group.center, center) : Infinity;
+  const kind = reviewPlaceKind(task.item?.scenario);
+  if (rawGap <= REVIEW_PLACE_RAW_GAP && distance <= REVIEW_PLACE_CONTEXT_RADIUS_METERS) return true;
+  if (kind === 'place' && group.placeKinds.has('place')
+      && distance <= REVIEW_PLACE_CONTEXT_RADIUS_METERS) {
+    return true;
+  }
+  if (reviewPlaceKindsComplement(group.placeKinds, kind)
+      && distance <= REVIEW_PLACE_CLUSTER_RADIUS_METERS) {
+    return true;
+  }
+  return distance <= REVIEW_PLACE_CLUSTER_RADIUS_METERS
+    && rawGap <= REVIEW_PLACE_RAW_GAP * 2;
+}
+
+function taskScenarioPolygonBounds(dataset, task) {
+  const rawRange = task.item?.rawRange;
+  const scenario = task.item?.scenario;
+  if (!dataset || !scenario || !Number.isFinite(rawRange?.startRawPointId)
+      || !Number.isFinite(rawRange?.endRawPointId)) {
+    return null;
+  }
+  const features = (dataset.scenarioPolygonFeatures || [])
+    .filter((feature) => {
+      if (feature.properties?.fallbackRegion === true) return false;
+      if (feature.properties?.scenario !== scenario) return false;
+      const featureRawRange = rawRangeFromText(feature.properties?.rawRange);
+      return featureRawRange ? rawRangesOverlap(featureRawRange, rawRange) : false;
+    });
+  return features.reduce((bounds, feature) =>
+    mergeGeoBounds(bounds, geoBoundsForFeature(feature)), null);
+}
+
+function geoBoundsForFeature(feature) {
+  const coordinates = feature?.geometry?.coordinates?.[0] || [];
+  const points = coordinates
+    .map(([lng, lat]) => ({ lng, lat }))
+    .filter(hasValidLngLat);
+  return boundsForPoints(points);
+}
+
+function mergeGeoBounds(left, right) {
+  if (!left) return right || null;
+  if (!right) return left;
+  return {
+    minLat: Math.min(left.minLat, right.minLat),
+    maxLat: Math.max(left.maxLat, right.maxLat),
+    minLng: Math.min(left.minLng, right.minLng),
+    maxLng: Math.max(left.maxLng, right.maxLng)
+  };
+}
+
+function geoBoundsTouch(left, right, gapMeters = 0) {
+  if (!left || !right) return false;
+  const expandedLeft = expandGeoBounds(left, gapMeters);
+  const expandedRight = expandGeoBounds(right, gapMeters);
+  return expandedLeft.minLat <= expandedRight.maxLat
+    && expandedRight.minLat <= expandedLeft.maxLat
+    && expandedLeft.minLng <= expandedRight.maxLng
+    && expandedRight.minLng <= expandedLeft.maxLng;
+}
+
+function expandGeoBounds(bounds, meters) {
+  if (!bounds || !Number.isFinite(meters) || meters <= 0) return bounds;
+  const centerLat = (bounds.minLat + bounds.maxLat) / 2;
+  const latDelta = meters / 111320;
+  const lngDelta = meters / Math.max(1, 111320 * Math.cos(degreesToRadians(centerLat)));
+  return {
+    minLat: bounds.minLat - latDelta,
+    maxLat: bounds.maxLat + latDelta,
+    minLng: bounds.minLng - lngDelta,
+    maxLng: bounds.maxLng + lngDelta
+  };
+}
+
+function rawRangeGap(group, task) {
+  const start = task.startRawPointId;
+  const end = task.endRawPointId ?? task.startRawPointId;
+  if (!Number.isFinite(start) || !Number.isFinite(end)
+      || !Number.isFinite(group.startRawPointId) || !Number.isFinite(group.endRawPointId)) {
+    return Infinity;
+  }
+  if (start <= group.endRawPointId && end >= group.startRawPointId) return 0;
+  if (start > group.endRawPointId) return start - group.endRawPointId;
+  return group.startRawPointId - end;
+}
+
+function reviewPlaceKind(scenario) {
+  if ([
+    'stationary_session_collapse',
+    'stationary_drift_collapse',
+    'rest_photo_micro_move',
+    'enclosed_loop_cluster_settlement',
+    'enclosed_gap_cluster',
+    'closed_loop_round_trip'
+  ].includes(scenario)) return 'place';
+  if ([
+    'position_snap_recovery',
+    'moving_spike_cleanup',
+    'weak_recovery_endpoint',
+    'gap_recovery_boundary'
+  ].includes(scenario)) return 'boundary';
+  if ([
+    'same_road_round_trip',
+    'round_trip_line'
+  ].includes(scenario)) return 'route';
+  return 'other';
+}
+
+function reviewPlaceKindsComplement(kinds, kind) {
+  return kind === 'boundary' && (kinds.has('place') || kinds.has('route'));
+}
+
+function taskCenterPoint(dataset, task) {
+  const rawRange = task.item?.rawRange;
+  if (dataset && Number.isFinite(rawRange?.startRawPointId)
+      && Number.isFinite(rawRange?.endRawPointId)) {
+    const points = rawPointsInRange(dataset, rawRange).filter(hasValidLngLat);
+    if (points.length > 0) return averageLngLat(points);
+  }
+  return null;
+}
+
+function averageLngLat(points) {
+  const sum = points.reduce((acc, point) => ({
+    lat: acc.lat + point.lat,
+    lng: acc.lng + point.lng
+  }), { lat: 0, lng: 0 });
+  return { lat: sum.lat / points.length, lng: sum.lng / points.length };
+}
+
+function averagePoint(current, next, count) {
+  if (!current) return next;
+  if (!next) return current;
+  return {
+    lat: current.lat + (next.lat - current.lat) / count,
+    lng: current.lng + (next.lng - current.lng) / count
+  };
+}
+
+function buildReviewTasks(dataset) {
+  if (!dataset) return [];
+  const coverage = sortScenarioCoverageForReview(
+    dataset.scenarioProduct?.scenarioCoverage || [], dataset);
+  const tasks = coverage.map((item, index) => {
+    const task = reviewTaskForScenario(item.scenario);
+    return {
+      ...task,
+      key: `${task.key}-${index}`,
+      item,
+      items: [item],
+      startRawPointId: item.rawRange?.startRawPointId ?? Infinity,
+      endRawPointId: item.rawRange?.endRawPointId ?? item.rawRange?.startRawPointId ?? Infinity,
+      startTrackPointId: item.trackPointRange?.startTrackPointId
+        ?? item.matchedTrackPointRange?.startTrackPointId
+        ?? Infinity
+    };
+  });
+  const conflictItems = [
+    ...(dataset.targetOutput?.forwardSpineConflicts || [])
+  ];
+  conflictItems.forEach((item, index) => {
+    tasks.push({
+      key: 'local_conflict',
+      title: '候选冲突',
+      note: '地图上有多种可能路线，需要人工优先看',
+      rank: 0,
+      item,
+      items: [item],
+      startRawPointId: item.rawRange?.startRawPointId ?? Infinity,
+      endRawPointId: item.rawRange?.endRawPointId ?? item.rawRange?.startRawPointId ?? Infinity,
+      startTrackPointId: Infinity,
+      conflict: true
+    });
+  });
+  return tasks.sort((left, right) =>
+    left.startRawPointId - right.startRawPointId
+    || left.startTrackPointId - right.startTrackPointId
+    || left.rank - right.rank
+    || left.title.localeCompare(right.title, 'zh-Hans-CN'));
+}
+
+function reviewTaskForScenario(scenario) {
+  const tasks = {
+    stationary_session_collapse: {
+      key: 'stationary',
+      title: '整段基本没动',
+      note: '线会压成代表位置，检查是否压在原始点云中心',
+      rank: 10
+    },
+    stationary_drift_collapse: {
+      key: 'dwell_drift',
+      title: '原地漂移',
+      note: '线会压回停留点附近，检查是否没有沿漂移绕路',
+      rank: 11
+    },
+    enclosed_loop_cluster_settlement: {
+      key: 'occlusion_loop',
+      title: '遮挡绕线压缩',
+      note: '线会压成锚点或短连接，检查入口/出口是否接对',
+      rank: 21
+    },
+    enclosed_gap_cluster: {
+      key: 'occlusion_loop',
+      title: '遮挡绕线压缩',
+      note: '线会压成锚点或短连接，检查入口/出口是否接对',
+      rank: 21
+    },
+    position_snap_recovery: {
+      key: 'snap_recovery',
+      title: '定位跳远后接回',
+      note: '线会跳过远点并从恢复点接回，检查接回位置',
+      rank: 30
+    },
+    moving_spike_cleanup: {
+      key: 'moving_spike',
+      title: '单点跳远',
+      note: '线会删除尖刺并用前后点短接，检查是否顺路',
+      rank: 31
+    },
+    weak_recovery_endpoint: {
+      key: 'weak_endpoint',
+      title: '弱信号恢复点',
+      note: '线会保留恢复端点，检查是否从稳定位置接回',
+      rank: 32
+    },
+    same_road_round_trip: {
+      key: 'same_road_round_trip',
+      title: '同路来回',
+      note: '线会收成中心线，检查是否仍贴着真实道路',
+      rank: 40
+    },
+    round_trip_line: {
+      key: 'round_trip_line',
+      title: '来回路线太密',
+      note: '线会简化重复折返，检查是否保留真实转折',
+      rank: 41
+    },
+    closed_loop_round_trip: {
+      key: 'closed_loop',
+      title: '闭合来回标记',
+      note: '线主要保留为标记，检查它是否解释了闭合绕行',
+      rank: 42
+    },
+    rest_photo_micro_move: {
+      key: 'rest_photo',
+      title: '休息/拍照小移动',
+      note: '线会标注或压缩小移动，检查是否不该算作行进',
+      rank: 50
+    },
+    gap_recovery_boundary: {
+      key: 'gap_boundary',
+      title: '中断后恢复',
+      note: '线会在中断边界重新接，检查是否被拉成长直线',
+      rank: 60
+    },
+    transport_contamination: {
+      key: 'transport',
+      title: '疑似交通混入',
+      note: '线会排除非徒步移动，检查是否确实不该算徒步',
+      rank: 70
+    }
+  };
+  return tasks[scenario] || {
+    key: scenario || 'other',
+    title: scenarioNameLabel(scenario),
+    note: '查看这段原始线被处理成什么清洗线',
+    rank: 90
+  };
+}
+
+function reviewPlaceGroupMarkup(group, index, dataset) {
+  const typeNames = [...new Set(group.tasks.map((task) => task.title))];
+  const title = `剧集 ${formatPlainNumber(index + 1)}：${reviewPlaceGroupTitle(group)}`;
+  const range = Number.isFinite(group.startRawPointId) && Number.isFinite(group.endRawPointId)
+    ? `Raw#${formatPlainNumber(group.startRawPointId)}-${formatPlainNumber(group.endRawPointId)}`
+    : 'Raw#-';
+  return `
+    <section class="review-place-group">
+      <div class="review-place-heading">
+        <b>${escapeHtml(title)}</b>
+        <span>${escapeHtml(`${formatPlainNumber(group.tasks.length)} 段`)}</span>
       </div>
-      <div class="algorithm-section">
-        <b>密集区调度</b>
-        ${denseIntentSummaryRows(dataset).map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
-      </div>
-      <div class="algorithm-section">
-        <b>冲突详情</b>
-        ${denseIntentConflictOverviewMarkup(dataset)}
+      <p>${escapeHtml(`${range}；${typeNames.join('、')}`)}</p>
+      <div class="review-place-task-list">
+        ${group.tasks.map((task) => reviewTaskMarkup(task, dataset)).join('')}
       </div>
     </section>
   `;
 }
 
-function scenarioRepairImpactRows(impact) {
-  if (!impact) {
-    return ['本次影响 导入样本或勾选修复后显示清洗线、点数和统计变化'];
+function reviewPlaceGroupTitle(group) {
+  const scenarios = new Set(group.tasks.map((task) => task.item?.scenario));
+  if (scenarios.has('stationary_session_collapse')
+      || scenarios.has('stationary_drift_collapse')
+      || scenarios.has('rest_photo_micro_move')) {
+    return '停留/拍照点';
   }
-  const changedText = impact.changedDatasetCount > 0
-    ? `改线 ${impact.changedDatasetCount}/${impact.datasetCount} 个文件`
-    : `未改线 ${impact.datasetCount} 个文件`;
-  return [
-    `本次影响 ${changedText}；清洗点 ${formatSignedCount(impact.delta.trustedPointCount)}；运动里程 ${formatSignedMeters(impact.delta.totalDistanceMeters)}；地图连线 ${formatSignedMeters(impact.delta.routeDistanceMeters)}；运动耗时 ${formatSignedDuration(impact.delta.movingTimeSeconds)}`,
-    impact.examples.length > 0
-      ? `变化示例 ${impact.examples.join('；')}`
-      : '说明 当前样本未命中被切换的改线修复，或只切换了诊断标注项；地图线不会发生肉眼变化'
-  ];
-}
-
-function summarizeScenarioRepairImpact(beforeDatasets, afterDatasets, summary) {
-  const beforeById = new Map(beforeDatasets.map((dataset) => [dataset.id, dataset]));
-  const delta = {
-    trustedPointCount: 0,
-    routeDistanceMeters: 0,
-    totalDistanceMeters: 0,
-    movingTimeSeconds: 0,
-    scenarioCount: 0
-  };
-  const examples = [];
-  let changedDatasetCount = 0;
-  for (const after of afterDatasets) {
-    const before = beforeById.get(after.id);
-    const beforeProduct = before?.targetProduct || {};
-    const afterProduct = after.targetProduct || {};
-    const itemDelta = productDelta(beforeProduct, afterProduct);
-    for (const key of Object.keys(delta)) {
-      delta[key] += itemDelta[key] || 0;
-    }
-    const trackChanged = trackSignature(beforeProduct.track)
-      !== trackSignature(afterProduct.track);
-    if (trackChanged) {
-      changedDatasetCount++;
-      if (examples.length < 3) {
-        examples.push(`${after.fileName} 清洗点 ${formatSignedCount(itemDelta.trustedPointCount)} / 运动里程 ${formatSignedMeters(itemDelta.totalDistanceMeters)}`);
-      }
-    }
+  if (scenarios.has('enclosed_loop_cluster_settlement')
+      || scenarios.has('enclosed_gap_cluster')) {
+    return '遮挡绕线点';
   }
-  return {
-    summary,
-    datasetCount: afterDatasets.length,
-    changedDatasetCount,
-    delta: Object.fromEntries(Object.entries(delta)
-      .map(([key, value]) => [key, normalizeTinyDelta(value)])),
-    examples
-  };
+  if (scenarios.has('same_road_round_trip')
+      || scenarios.has('round_trip_line')
+      || scenarios.has('closed_loop_round_trip')) {
+    return '往返路线段';
+  }
+  if (scenarios.has('position_snap_recovery')
+      || scenarios.has('moving_spike_cleanup')
+      || scenarios.has('gap_recovery_boundary')
+      || scenarios.has('weak_recovery_endpoint')) {
+    return '接线边界';
+  }
+  if (scenarios.has('transport_contamination')) return '疑似非徒步段';
+  return '复合处理点';
 }
 
-function normalizeTinyDelta(value) {
-  return Math.abs(value) < 0.000001 ? 0 : value;
+function reviewTaskMarkup(task, dataset) {
+  const badge = task.conflict ? '先看' : reviewTaskRangeLabel(task.item);
+  const body = task.conflict
+    ? forwardSpineConflictListMarkup(task.items)
+    : scenarioHitListMarkup(task.items, false, 1, true, dataset);
+  return `
+    <section class="review-task">
+      <div class="review-task-heading">
+        <b>${escapeHtml(task.title)}</b>
+        <span>${escapeHtml(badge)}</span>
+      </div>
+      <p>${escapeHtml(task.note)}</p>
+      ${body}
+    </section>
+  `;
 }
 
-function productDelta(beforeProduct, afterProduct) {
-  const beforeStats = beforeProduct?.stats || {};
-  const afterStats = afterProduct?.stats || {};
-  return {
-    trustedPointCount: numberOrZero(afterStats.trustedPointCount)
-      - numberOrZero(beforeStats.trustedPointCount),
-    routeDistanceMeters: numberOrZero(afterStats.routeDistanceMeters)
-      - numberOrZero(beforeStats.routeDistanceMeters),
-    totalDistanceMeters: numberOrZero(afterStats.totalDistanceMeters)
-      - numberOrZero(beforeStats.totalDistanceMeters),
-    movingTimeSeconds: numberOrZero(afterStats.movingTimeSeconds)
-      - numberOrZero(beforeStats.movingTimeSeconds),
-    scenarioCount: numberOrZero(afterProduct?.scenarios?.length)
-      - numberOrZero(beforeProduct?.scenarios?.length)
-  };
+function reviewTaskRangeLabel(item) {
+  const rawStart = item?.rawRange?.startRawPointId;
+  if (Number.isFinite(rawStart)) return `Raw#${rawStart}`;
+  const trackStart = item?.trackPointRange?.startTrackPointId
+    ?? item?.matchedTrackPointRange?.startTrackPointId;
+  return Number.isFinite(trackStart) ? `清洗#${trackStart}` : '时间段';
 }
 
-function trackSignature(track = []) {
-  return (track || []).map((point) => [
-    point.trackPointId,
-    point.sourceRawPointId,
-    point.result,
-    point.reason,
-    point.segmentId,
-    roundSignatureNumber(point.lat, 7),
-    roundSignatureNumber(point.lng, 7),
-    roundSignatureNumber(point.distanceDeltaMeters, 2),
-    roundSignatureNumber(point.movingTimeDeltaSeconds, 2)
-  ].join(':')).join('|');
-}
-
-function roundSignatureNumber(value, digits) {
-  return Number.isFinite(value) ? value.toFixed(digits) : '-';
-}
-
-function scenarioRepairImpactMessage(impact) {
-  if (!impact) return '已重算情景修复';
-  const changedText = impact.changedDatasetCount > 0
-    ? `改线 ${impact.changedDatasetCount}/${impact.datasetCount}`
-    : `未改线 ${impact.datasetCount}/${impact.datasetCount}`;
-  return `已按“${impact.summary}”重算：${changedText}，运动里程 ${formatSignedMeters(impact.delta.totalDistanceMeters)}，清洗点 ${formatSignedCount(impact.delta.trustedPointCount)}`;
+function scenarioCoverageOverviewMarkup(dataset) {
+  const coverage = dataset?.scenarioProduct?.scenarioCoverage || [];
+  if (coverage.length === 0) {
+    return '<span>导入 evidence.jsonl 后显示全量情景覆盖的清洗点区间和 raw 区间</span>';
+  }
+  const sortedCoverage = sortScenarioCoverageForReview(coverage, dataset);
+  const visible = scenarioHitListMarkup(sortedCoverage, false, 10, true, dataset);
+  const overflow = coverage.length > 10
+    ? `<span>还有 ${escapeHtml(String(coverage.length - 10))} 段复合情景未展开</span>`
+    : '';
+  return `${visible}${overflow}`;
 }
 
 function scenarioCoverageSummaryRows(dataset) {
@@ -1104,46 +1826,6 @@ function scenarioCoverageSummaryRows(dataset) {
     rows.push(`还有 ${coverage.length - 8} 段情景覆盖未展开，可点击对应清洗点查看关联情景`);
   }
   return rows;
-}
-
-function denseIntentSummaryRows(dataset) {
-  if (!dataset) {
-    return ['导入 evidence.jsonl 后显示密集区主意图、处理计划和冲突区间'];
-  }
-  const conflicts = dataset.targetOutput?.denseIntentConflicts || [];
-  const forwardSpineConflicts = dataset.targetOutput?.forwardSpineConflicts || [];
-  const forwardSpineOverlaps = dataset.targetOutput?.forwardSpineOverlaps || [];
-  const plan = dataset.targetOutput?.denseAreaSettlementPlan || [];
-  const rows = [];
-  if (conflicts.length > 0) {
-    rows.push(`冲突 ${conflicts.length} 段：橙色粗线已标在地图上，可点击定位`);
-  } else {
-    rows.push('冲突 0 段');
-  }
-  rows.push(`V17 保方向上图冲突 ${forwardSpineConflicts.length} 段；候选关系 ${forwardSpineOverlaps.length} 段仅作内部证据`);
-  if (plan.length > 0) {
-    rows.push(`处理计划 ${plan.length} 段`);
-    for (const item of plan.slice(0, 5)) {
-      rows.push(`${formatScenarioRawRange(item.rawRange)} ${humanDenseIntentList([item.intent])} -> ${humanDenseSettlement(item.plannedSettlement)}；命中 ${humanScenarioList(item.observedScenarios)}`);
-    }
-    if (plan.length > 5) {
-      rows.push(`还有 ${plan.length - 5} 段处理计划未展开`);
-    }
-  } else {
-    rows.push('处理计划 0 段');
-  }
-  return rows;
-}
-
-function humanDenseSettlement(settlement) {
-  return ({
-    keep_forward_spine: '保主前进线',
-    collapse_stationary_drift: '塌缩静止漂移',
-    collapse_rest_photo_micro_move: '塌缩休息微移动',
-    simplify_round_trip: '简化往返线',
-    isolate_gap_cluster: '隔离遮挡聚集',
-    mixed_local_rebuild: '局部混合重建'
-  })[settlement] || settlement || '-';
 }
 
 function humanScenarioList(scenarios) {
@@ -1197,28 +1879,6 @@ function uniqueNumbers(values) {
     .sort((left, right) => left - right);
 }
 
-function numberOrZero(value) {
-  return Number.isFinite(value) ? value : 0;
-}
-
-function formatSignedMeters(value) {
-  if (!Number.isFinite(value)) return '-';
-  if (Object.is(value, -0) || value === 0) return formatMeters(0);
-  return `${value > 0 ? '+' : '-'}${formatMeters(Math.abs(value))}`;
-}
-
-function formatSignedCount(value) {
-  if (!Number.isFinite(value)) return '-';
-  if (Object.is(value, -0) || value === 0) return '0';
-  return `${value > 0 ? '+' : ''}${formatPlainNumber(value)}`;
-}
-
-function formatSignedDuration(value) {
-  if (!Number.isFinite(value)) return '-';
-  if (Object.is(value, -0) || value === 0) return formatDuration(0);
-  return `${value > 0 ? '+' : '-'}${formatDuration(Math.abs(value))}`;
-}
-
 function ascentBreakdown(dataset) {
   const stats = dataset?.targetProduct?.stats || {};
   return {
@@ -1249,7 +1909,7 @@ function renderPointDetails() {
     ? `${selection.dataset.fileName} #${selection.cleaned ? selection.point.trackPointId : selection.point.rawPointId}`
     : '-';
   if (!selection) {
-    elements.pointDetails.innerHTML = '<p class="empty-note">点击地图点查看 raw 证据或 Web 清洗点详情</p>';
+    elements.pointDetails.innerHTML = '<p class="empty-note">选择地图上的点后显示</p>';
     return;
   }
   elements.pointDetails.innerHTML = selection.cleaned
@@ -1261,22 +1921,26 @@ function cleanedPointDetailsMarkup(dataset, point) {
   const explanationRows = explanationDetailRows(point.primaryExplanation, point.primitiveFacts);
   const scenarioRows = scenarioContextDetailRows(point.scenarioContexts,
     point.primaryExplanation);
+  const phoneMotion = phoneMotionLabel(point.activityState);
   return `
-    ${detailBlock('清洗点', [
+    ${detailBlock('清洗点摘要', [
       `trackPointId ${point.trackPointId}`,
       `sourceRawPointId ${point.sourceRawPointId}`,
-      `recomputedDecisionId ${point.recomputedDecisionId}`,
-      `result ${point.result}`,
-      `reason ${point.reason}`,
-      `coordinateSource ${point.coordinateSource || '-'}`,
       `lat/lng ${formatLatLng(point)}`,
       `segmentId ${point.segmentId}`,
+      `手机状态 ${phoneMotion}`,
       `distanceDelta ${formatMeters(point.distanceDeltaMeters)}`,
       `movingTimeDelta ${formatDuration(point.movingTimeDeltaSeconds)}`
     ])}
     ${explanationRows.length > 0 ? detailBlock('主解释', explanationRows) : ''}
-    ${scenarioRows.length > 0 ? detailBlock('关联情景', scenarioRows) : ''}
-    ${detailBlock('点云证据', [
+    ${scenarioRows.length > 0 ? detailBlock('复合情景', scenarioRows) : ''}
+    ${collapsibleDetailBlock('底层判点字段', [
+      `recomputedDecisionId ${point.recomputedDecisionId}`,
+      `result ${point.result}`,
+      `reason ${point.reason}`,
+      `coordinateSource ${point.coordinateSource || '-'}`
+    ])}
+    ${collapsibleDetailBlock('点云证据', [
       `cloudType ${point.cloudType || '-'}`,
       `cloudId ${valueOrDash(point.cloudId)}`,
       `cloudSampleCount ${valueOrDash(point.cloudSampleCount)}`,
@@ -1284,9 +1948,9 @@ function cleanedPointDetailsMarkup(dataset, point) {
       `cloudWeightedRadius ${formatMeters(point.cloudWeightedRadiusMeters)}`,
       `representativeRawPointId ${valueOrDash(point.representativeRawPointId)}`
     ])}
-	    ${detailBlock('清洗轨迹状态', [
+	    ${collapsibleDetailBlock('清洗轨迹状态', [
       `参数 ${dataset.targetProduct.usesDefaultConfig ? '默认' : '自定义'}`,
-      `静止压缩 ${dataset.targetProduct.stationarySessionCollapsed ? '已触发' : '未触发'}`,
+      `整段静止 ${dataset.targetProduct.stationarySessionCollapsed ? '已处理' : '未触发'}`,
       `目标总点数 ${dataset.targetProduct.stats.trustedPointCount}`,
       `里程 ${formatMeters(dataset.targetProduct.stats.routeDistanceMeters)}`,
       `运动里程 ${formatMeters(dataset.targetProduct.stats.totalDistanceMeters)}`,
@@ -1304,8 +1968,18 @@ function pointDetailsMarkup(dataset, point) {
     decision.primitiveFacts);
   const scenarioRows = scenarioContextDetailRows(decision.scenarioContexts,
     decision.primaryExplanation);
+  const phoneMotion = phoneMotionLabel(decision.activityState);
   return `
-    ${detailBlock('raw 字段', [
+    ${decision.result ? detailBlock('Web 复算摘要', [
+      `result ${decision.result}`,
+      `reason ${decision.reason || '-'}`,
+      `手机状态 ${phoneMotion}`,
+      `distanceDelta ${formatMeters(decision.distanceDeltaMeters)}`,
+      `movingTimeDelta ${formatDuration(decision.movingTimeDeltaSeconds)}`
+		    ]) : ''}
+		    ${explanationRows.length > 0 ? detailBlock('主解释', explanationRows) : ''}
+		    ${scenarioRows.length > 0 ? detailBlock('复合情景', scenarioRows) : ''}
+    ${collapsibleDetailBlock('raw 字段', [
       `rawPointId ${point.rawPointId}`,
       `provider ${point.provider || '-'}`,
       `lat/lng ${formatLatLng(point)}`,
@@ -1314,7 +1988,7 @@ function pointDetailsMarkup(dataset, point) {
       `speed ${formatSpeed(point.speed)}`,
       `elapsedRealtime ${formatNanos(point.elapsedRealtimeNanos)}`
     ])}
-    ${detailBlock('上一可信点关系', [
+    ${collapsibleDetailBlock('上一可信点关系', [
       `上一可信 Raw#${valueOrDash(context.previousTrustedRawPointId)}`,
       `距离 ${formatMeters(context.distanceFromPreviousTrustedMeters)}`,
       `时间差 ${formatDuration(context.deltaSecondsFromPreviousTrusted)}`,
@@ -1325,18 +1999,30 @@ function pointDetailsMarkup(dataset, point) {
     ${!recomputedDecision && point.insights?.length
       ? detailBlock('解释', point.insights.map((item) => item.text))
       : ''}
-	    ${decision.result ? detailBlock('Web 复算解释', [
-      `result ${decision.result}`,
-      `reason ${decision.reason || '-'}`,
+	    ${decision.result ? collapsibleDetailBlock('底层判点字段', [
       `source ${decision.source || 'targetProduct'}`,
       `segmentId ${valueOrDash(decision.segmentId)}`,
-      `cloudType ${decision.cloudType || '-'}`,
-      `distanceDelta ${formatMeters(decision.distanceDeltaMeters)}`,
-      `movingTimeDelta ${formatDuration(decision.movingTimeDeltaSeconds)}`
+      `cloudType ${decision.cloudType || '-'}`
 		    ]) : ''}
-		    ${explanationRows.length > 0 ? detailBlock('主解释', explanationRows) : ''}
-		    ${scenarioRows.length > 0 ? detailBlock('关联情景', scenarioRows) : ''}
 		  `;
+}
+
+function phoneMotionLabel(activityState) {
+  return ({
+    walking: '手机在动',
+    moving: '手机在动',
+    still: '手机基本没动',
+    stationary_session: '整段基本没动',
+    stationary_drift: '停留附近漂移',
+    dense_main_route: '密集区行进',
+    weak_recovery_shape: '弱信号恢复',
+    round_trip_interwoven: '同路来回',
+    interwoven_corridor: '来回路线密集',
+    enclosed_loop_settlement: '遮挡后绕线',
+    position_snap_recovery: '定位跳远后接回',
+    rest_photo_micro_move: '休息/拍照小移动',
+    unknown: '未知'
+  })[activityState] || activityState || '未知';
 }
 
 function detailBlock(title, rows) {
@@ -1345,6 +2031,15 @@ function detailBlock(title, rows) {
       <h3>${escapeHtml(title)}</h3>
       ${rows.map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
     </section>
+  `;
+}
+
+function collapsibleDetailBlock(title, rows, open = false) {
+  return `
+    <details class="detail-block collapsible-detail" ${open ? 'open' : ''}>
+      <summary>${escapeHtml(title)}</summary>
+      ${rows.map((row) => `<span>${escapeHtml(row)}</span>`).join('')}
+    </details>
   `;
 }
 
@@ -1364,9 +2059,27 @@ function explanationDetailRows(explanation, primitiveFacts = []) {
     rows.push(`说明 ${explanation.summary || '-'}`);
   }
   if (primitiveFacts.length > 0) {
-    rows.push(`primitive ${primitiveFacts.slice(0, 8).join(', ')}`);
+    const visibleFacts = primitiveFacts
+      .filter((fact) => !String(fact).startsWith('activity_')
+        && fact !== 'motion_supported')
+      .slice(0, 8);
+    if (visibleFacts.length > 0) {
+      rows.push(`判断线索 ${visibleFacts.map(humanPrimitiveFact).join('、')}`);
+    }
   }
   return rows;
+}
+
+function humanPrimitiveFact(fact) {
+  return ({
+    low_speed_movement: '低速移动',
+    distance_counted: '计入距离',
+    moving_time_counted: '计入运动时间',
+    stationary_cloud: '停留点云',
+    weak_accuracy: '定位精度弱',
+    transport_risk: '速度偏快',
+    gap_recovery: '中断后恢复'
+  })[fact] || fact;
 }
 
 function scenarioContextDetailRows(contexts = [], primaryExplanation = null) {
@@ -1623,19 +2336,15 @@ function initMap() {
     state.mapLoaded = true;
     renderTerrain();
     renderContours();
-    renderContourDataPanel();
     addMapLayers();
     bindMapEvents();
     renderMap();
-  });
-  state.map.on('zoomend', () => {
-    renderContourDataPanel();
   });
 }
 
 function renderTerrain() {
   if (!state.mapLoaded) return;
-  const enabled = elements.showTerrain.checked;
+  const enabled = mapElementVisible(elements.showTerrain, { hideInFocus: true });
   if (state.map.getLayer('terrain-hillshade')) {
     state.map.setLayoutProperty('terrain-hillshade', 'visibility', enabled ? 'visible' : 'none');
   }
@@ -1645,49 +2354,29 @@ function renderTerrain() {
 }
 
 function renderContourControlState() {
-  elements.showContours.disabled = !state.contoursAvailable;
+  elements.showContours.disabled = !state.contoursAvailable || state.reviewFocusMode;
   const toggle = elements.showContours.closest('.toggle');
   if (toggle) {
     toggle.classList.toggle('disabled', !state.contoursAvailable);
     toggle.title = state.contoursAvailable
-      ? '叠加由地形 DEM 生成的等高线'
+      ? state.reviewFocusMode
+        ? '专注模式下临时隐藏，退出后恢复'
+        : '叠加由地形 DEM 生成的等高线'
       : '等高线插件未加载，当前只显示地形阴影';
   }
-  renderContourDataPanel();
 }
 
 function renderContours() {
   if (!state.mapLoaded) return;
-  const visibility = state.contoursAvailable && elements.showContours.checked ? 'visible' : 'none';
+  const visibility = state.contoursAvailable
+      && mapElementVisible(elements.showContours, { hideInFocus: true })
+    ? 'visible'
+    : 'none';
   for (const layerId of CONTOUR_LAYER_IDS) {
     if (state.map.getLayer(layerId)) {
       state.map.setLayoutProperty(layerId, 'visibility', visibility);
     }
   }
-  renderContourDataPanel();
-}
-
-function renderContourDataPanel() {
-  if (!elements.contourDataPanel) return;
-  const checked = elements.showContours.checked;
-  elements.contourDataPanel.classList.toggle('disabled', !state.contoursAvailable || !checked);
-  if (!state.contoursAvailable) {
-    elements.contourDataStatus.textContent = '等高线插件未加载';
-    elements.contourDataSelected.textContent = '当前只能显示地形阴影';
-    return;
-  }
-  const zoom = state.mapLoaded ? state.map.getZoom() : 12;
-  const threshold = contourThresholdForZoom(zoom);
-  const statusPrefix = checked ? '已显示' : '已隐藏';
-  elements.contourDataStatus.textContent =
-    `${statusPrefix} | DEM Mapterhorn | zoom ${zoom.toFixed(1)} | 次曲线 ${threshold.minor}m / 主曲线 ${threshold.major}m`;
-  if (!state.selectedContour) {
-    elements.contourDataSelected.textContent = '点击等高线查看该线海拔、级别和经纬度';
-    return;
-  }
-  const contour = state.selectedContour;
-  elements.contourDataSelected.textContent =
-    `${contour.lineType} ${formatPlainNumber(contour.elevationMeters)}m | 间距 ${contour.intervalMeters}m | ${formatLngLatText(contour.lng, contour.lat)}`;
 }
 
 function contourThresholdForZoom(zoom) {
@@ -1729,9 +2418,9 @@ function addMapLayers() {
       'fill-color': ['get', 'color'],
       'fill-opacity': [
         'interpolate', ['linear'], ['zoom'],
-        10, 0.18,
-        15, 0.25,
-        20, 0.32
+        10, 0.10,
+        15, 0.16,
+        20, 0.22
       ]
     }
   });
@@ -1747,7 +2436,7 @@ function addMapLayers() {
         15, 1.9,
         20, 3
       ],
-      'line-opacity': 0.88,
+      'line-opacity': 0.68,
       'line-dasharray': [2, 1]
     }
   });
@@ -1968,6 +2657,11 @@ function bindMapEvents() {
     selectCleanedPoint(String(feature.properties.datasetId),
       Number(feature.properties.trackPointId), true);
   });
+  state.map.on('click', 'cleaned-lines', (event) => {
+    const feature = event.features?.[0];
+    if (!feature) return;
+    selectCleanedLineSegment(feature, event.lngLat);
+  });
   state.map.on('click', 'scenario-polygons-fill', (event) => {
     const feature = event.features?.[0];
     if (!feature) return;
@@ -2003,6 +2697,9 @@ function bindMapEvents() {
   state.map.on('mouseenter', 'cleaned-points', () => {
     state.map.getCanvas().style.cursor = 'pointer';
   });
+  state.map.on('mouseenter', 'cleaned-lines', () => {
+    state.map.getCanvas().style.cursor = 'pointer';
+  });
   state.map.on('mouseenter', 'scenario-polygons-fill', () => {
     state.map.getCanvas().style.cursor = 'pointer';
   });
@@ -2018,6 +2715,9 @@ function bindMapEvents() {
   state.map.on('mouseleave', 'cleaned-points', () => {
     state.map.getCanvas().style.cursor = '';
   });
+  state.map.on('mouseleave', 'cleaned-lines', () => {
+    state.map.getCanvas().style.cursor = '';
+  });
   state.map.on('mouseleave', 'scenario-polygons-fill', () => {
     state.map.getCanvas().style.cursor = '';
   });
@@ -2031,27 +2731,38 @@ function bindMapEvents() {
 
 function renderMap() {
   if (!state.mapLoaded) return;
-  const visible = state.datasets.filter((dataset) => dataset.visible);
-  state.map.getSource('scenario-polygons').setData(scenarioPolygonFeatureCollection(visible));
-  state.map.getSource('raw-lines').setData(elements.showRaw.checked ? rawFeatureCollection(visible) : emptyFeatureCollection());
-  state.map.getSource('trusted-lines').setData(elements.showTrusted.checked ? trustedFeatureCollection(visible) : emptyFeatureCollection());
-  state.map.getSource('cleaned-lines').setData(elements.showCleaned.checked ? cleanedFeatureCollection(visible) : emptyFeatureCollection());
-  state.map.getSource('dense-intent-conflicts').setData(denseIntentConflictFeatureCollection(visible));
+  const visible = focusedMapDatasets(state.datasets.filter((dataset) => dataset.visible));
+  state.map.getSource('scenario-polygons').setData(
+    mapElementVisible(elements.showScenarios)
+      ? scenarioPolygonFeatureCollection(visible)
+      : emptyFeatureCollection());
+  state.map.getSource('raw-lines').setData(rawLineVisible() ? rawFeatureCollection(visible) : emptyFeatureCollection());
+  state.map.getSource('trusted-lines').setData(mapElementVisible(elements.showTrusted, { hideInFocus: true }) ? trustedFeatureCollection(visible) : emptyFeatureCollection());
+  renderMapHighlightLayers(visible);
+  state.map.getSource('dense-intent-conflicts').setData(emptyFeatureCollection());
   state.map.getSource('forward-spine-conflicts').setData(forwardSpineConflictFeatureCollection(visible));
   renderDirectionArrows(visible);
   state.map.getSource('cleaned-points').setData(
-    elements.showCleaned.checked && elements.showCleanedPoints.checked
+    mapElementVisible(elements.showCleaned) && mapElementVisible(elements.showCleanedPoints, { hideInFocus: true })
       ? cleanedPointFeatureCollection(visible)
       : emptyFeatureCollection());
-  state.map.getSource('points').setData(elements.showPoints.checked ? pointFeatureCollection(visible) : emptyFeatureCollection());
+  state.map.getSource('points').setData(mapElementVisible(elements.showPoints, { hideInFocus: true }) ? pointFeatureCollection(visible) : emptyFeatureCollection());
+}
+
+function renderMapHighlightLayers(visibleDatasets = null) {
+  if (!state.mapLoaded) return;
+  const visible = visibleDatasets || focusedMapDatasets(state.datasets.filter((dataset) => dataset.visible));
+  state.map.getSource('cleaned-lines').setData(mapElementVisible(elements.showCleaned)
+    ? cleanedFeatureCollection(visible)
+    : emptyFeatureCollection());
 }
 
 function renderDirectionArrows(visibleDatasets = null) {
   if (!state.mapLoaded) return;
   const source = state.map.getSource('direction-arrows');
   if (!source) return;
-  const visible = visibleDatasets || state.datasets.filter((dataset) => dataset.visible);
-  source.setData(elements.showDirection.checked
+  const visible = visibleDatasets || focusedMapDatasets(state.datasets.filter((dataset) => dataset.visible));
+  source.setData(mapElementVisible(elements.showDirection, { hideInFocus: true })
     ? directionArrowFeatureCollection(visible)
     : emptyFeatureCollection());
 }
@@ -2080,9 +2791,9 @@ function cleanedFeatureCollection(datasets) {
   return {
     type: 'FeatureCollection',
     features: datasets.flatMap((dataset) => buildCleanedLineFeatures(dataset,
-      pointsFromIds(dataset.targetTrackPointById,
-        dataset.mapRender?.cleanedLineTrackPointIds), {
-        enabledScenarioRepairIds: state.enabledScenarioRepairIds
+      focusTrackPoints(dataset, pointsFromIds(dataset.targetTrackPointById,
+        dataset.mapRender?.cleanedLineTrackPointIds)), {
+        enabledScenarioRepairIds: DEFAULT_SCENARIO_REPAIR_IDS
       }))
       .filter((feature) => feature.geometry.coordinates.length > 1)
   };
@@ -2091,6 +2802,7 @@ function cleanedFeatureCollection(datasets) {
 function scenarioPolygonFeatureCollection(datasets) {
   const features = datasets
     .flatMap((dataset) => dataset.scenarioPolygonFeatures || buildScenarioPolygonFeatures(dataset))
+    .filter((feature) => scenarioPolygonOverlapsFocus(feature))
     .sort((left, right) =>
       (right.properties?.areaMeters2 || 0) - (left.properties?.areaMeters2 || 0));
   return { type: 'FeatureCollection', features };
@@ -2101,6 +2813,7 @@ function denseIntentConflictFeatureCollection(datasets) {
     type: 'FeatureCollection',
     features: datasets.flatMap((dataset) =>
       (dataset.targetOutput?.denseIntentConflicts || [])
+        .filter((conflict) => rawRangeOverlapsFocus(dataset, conflict.rawRange))
         .map((conflict, index) => denseIntentConflictFeature(dataset, conflict, index))
         .filter(Boolean))
   };
@@ -2132,6 +2845,7 @@ function forwardSpineConflictFeatureCollection(datasets) {
     type: 'FeatureCollection',
     features: datasets.flatMap((dataset) =>
       (dataset.targetOutput?.forwardSpineConflicts || [])
+        .filter((conflict) => rawRangeOverlapsFocus(dataset, conflict.rawRange))
         .map((conflict, index) => forwardSpineConflictFeature(dataset, conflict, index))
         .filter(Boolean))
   };
@@ -2174,7 +2888,7 @@ function rawPointsInRange(dataset, rawRange) {
 
 function directionArrowFeaturesForDataset(dataset) {
   const lines = [];
-  if (elements.showRaw.checked) {
+  if (rawLineVisible()) {
     lines.push({
       kind: 'raw',
       points: pointsFromIds(dataset.rawPointById, dataset.mapRender?.rawLinePointIds)
@@ -2192,8 +2906,8 @@ function directionArrowFeaturesForDataset(dataset) {
   if (elements.showCleaned.checked) {
     lines.push({
       kind: 'cleaned',
-      points: pointsFromIds(dataset.targetTrackPointById,
-        dataset.mapRender?.cleanedLineTrackPointIds)
+      points: focusTrackPoints(dataset, pointsFromIds(dataset.targetTrackPointById,
+        dataset.mapRender?.cleanedLineTrackPointIds))
     });
   }
 
@@ -2268,7 +2982,7 @@ function mapRawPointsForDataset(dataset) {
   if (Number.isFinite(selectedRawPointId) && !ids.includes(selectedRawPointId)) {
     ids.push(selectedRawPointId);
   }
-  return pointsFromIds(dataset.rawPointById, ids);
+  return focusRawPoints(dataset, pointsFromIds(dataset.rawPointById, ids));
 }
 
 function mapCleanedPointsForDataset(dataset) {
@@ -2280,7 +2994,51 @@ function mapCleanedPointsForDataset(dataset) {
   if (Number.isFinite(selectedTrackPointId) && !ids.includes(selectedTrackPointId)) {
     ids.push(selectedTrackPointId);
   }
-  return pointsFromIds(dataset.targetTrackPointById, ids);
+  return focusTrackPoints(dataset, pointsFromIds(dataset.targetTrackPointById, ids));
+}
+
+function focusRawPoints(dataset, points) {
+  const focus = state.reviewFocusMode ? state.focusedMapRange : null;
+  if (focus?.rawRange && dataset.id === focus.datasetId) {
+    return rawPointsInRange(dataset, focus.rawRange).filter(hasValidLngLat);
+  }
+  return (points || []).filter((point) => inFocusedRawRange(dataset, point));
+}
+
+function focusTrackPoints(dataset, points) {
+  const focus = state.reviewFocusMode ? state.focusedMapRange : null;
+  if (focus?.trackRange && dataset.id === focus.datasetId) {
+    return (dataset.targetProduct?.track || [])
+      .filter((point) => inFocusedTrackRange(dataset, point));
+  }
+  return (points || []).filter((point) => inFocusedTrackRange(dataset, point));
+}
+
+function scenarioPolygonOverlapsFocus(feature) {
+  const focus = state.reviewFocusMode ? state.focusedMapRange : null;
+  if (!focus?.rawRange) return true;
+  if (feature.properties?.datasetId !== focus.datasetId) return false;
+  const rawRange = rawRangeFromText(feature.properties?.rawRange);
+  return rawRange ? rawRangesOverlap(rawRange, focus.rawRange) : true;
+}
+
+function rawRangeFromText(text) {
+  const normalized = String(text || '');
+  const rangeMatch = normalized.match(/Raw#(\d+)-(\d+)/);
+  if (rangeMatch) {
+    return {
+      startRawPointId: Number(rangeMatch[1]),
+      endRawPointId: Number(rangeMatch[2])
+    };
+  }
+  const ids = [...normalized.matchAll(/\d+/g)].map((match) => Number(match[0]));
+  if (ids.length > 0) {
+    return {
+      startRawPointId: Math.min(...ids),
+      endRawPointId: Math.max(...ids)
+    };
+  }
+  return null;
 }
 
 function lineFeature(dataset, points, kind, segmentId = null, extraProperties = {}) {
@@ -2311,22 +3069,14 @@ function selectContourLine(feature, lngLat) {
   const lineType = level > 0 ? '主等高线' : '次等高线';
   const lng = Number(lngLat?.lng);
   const lat = Number(lngLat?.lat);
-  state.selectedContour = {
-    elevationMeters,
-    level: Number.isFinite(level) ? level : 0,
-    lineType,
-    intervalMeters: contourIntervalForLevel(level, zoom),
-    lng,
-    lat
-  };
-  renderContourDataPanel();
+  const intervalMeters = contourIntervalForLevel(level, zoom);
   if (!state.popup) return;
   state.popup
     .setLngLat([lng, lat])
     .setHTML([
       '<strong>等高线数据</strong>',
       `${escapeHtml(lineType)} ${escapeHtml(formatPlainNumber(elevationMeters))} m`,
-      `级别 ${escapeHtml(String(Number.isFinite(level) ? level : '-'))}；当前间距 ${escapeHtml(String(state.selectedContour.intervalMeters))} m`,
+      `级别 ${escapeHtml(String(Number.isFinite(level) ? level : '-'))}；当前间距 ${escapeHtml(String(intervalMeters))} m`,
       escapeHtml(formatLngLatText(lng, lat)),
       '数据源 Mapterhorn DEM / 浏览器端 contour tile'
     ].join('<br/>'))
@@ -2401,10 +3151,9 @@ function selectDenseIntentConflict(feature, lngLat) {
     state.popup
       .setLngLat(lngLat)
       .setHTML([
-        `<strong>${escapeHtml(properties.conflict || 'dense_intent_conflict')}</strong>`,
+        `<strong>${escapeHtml('候选冲突')}</strong>`,
         escapeHtml(properties.rawRange || 'Raw#-'),
-        `intent ${escapeHtml(properties.denseAreaIntents || '-')}`,
-        `resolution ${escapeHtml(properties.resolution || '-')}`,
+        `处理 ${escapeHtml(humanConflictResolution(properties.resolution))}`,
         `path ${escapeHtml(formatMeters(Number(properties.pathMeters)))} / net ${escapeHtml(formatMeters(Number(properties.netDistanceMeters)))} / bbox ${escapeHtml(formatMeters(Number(properties.bboxDiagonalMeters)))}`
       ].join('<br/>'))
       .addTo(state.map);
@@ -2430,6 +3179,76 @@ function selectForwardSpineConflict(feature, lngLat) {
       ].join('<br/>'))
       .addTo(state.map);
   }
+}
+
+function selectCleanedLineSegment(feature, lngLat) {
+  const properties = feature.properties || {};
+  const dataset = state.datasets.find((item) => item.id === String(properties.datasetId || ''));
+  if (!dataset) return;
+  state.selectedDatasetId = dataset.id;
+  const startTrackPointId = Number(properties.startTrackPointId);
+  const endTrackPointId = Number(properties.endTrackPointId);
+  if (Number.isFinite(startTrackPointId) && Number.isFinite(endTrackPointId)) {
+    const trackStart = Math.min(startTrackPointId, endTrackPointId);
+    const trackEnd = Math.max(startTrackPointId, endTrackPointId);
+    state.scenarioReviewRangeText = `${trackStart}-${trackEnd}`;
+    state.reviewFocusMode = true;
+    state.focusedMapRange = focusedMapRangeFromTrackRange(dataset, trackStart, trackEnd);
+    elements.scenarioRangeInput.value = state.scenarioReviewRangeText;
+    renderScenarioRangeReview();
+    renderReviewFocusMode();
+  }
+  if (!state.popup || !lngLat) return;
+  state.popup
+    .setLngLat(lngLat)
+    .setHTML(cleanedLineSegmentPopupHtml(properties))
+    .addTo(state.map);
+}
+
+function cleanedLineSegmentPopupHtml(properties) {
+  const repairEnabled = properties.repairEnabled === true || properties.repairEnabled === 'true';
+  const title = repairEnabled
+    ? '情景高亮段'
+    : '清洗成品线';
+  const rows = [
+    `<strong>${escapeHtml(title)}</strong>`,
+    `清洗点 ${escapeHtml(formatTrackRangeFromProperties(properties))}`
+  ];
+  if (repairEnabled) {
+    rows.push(`情景 ${escapeHtml(properties.scenarioLabel || properties.scenario || '-')}`);
+    rows.push(`处理 ${escapeHtml(properties.repairLabel || cleanedLineRepairKindLabel(properties.repairKind))}`);
+    rows.push(`原因 ${escapeHtml(cleanedLineReasonText(properties))}`);
+  } else {
+    rows.push('原因 默认清洗结果连接；未命中上图情景修复段。');
+  }
+  return rows.join('<br/>');
+}
+
+function formatTrackRangeFromProperties(properties) {
+  const start = Number(properties.startTrackPointId);
+  const end = Number(properties.endTrackPointId);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return '#-';
+  return `#${Math.min(start, end)}-${Math.max(start, end)}`;
+}
+
+function cleanedLineRepairKindLabel(kind) {
+  if (kind === 'rewrite') return '改线';
+  if (kind === 'hybrid') return '标注/改线';
+  if (kind === 'diagnostic') return '解释标注';
+  return '默认清洗';
+}
+
+function cleanedLineReasonText(properties) {
+  if (properties.repairKind === 'rewrite') {
+    return '该段清洗线受情景重建影响，地图用高亮颜色标出实际改线范围。';
+  }
+  if (properties.repairKind === 'hybrid') {
+    return '该段同时包含情景解释和局部处理影响，建议对照原始轨迹线复核。';
+  }
+  if (properties.repairKind === 'diagnostic') {
+    return '该段主要用于解释标注，不一定改变清洗线形状。';
+  }
+  return '该段来自默认清洗轨迹。';
 }
 
 function rawPointDecision(dataset, point) {

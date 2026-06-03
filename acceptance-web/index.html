@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>目标轨迹 Evidence 预览</title>
+    <title>地图表现 Evidence 复核</title>
     <link
       rel="stylesheet"
       href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css"
@@ -14,8 +14,8 @@
     <main class="workspace">
       <header class="topbar">
         <section class="identity" aria-label="页面标题">
-          <h1>目标轨迹 Evidence 预览</h1>
-          <p>evidence.jsonl -> Web 清洗轨迹 / 里程 / 运动耗时</p>
+          <h1>地图表现 Evidence 复核</h1>
+          <p>evidence.jsonl -> 地图图例 / 情景区间 / Web 清洗轨迹 / 统计</p>
         </section>
         <section class="toolbar" aria-label="导入和地图操作">
           <label class="file-button">
@@ -39,72 +39,71 @@
         <section class="map-area" aria-label="地图预览">
           <div id="mapView" class="map-view"></div>
           <div class="map-filter-panel" aria-label="地图筛选条件">
-            <label class="toggle"><input id="showRaw" type="checkbox" checked /> raw</label>
-            <label class="toggle"><input id="showCleaned" type="checkbox" checked /> 清洗轨迹</label>
-            <label class="toggle disabled" title="情景区域始终显示全量触发范围">
-              <input id="showScenarios" type="checkbox" checked disabled /> 情景区域
-            </label>
-            <label class="toggle"><input id="showTerrain" type="checkbox" /> 地形</label>
-            <label class="toggle"><input id="showContours" type="checkbox" checked /> 等高线</label>
-            <label class="toggle"><input id="showDirection" type="checkbox" checked /> 方向</label>
+            <div class="map-filter-group-title">主对照</div>
+            <label class="toggle"><input id="showCleaned" type="checkbox" checked /> 清洗成品线</label>
+            <label class="toggle"><input id="showRaw" type="checkbox" checked /> 原始轨迹线</label>
+            <label class="toggle"><input id="showScenarios" type="checkbox" checked /> 情景范围面</label>
+            <div class="map-filter-group-title">复核叠加</div>
+            <label class="toggle"><input id="showDirection" type="checkbox" checked /> 方向箭头</label>
+            <div class="map-filter-group-title">点证据</div>
             <label class="toggle"><input id="showCleanedPoints" type="checkbox" /> 清洗点</label>
-            <label class="toggle"><input id="showPoints" type="checkbox" /> 点</label>
-            <details class="scenario-repair-filter option-menu">
-              <summary id="scenarioRepairSummary">修复 全部修复</summary>
-              <div id="scenarioRepairOptions" class="scenario-repair-options option-menu-options"></div>
-            </details>
+            <label class="toggle"><input id="showPoints" type="checkbox" /> 原始点</label>
+            <div class="map-filter-group-title">地形背景</div>
+            <label class="toggle"><input id="showTerrain" type="checkbox" /> 地形阴影</label>
+            <label class="toggle"><input id="showContours" type="checkbox" checked /> 等高线</label>
             <input id="showTrusted" type="checkbox" hidden />
           </div>
-          <div id="contourDataPanel" class="contour-data-panel" aria-label="等高线数据">
-            <strong>等高线数据</strong>
-            <span id="contourDataStatus">等待地图初始化</span>
-            <span id="contourDataSelected">点击等高线查看海拔</span>
-          </div>
           <div class="map-legend">
-            <span><i class="line raw"></i>raw 轨迹</span>
-            <span><i class="line cleaned"></i>算法清洗轨迹</span>
-            <span><i class="line repaired"></i>启用修复段</span>
-            <span><i class="line conflict"></i>密集区冲突</span>
-            <span><i class="line spine-conflict"></i>V17 保方向冲突</span>
-            <span><i class="polygon scenario"></i>情景触发区域</span>
-            <span><i class="terrain-swatch"></i>地形阴影</span>
-            <span><i class="contour-swatch"></i>等高线</span>
-            <span><i class="direction-arrow">▲</i>方向</span>
-            <span><i class="dot cleaned"></i>清洗点</span>
-            <span><i class="dot weak"></i>weak</span>
-            <span><i class="dot reject"></i>reject/intake</span>
-            <span><i class="dot raw"></i>未解释 raw</span>
+            <span><i class="line raw"></i>原始轨迹线</span>
+            <span><i class="line cleaned"></i>清洗成品线</span>
+            <span><i class="polygon scenario"></i>情景范围面</span>
+            <span><i class="line repaired"></i>情景高亮段</span>
+            <span><i class="line conflict"></i>局部冲突线</span>
+            <span><i class="line spine-conflict"></i>保方向冲突线</span>
           </div>
+          <section id="currentProblemPanel" class="panel current-problem-panel" aria-label="当前问题">
+            <div class="panel-title">
+              <h2>当前问题</h2>
+              <div class="panel-title-actions">
+                <span id="scenarioRangeState">-</span>
+                <button id="exitFocusButton" class="panel-icon-button" type="button" hidden>退出专注</button>
+              </div>
+            </div>
+            <details class="manual-range-control">
+              <summary>按编号查看</summary>
+              <div class="scenario-review-controls">
+                <label>清洗点区间<input id="scenarioRangeInput" type="text" placeholder="1836-1919" /></label>
+                <button id="scenarioRangeReviewButton" type="button">查看</button>
+              </div>
+            </details>
+            <div id="scenarioRangeReview" class="summary-list scenario-review-results"></div>
+          </section>
         </section>
 
-        <aside class="right-panel" aria-label="点详情面板">
-          <section class="panel">
+        <aside class="right-panel" aria-label="地图表现复核面板">
+          <section id="reviewOverviewPanel" class="panel review-overview-panel">
             <div class="panel-title">
-              <h2>情景复盘</h2>
-              <span id="cleaningConfigState">密集区</span>
+              <h2>复核样本</h2>
+              <span id="reviewDatasetState">等待导入</span>
+            </div>
+            <div id="reviewDatasetOverview" class="summary-list review-overview"></div>
+          </section>
+
+          <section id="reviewTaskPanel" class="panel">
+            <div class="panel-title">
+              <h2>复核任务</h2>
+              <span id="cleaningConfigState">等待导入</span>
             </div>
             <div id="cleaningAlgorithm" class="summary-list algorithm-list"></div>
           </section>
 
-          <section class="panel" hidden>
+          <section class="panel details-panel">
             <div class="panel-title">
-              <h2>区间复核</h2>
-              <span id="scenarioRangeState">-</span>
-            </div>
-            <div class="scenario-review-controls">
-              <label>清洗点范围<input id="scenarioRangeInput" type="text" placeholder="1836-1919" /></label>
-              <button id="scenarioRangeReviewButton" type="button">复核</button>
-            </div>
-            <div id="scenarioRangeReview" class="summary-list scenario-review-results"></div>
-          </section>
-
-          <section class="panel details-panel" hidden>
-            <div class="panel-title">
-              <h2>点详情</h2>
+              <h2>证据详情</h2>
               <span id="selectedPointText">-</span>
             </div>
             <div id="pointDetails" class="point-details">
-              <p class="empty-note">点击地图点查看 raw 证据或 Web 清洗点详情</p>
+              <p class="empty-note">选择地图上的点后显示</p>
             </div>
           </section>
         </aside>

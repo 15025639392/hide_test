@@ -58,3 +58,23 @@ test('cleaned line features do not style disabled repair contexts', () => {
   assert.equal(features[0].geometry.coordinates.length, 3);
   assert.equal(style.repairEnabled, false);
 });
+
+test('cleaned line styles mark hybrid scenario repairs separately', () => {
+  const point = {
+    trackPointId: 2,
+    lat: 30.001,
+    lng: 120.001,
+    primaryExplanation: {
+      source: 'scenario',
+      scenario: 'rest_photo_micro_move',
+      scenarioLabel: '拍照/休息微移动'
+    }
+  };
+
+  const style = cleanedLineStyleForPoint(point, new Set(['rest_photo_micro_move']));
+
+  assert.equal(style.lineStyle, 'scenario_hybrid');
+  assert.equal(style.repairKind, 'hybrid');
+  assert.equal(style.repairLabel, '休息小移动');
+  assert.equal(style.repairEnabled, true);
+});

@@ -338,6 +338,18 @@ test('buildSixLayerTrackProduct preserves a weak cave endpoint and simplifies th
   assert.deepEqual(gapScenario.evidence.rawPointIds, [906]);
   assert.ok(product.stats.totalDistanceMeters > 0);
 
+  const sameRoadOnlyProduct = buildSixLayerTrackProduct(events, {
+    config: {
+      roundTripLineSimplifyEnabled: false,
+      roundTripSameRoadCollapseEnabled: true
+    }
+  });
+  const sameRoadOnlyScenario = scenarioByName(sameRoadOnlyProduct, 'same_road_round_trip');
+  assert.ok(sameRoadOnlyScenario);
+  assert.equal(sameRoadOnlyScenario.action, 'centerline_with_endpoint');
+  assert.equal(sameRoadOnlyScenario.localRebuild, 'same_road_centerline');
+  assert.equal(scenarioByName(sameRoadOnlyProduct, 'round_trip_line'), undefined);
+
   const lineProduct = buildSixLayerTrackProduct(events, {
     config: { roundTripSameRoadCollapseEnabled: false }
   });
@@ -701,7 +713,16 @@ test('buildSixLayerTrackProduct removes a single low-speed moving spike', () => 
   assert.equal(scenario.evidence.spikeRawPointId, 1667);
   assert.equal(rawDecision.entersTrustedGpx, false);
   assert.equal(rawDecision.countsDistance, false);
+  assert.equal(rawDecision.primaryExplanation.scenario, 'moving_spike_cleanup');
   assert.equal(bridgePoint.sourceRawPointId, 1668);
+  assert.equal(bridgePoint.primaryExplanation.scenario, 'moving_spike_cleanup');
+  assert.ok(bridgePoint.scenarioContexts.some((context) =>
+    context.scenario === 'moving_spike_cleanup'));
+  const coverage = product.scenarioCoverage.find((entry) =>
+    entry.scenario === 'moving_spike_cleanup');
+  assert.ok(coverage);
+  assert.ok(coverage.contextTrackPointCount > 0);
+  assert.ok(coverage.rawDecisionContextCount > 0);
 });
 
 test('buildSixLayerTrackProduct keeps composable scenario contexts on overlapping spans', () => {
