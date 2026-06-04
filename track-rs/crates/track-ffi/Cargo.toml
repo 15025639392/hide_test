@@ -1,0 +1,13 @@
+[package]
+name = "track-ffi"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "lib"]
+
+[dependencies]
+serde_json.workspace = true
+track-core.workspace = true
+track-model.workspace = true

@@ -1,0 +1,40 @@
+{
+  "ruleId": "web_intake_v0",
+  "ruleVersion": "0.1.0",
+  "source": "web_algorithm",
+  "request": {
+    "config": {},
+    "input": {
+      "sessionContext": {
+        "sessionId": "network-positioning-source-kept",
+        "strategyVersion": "rust-poc",
+        "createdElapsedRealtimeNanos": 0,
+        "createdWallTimeMillis": 0
+      },
+      "locationSamples": [
+        {
+          "rawPointId": 1,
+          "positioningSource": "network",
+          "latitude": 30.0,
+          "longitude": 120.0,
+          "horizontalAccuracyMeters": 8.0,
+          "wallTimeMillis": 1000,
+          "elapsedRealtimeNanos": 1000000000,
+          "isMock": false
+        }
+      ]
+    }
+  },
+  "expected": {
+    "trackPointCount": 1,
+    "gpxTrackPointCount": 1,
+    "segmentCount": 1,
+    "totalDistanceMeters": 0.0,
+    "movingTimeSeconds": 0.0,
+    "acceptedRawPointIds": [1],
+    "rejectedRawPointIds": [],
+    "decisionReasons": {
+      "1": "first_fix_good"
+    }
+  }
+}

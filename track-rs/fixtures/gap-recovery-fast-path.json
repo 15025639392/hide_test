@@ -1,0 +1,54 @@
+{
+  "ruleId": "horizontal_decision.gap_recovery_fast_path",
+  "ruleVersion": "0.1.0",
+  "source": "web_algorithm",
+  "request": {
+    "config": {
+      "strategyVersion": "rust-poc"
+    },
+    "input": {
+      "sessionContext": {
+        "sessionId": "gap-recovery-fast-path",
+        "strategyVersion": "rust-poc",
+        "createdElapsedRealtimeNanos": 0,
+        "createdWallTimeMillis": 0
+      },
+      "locationSamples": [
+        {
+          "rawPointId": 1,
+          "positioningSource": "gnss",
+          "latitude": 30.0,
+          "longitude": 120.0,
+          "horizontalAccuracyMeters": 8.0,
+          "wallTimeMillis": 1000,
+          "elapsedRealtimeNanos": 1000000000,
+          "isMock": false
+        },
+        {
+          "rawPointId": 2,
+          "positioningSource": "gnss",
+          "latitude": 30.000135,
+          "longitude": 120.0,
+          "horizontalAccuracyMeters": 8.0,
+          "wallTimeMillis": 122000,
+          "elapsedRealtimeNanos": 122000000000,
+          "isMock": false
+        }
+      ]
+    }
+  },
+  "expected": {
+    "trackPointCount": 2,
+    "gpxTrackPointCount": 2,
+    "segmentCount": 2,
+    "totalDistanceMeters": 0.0,
+    "totalDistanceMetersTolerance": 0.000001,
+    "movingTimeSeconds": 0.0,
+    "acceptedRawPointIds": [1, 2],
+    "rejectedRawPointIds": [],
+    "decisionReasons": {
+      "1": "first_fix_good",
+      "2": "gap_recovery"
+    }
+  }
+}

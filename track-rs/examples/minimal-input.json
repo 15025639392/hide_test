@@ -1,0 +1,73 @@
+{
+  "config": {
+    "strategyVersion": "rust-poc"
+  },
+  "input": {
+    "sessionContext": {
+      "sessionId": "minimal",
+      "strategyVersion": "rust-poc",
+      "createdElapsedRealtimeNanos": 0,
+      "createdWallTimeMillis": 0,
+      "deviceModel": null,
+      "completionState": null
+    },
+    "samplingEpochs": [],
+    "locationSamples": [
+      {
+        "rawPointId": 1,
+        "positioningSource": "gnss",
+        "latitude": 30.0,
+        "longitude": 120.0,
+        "horizontalAccuracyMeters": 8.0,
+        "altitudeMeters": null,
+        "verticalAccuracyMeters": null,
+        "speedMetersPerSecond": null,
+        "bearingDegrees": null,
+        "wallTimeMillis": 1000,
+        "elapsedRealtimeNanos": 1000000000,
+        "isMock": false,
+        "samplingEpochId": null,
+        "callbackReceivedElapsedRealtimeNanos": null,
+        "callbackDelayNanos": null
+      },
+      {
+        "rawPointId": 2,
+        "positioningSource": "gnss",
+        "latitude": 30.0001,
+        "longitude": 120.0,
+        "horizontalAccuracyMeters": 8.0,
+        "altitudeMeters": null,
+        "verticalAccuracyMeters": null,
+        "speedMetersPerSecond": null,
+        "bearingDegrees": null,
+        "wallTimeMillis": 2000,
+        "elapsedRealtimeNanos": 2000000000,
+        "isMock": false,
+        "samplingEpochId": null,
+        "callbackReceivedElapsedRealtimeNanos": null,
+        "callbackDelayNanos": null
+      },
+      {
+        "rawPointId": 3,
+        "positioningSource": "gnss",
+        "latitude": 30.0002,
+        "longitude": 120.0,
+        "horizontalAccuracyMeters": 8.0,
+        "altitudeMeters": null,
+        "verticalAccuracyMeters": null,
+        "speedMetersPerSecond": null,
+        "bearingDegrees": null,
+        "wallTimeMillis": 3500,
+        "elapsedRealtimeNanos": 3500000000,
+        "isMock": false,
+        "samplingEpochId": null,
+        "callbackReceivedElapsedRealtimeNanos": null,
+        "callbackDelayNanos": null
+      }
+    ],
+    "motionWindows": [],
+    "barometerWindows": [],
+    "barometerCalibrations": []
+  }
+}
+

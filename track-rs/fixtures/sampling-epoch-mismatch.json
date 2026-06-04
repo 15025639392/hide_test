@@ -1,0 +1,50 @@
+{
+  "ruleId": "web_intake_v0",
+  "ruleVersion": "0.1.0",
+  "source": "web_algorithm",
+  "request": {
+    "config": {},
+    "input": {
+      "sessionContext": {
+        "sessionId": "sampling-epoch-mismatch",
+        "strategyVersion": "rust-poc",
+        "createdElapsedRealtimeNanos": 0,
+        "createdWallTimeMillis": 0
+      },
+      "samplingEpochs": [
+        {
+          "epochId": "active",
+          "state": "MOVING",
+          "startedElapsedRealtimeNanos": 0,
+          "requestedMinTimeMs": 1000,
+          "requestedMinDistanceMeters": 1.0
+        }
+      ],
+      "locationSamples": [
+        {
+          "rawPointId": 1,
+          "positioningSource": "gnss",
+          "latitude": 30.0,
+          "longitude": 120.0,
+          "horizontalAccuracyMeters": 8.0,
+          "wallTimeMillis": 1000,
+          "elapsedRealtimeNanos": 1000000000,
+          "isMock": false,
+          "samplingEpochId": "missing"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "trackPointCount": 0,
+    "gpxTrackPointCount": 0,
+    "segmentCount": 0,
+    "totalDistanceMeters": 0.0,
+    "movingTimeSeconds": 0.0,
+    "acceptedRawPointIds": [],
+    "rejectedRawPointIds": [1],
+    "decisionReasons": {
+      "1": "sampling_epoch_mismatch"
+    }
+  }
+}

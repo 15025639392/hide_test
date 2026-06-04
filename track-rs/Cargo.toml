@@ -1,0 +1,20 @@
+[workspace]
+members = [
+  "crates/track-model",
+  "crates/track-core",
+  "crates/track-ffi",
+  "crates/track-cli",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "UNLICENSED"
+version = "0.1.0"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+track-core = { path = "crates/track-core" }
+track-model = { path = "crates/track-model" }
+

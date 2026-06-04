@@ -1,0 +1,65 @@
+{
+  "ruleId": "horizontal_decision.implied_speed_too_high",
+  "ruleVersion": "0.1.0",
+  "source": "web_algorithm",
+  "request": {
+    "config": {
+      "strategyVersion": "rust-poc"
+    },
+    "input": {
+      "sessionContext": {
+        "sessionId": "implied-speed-too-high",
+        "strategyVersion": "rust-poc",
+        "createdElapsedRealtimeNanos": 0,
+        "createdWallTimeMillis": 0
+      },
+      "locationSamples": [
+        {
+          "rawPointId": 1,
+          "positioningSource": "gnss",
+          "latitude": 30.0,
+          "longitude": 120.0,
+          "horizontalAccuracyMeters": 8.0,
+          "wallTimeMillis": 1000,
+          "elapsedRealtimeNanos": 1000000000,
+          "isMock": false
+        },
+        {
+          "rawPointId": 2,
+          "positioningSource": "gnss",
+          "latitude": 30.000135,
+          "longitude": 120.0,
+          "horizontalAccuracyMeters": 8.0,
+          "wallTimeMillis": 2000,
+          "elapsedRealtimeNanos": 2000000000,
+          "isMock": false
+        },
+        {
+          "rawPointId": 3,
+          "positioningSource": "gnss",
+          "latitude": 30.0001,
+          "longitude": 120.0,
+          "horizontalAccuracyMeters": 8.0,
+          "wallTimeMillis": 3000,
+          "elapsedRealtimeNanos": 3000000000,
+          "isMock": false
+        }
+      ]
+    }
+  },
+  "expected": {
+    "trackPointCount": 2,
+    "gpxTrackPointCount": 2,
+    "segmentCount": 1,
+    "totalDistanceMeters": 11.119492664455874,
+    "totalDistanceMetersTolerance": 0.000001,
+    "movingTimeSeconds": 2.0,
+    "acceptedRawPointIds": [1, 3],
+    "rejectedRawPointIds": [],
+    "decisionReasons": {
+      "1": "first_fix_good",
+      "2": "implied_speed_too_high",
+      "3": "moving_good_fix"
+    }
+  }
+}

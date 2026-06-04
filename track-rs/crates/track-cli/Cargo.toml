@@ -1,0 +1,11 @@
+[package]
+name = "track-cli"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+track-core.workspace = true
+track-model.workspace = true
+

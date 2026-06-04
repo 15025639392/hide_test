@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://device-fix.local/schemas/track-fixture.schema.json",
+  "title": "Track Core Fixture",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["ruleId", "ruleVersion", "source", "request", "expected"],
+  "properties": {
+    "ruleId": {
+      "type": "string",
+      "pattern": "^[a-z0-9._-]+$"
+    },
+    "ruleVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "type": "string",
+      "enum": ["web_algorithm", "rust_infrastructure"]
+    },
+    "request": {
+      "type": "object"
+    },
+    "expected": {
+      "type": "object",
+      "required": [
+        "trackPointCount",
+        "gpxTrackPointCount",
+        "segmentCount",
+        "totalDistanceMeters",
+        "movingTimeSeconds"
+      ],
+      "properties": {
+        "trackPointCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "gpxTrackPointCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "segmentCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "totalDistanceMeters": {
+          "type": "number"
+        },
+        "totalDistanceMetersTolerance": {
+          "type": "number",
+          "minimum": 0
+        },
+        "movingTimeSeconds": {
+          "type": "number"
+        },
+        "movingTimeSecondsTolerance": {
+          "type": "number",
+          "minimum": 0
+        },
+        "acceptedRawPointIds": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "rejectedRawPointIds": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "decisionReasons": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "ruleId": "safety_kernel_v0",
+  "ruleVersion": "0.1.0",
+  "source": "rust_infrastructure",
+  "request": {
+    "config": {},
+    "input": {
+      "sessionContext": {
+        "sessionId": "empty-after-filter",
+        "strategyVersion": "rust-poc",
+        "createdElapsedRealtimeNanos": 0,
+        "createdWallTimeMillis": 0
+      },
+      "locationSamples": [
+        {
+          "rawPointId": 1,
+          "positioningSource": "",
+          "latitude": 91.0,
+          "longitude": 181.0,
+          "horizontalAccuracyMeters": 0.0,
+          "wallTimeMillis": -1,
+          "elapsedRealtimeNanos": -1,
+          "isMock": true
+        }
+      ]
+    }
+  },
+  "expected": {
+    "trackPointCount": 0,
+    "gpxTrackPointCount": 0,
+    "segmentCount": 0,
+    "totalDistanceMeters": 0.0,
+    "movingTimeSeconds": 0.0,
+    "acceptedRawPointIds": [],
+    "rejectedRawPointIds": [1],
+    "decisionReasons": {
+      "1": "missing_position_source"
+    }
+  }
+}

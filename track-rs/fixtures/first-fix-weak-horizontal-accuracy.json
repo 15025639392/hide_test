@@ -1,0 +1,51 @@
+{
+  "ruleId": "web_first_fix_v0",
+  "ruleVersion": "0.1.0",
+  "source": "web_algorithm",
+  "request": {
+    "config": {},
+    "input": {
+      "sessionContext": {
+        "sessionId": "first-fix-weak-horizontal-accuracy",
+        "strategyVersion": "rust-poc",
+        "createdElapsedRealtimeNanos": 0,
+        "createdWallTimeMillis": 0
+      },
+      "locationSamples": [
+        {
+          "rawPointId": 1,
+          "positioningSource": "gnss",
+          "latitude": 30.0,
+          "longitude": 120.0,
+          "horizontalAccuracyMeters": 35.0,
+          "wallTimeMillis": 1000,
+          "elapsedRealtimeNanos": 1000000000,
+          "isMock": false
+        },
+        {
+          "rawPointId": 2,
+          "positioningSource": "gnss",
+          "latitude": 30.0001,
+          "longitude": 120.0,
+          "horizontalAccuracyMeters": 8.0,
+          "wallTimeMillis": 2000,
+          "elapsedRealtimeNanos": 2000000000,
+          "isMock": false
+        }
+      ]
+    }
+  },
+  "expected": {
+    "trackPointCount": 1,
+    "gpxTrackPointCount": 1,
+    "segmentCount": 1,
+    "totalDistanceMeters": 0.0,
+    "movingTimeSeconds": 0.0,
+    "acceptedRawPointIds": [2],
+    "rejectedRawPointIds": [],
+    "decisionReasons": {
+      "1": "weak_horizontal_accuracy",
+      "2": "first_fix_good"
+    }
+  }
+}
