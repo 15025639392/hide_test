@@ -91,7 +91,7 @@ explanation model:
 | `pause_then_resume_walk.jsonl` | 休息后继续走 | pause 不计运动时间；恢复后重建连续性，再累计 |
 | `transport_then_walk_recovery.jsonl` | 景区车、缆车、电梯或骑行混入 | transport 风险段不计徒步距离、运动时间、徒步爬升；恢复点 reset |
 | `weak_recovery_endpoint_cave.jsonl` | 洞内或遮挡端点出现在弱恢复点云中 | `weak_recovery_endpoint` 保留端点锚点；不计距，不清掉端点 |
-| `same_road_round_trip_interwoven.jsonl` | 同一路往返误差交织 | `same_road_round_trip` 压成中心线；折返点/洞内端点保留 |
+| `same_road_round_trip_interwoven.jsonl` | 同一路往返误差交织 | 强同路证据下 `same_road_round_trip` 压成中心线；折返点/洞内端点保留 |
 | `stationary_session_collapse.jsonl` | 整段记录基本静止 | `stationary_session_collapse` 输出单代表点；全 raw 被解释 |
 | `stationary_drift_cloud.jsonl` | 局部停留漂移云 | `stationary_drift_collapse` 压成停留锚点；不贡献距离 |
 | `gnss_altitude_noisy_baro_clean.jsonl` | `Location.altitude` 噪声大，气压计稳定 | GNSS altitude 降置信或拒绝；selected ascent 使用 BAROMETER |

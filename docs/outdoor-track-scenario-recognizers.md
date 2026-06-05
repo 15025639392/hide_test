@@ -121,9 +121,10 @@ primitiveFacts:
 | 场景 | 解决的问题 | 局部重建器 | 产品约束 |
 | --- | --- | --- | --- |
 | `weak_recovery_endpoint` | 长 GAP 后弱定位点云其实保留了真实端点形状，例如洞内或遮挡出口附近。 | `weak_recovery_shape_anchor` | 生成形状锚点进入可信 GPX；距离、运动时间和跨边界爬升为 0。 |
-| `same_road_round_trip` | 同一路往返点云交织，被误识别成两条分离线路或复杂折线。 | `same_road_centerline` | 同路部分压到中心线；保留弱恢复端点；不能把洞内端点清掉。 |
+| `same_road_round_trip` | 强同路证据的往返点云交织，被误识别成两条分离线路或复杂折线。 | `same_road_centerline` | 强同路部分压到中心线；保留弱恢复端点；不能把洞内端点清掉。 |
 | `closed_loop_round_trip` | 普通可信点构成首尾接近的往返或回环，但没有弱恢复折返点。 | `round_trip_diagnostic` | 当前只做诊断，不改写轨迹；用于标注真实往返/回环语义。 |
 | `round_trip_line` | 往返形态存在，但不是极窄同路走廊。 | `round_trip_polyline` | 做线形抽稀，保留起点、折返点、终点语义。 |
+| `composite_gap_local_settlement` | 候选像往返，但缺少往返意图且跨长 GAP / 长时段复合段。 | `local_settlement_pipeline` | 只做诊断和复核入口；不改线、不抢局部策略主解释。 |
 | `dense_area_intent` | 所有定位点密集窗口先统一判断主意图。 | `dense_area_intent_classifier` | 只做上层调度诊断；输出 `forward_motion`、`stationary`、`round_trip`、`gap_cluster` 或 `mixed`。 |
 | `dense_main_route_settlement` | 定位点密集且存在明确前进方向时，局部噪声会让路线出现锯齿或小折返。 | `dense_main_route_skeleton` | 先保主前进骨架，再允许停留、跳变、遮挡等情景继续修复；骨架外点作为贡献 raw。 |
 | `enclosed_gap_cluster` | 小范围内多次 GAP recovery 和 stationary anchor 聚集，符合山洞/室内类遮挡表现。 | `gap_stationary_cluster_diagnostic` | 当前只做诊断；不跨 GAP 计距或计爬升。 |
@@ -131,8 +132,8 @@ primitiveFacts:
 | `position_snap_recovery` | GNSS 短时跳到新位置，但 reported speed 不支持交通判断，随后恢复稳定低速点。 | `position_snap_recovery_anchor` | 跳变恢复点作为零距离锚点；跳变弱点写入贡献 raw；后续低速点继续正常计距。 |
 | `stationary_session_collapse` | 整个 session 基本静止，raw 点云只是定位漂移。 | `stationary_session_anchor` | 全段压成一个代表点；距离、运动时间、爬升均不累计。 |
 | `stationary_drift_collapse` | 局部停留期间产生长串漂移点，容易膨胀里程。 | `stationary_drift_anchor` | 漂移云压成一个停留解释锚点；贡献 raw 全部被解释，不进入距离，也不作为清洗路线顶点。 |
-| `rest_photo_micro_move` | 休息、拍照、找路时在小范围内来回挪动。 | `rest_photo_micro_move_diagnostic` / `rest_photo_micro_move_simplifier` / `rest_photo_micro_move_anchor` | 默认作为已沉淀清洗策略：近静止折返压成休息锚点，其余小移动保留少数形状锚点；只有显式关闭重建时才退回诊断。 |
-| `moving_spike_cleanup` | 连续移动中的单个低速侧向回跳点。 | `moving_spike_line_bridge` | 默认作为已沉淀清洗策略：删除单点尖刺，用前后可信移动点直连；尖刺 raw 作为 suppressed 诊断证据保留，不再作为后续情景贡献输入或常规复核任务列出。 |
+| `rest_photo_micro_move` | 休息、拍照、找路时在小范围内来回挪动。 | `rest_photo_micro_move_diagnostic` / `rest_photo_micro_move_shape_filter` / `rest_photo_micro_move_simplifier` / `rest_photo_micro_move_anchor` | 默认作为已沉淀清洗策略：强休息折返压成休息锚点，弱微移动优先保留移动形状，其他小移动保留少数形状锚点；只有显式关闭重建时才退回诊断。 |
+| `moving_spike_cleanup` | 连续移动中的单个侧向回跳点；高 reported speed 只有在强几何和前向接线同时成立时才可覆盖。 | `moving_spike_line_bridge` | 默认作为已沉淀清洗策略：删除单点尖刺，用前后可信移动点直连；尖刺 raw 作为 suppressed 诊断证据保留，不再作为后续情景贡献输入或常规复核任务列出。 |
 | `gap_recovery_boundary` | GAP 后恢复点可能进入 GPX，但不能跨 GAP 计距。 | `gap_recovery_anchor` | 恢复点开启/重置 segment；距离、运动时间、GNSS/气压爬升 delta 为 0。 |
 | `transport_contamination` | 景区车、缆车、电梯、骑行或高速移动混入徒步记录。 | `transport_diagnostic_continuity` | 可以保留诊断连续性；不进入徒步距离、运动时间、可信 GPX 或徒步爬升。 |
 
@@ -165,17 +166,28 @@ primitiveFacts:
 - 局部 span 包含往返折返点，往返起终点接近。
 - span 的 cross-track 偏差可控。
 - 同路证据满足窄 bbox 和折返点前后 approach pair 距离较小。
+- V17.5 起如果没有 `round_trip` dense intent，同路中心线塌缩还必须同时满足
+  更窄 bbox、更近 approach pair、较短 duration 和较小 sample gap。
 - 如果折返点来自 `weak_recovery_endpoint`，端点 raw id 必须保留。
 
 重建动作：
 
 - 同路往返段改写为中心线坐标，避免把 3 米内交织误差画成两条分离路线。
 - 弱恢复端点使用 endpoint raw 坐标，保护洞内、遮挡端点或真实折返点形状。
+- 不满足强证据的同路候选降级为 `round_trip_line`；evidence 保留
+  `sameRoadCollapseEligible=false` 和 `sameRoadCollapseReason`，供人工复盘。
+- 降级后的 `round_trip_line` 可使用更强的 fallback 抽稀容忍度；如果折返点来自
+  `weak_recovery_endpoint`，仍使用 endpoint raw 坐标，而不是弱点云中心。
+- 如果候选缺少 `round_trip` dense intent，且 duration 或 sample gap 表明它是长 GAP
+  复合段，则不做 active `round_trip_line`；保留 rejected candidate 证据，并在
+  V17.7 起产出 `composite_gap_local_settlement` 诊断情景，交给休息/小移动、
+  弱恢复端点、GAP recovery、静止锚点等局部策略继续结算。
 
 不能做：
 
 - 不能把真实同一路交织展开成左右两条路线。
 - 不能为了平滑中心线删除弱恢复端点。
+- 不能把长 GAP、长时段、缺少 `round_trip` intent 的宽走廊直接压成中心线。
 
 ### `round_trip_line`
 
@@ -194,6 +206,28 @@ primitiveFacts:
 不能做：
 
 - 不能把非同路的大回环强行压成同一条中心线。
+- 不能跨长 GAP 复合段吞掉已有局部 settlement 语义。
+
+### `composite_gap_local_settlement`
+
+识别证据：
+
+- 已形成 `round_trip_line` / `same_road_round_trip` 候选几何，但缺少 `round_trip`
+  dense intent。
+- duration 或 sample gap 超过无意图往返候选上限，表明它更像长 GAP 复合段。
+- 区间内通常同时存在休息/拍照微移动、弱恢复端点、GAP recovery、静止锚点等局部语义。
+
+重建动作：
+
+- 不改写清洗轨迹，不压中心线，也不跨整段做 polyline 抽稀。
+- 输出 `roundTripLineRejectedCandidates[]` 供算法复盘。
+- 同步输出 `composite_gap_local_settlement` 进入 `scenarioCoverage[]` 和 Web 右侧
+  问题清单；`primaryEligible=false`，只作为上下文，不替代局部策略主解释。
+
+不能做：
+
+- 不能为了让审核列表可见而把该段升级成 active 往返清洗。
+- 不能覆盖后续局部策略已经产生的实际 anchor / accept / reject 解释。
 
 ### `closed_loop_round_trip`
 
@@ -388,10 +422,16 @@ V16.1 行为：
 重建动作：
 
 - V17.1 起默认把该场景作为可执行清洗策略，不再要求人工复盘确认后才改线。
-- 执行前会先清理 `moving_spike_cleanup` 这类点级伪迹，避免低速侧向尖刺被误选为
+- 执行前会先清理 `moving_spike_cleanup` 这类点级伪迹，避免侧向尖刺被误选为
   休息锚点或微移动形状点。
 - 当 bbox 和首尾净距仍接近静止折返时，输出 `rest_photo_micro_move_anchor`：
   压成一个休息锚点，距离、运动时间和爬升窗口均不累计。
+- 对短路径、点数少、前后入口/出口自然，但单个休息锚点会造成明显绕行的弱微移动，
+  输出 `rest_photo_micro_move_shape_filter`：
+  保留低速移动形状点，只移除中间停留锚点并暂停休息耗时；代表锚点只保留在 evidence
+  和 suppressed raw 解释中，不作为可信 GPX 的路线经过点。
+  可过滤对象限定为 span 中间的 `stationary_anchor` 或 reported speed 近 0 的停顿点；
+  Raw#5018 这类正常低速移动点必须保留。
 - 其余已识别的小范围来回挪动输出 `rest_photo_micro_move_simplifier`：
   保留首尾和少数形状锚点，合并中间来回抖动点，距离按简化后的微移动形状结算。
 - 只有显式关闭 `restPhotoMicroMoveSimplifyEnabled` 时，才输出
@@ -436,6 +476,9 @@ V16.1 行为：
 - 前后点构成连续移动方向，桥接距离仍合理。
 - 中间单点 reported speed 处于低速范围，即使已经是 `accept`，只要相对前后连线有
   明显横向偏离，也可以作为尖刺候选。
+- V17.8 起，高于低速竞争阈值但低于交通速度的 reported speed 不再绝对阻止尖刺清理；
+  只有 detour / lateral 明显更强，且前后桥接方向能接上后续前进点时，才允许
+  `high_reported_speed_geometry_override`。
 - 通过中间点的折线距离明显大于前后直连距离。
 - 当相邻三点窗口同时产生多个尖刺候选时，按 detour 和 lateral 选择几何证据更强的
   单个候选，避免把连续两个点一起删掉。
@@ -446,6 +489,8 @@ V16.1 行为：
 - V17.3 起它作为前置点级伪迹清理，执行顺序优先于 `dense_area_intent`、
   `rest_photo_micro_move` 等大范围 span settlement；后续情景基于清理后的
   `product.track` 继续处理。
+- V17.8 起 scenario evidence 写入 `speedPolicy` 和 `forwardAngleDeltaDegrees`，
+  解释高 reported speed 点为什么仍可被删除或为什么未触发 override。
 - 输出 `moving_spike_line_bridge`。
 - 尖刺 raw point 不进入可信 GPX，不计距离和运动时间。
 - 后一个可信移动点按前一点到后一点直连重算距离；尖刺 raw id 进入
@@ -517,6 +562,8 @@ V16.1 行为：
   `5ccf3a9f-1d85-4c2b-8b24-61839d459845` 的 `Raw#1944-2014`、
   `Raw#2461-2483`、`Raw#2795-2834`、`Raw#4562-4610`、`Raw#5050-5094`
   必须塌成 `rest_photo_micro_move_anchor`，
+  `Raw#5015-5042` 必须走 `rest_photo_micro_move_shape_filter`，保留
+  Raw#5015-5018 和 Raw#5039-5042，不让代表锚点 Raw#5023 成为清洗线顶点；
   `Raw#3192-3946` 必须保持 bounded distance 并由
   `enclosed_loop_cluster_settlement` 压缩内部聚集；
   `0ddf2d35-02e2-454c-9057-667265fe8a71` 的 `Raw#256-312` 必须塌成一个
@@ -531,4 +578,13 @@ V16.1 行为：
   单独列出移动单点尖刺清理。V17.3 起默认 settlement 按管道执行，尖刺 raw 进入
   `suppressedRawPointIds` 诊断链，保留 `scenarioCoverage[]` 和点解释，但不再污染
   后续情景的 active raw 贡献输入。
+  V17.9 起 `rest_photo_micro_move` 支持弱微移动形状过滤：当短路径片段只需小清洗、
+  且休息锚点会制造明显路线绕行时，保留低速移动形状点，只移除中间停留锚点。
+  V17.6 起同向 `overlap` 和同源/同计划 `nested` 保方向候选会在
+  `forwardSpineDecisions[]` 中产出 active `merge` / `select`；同一 raw 子区间只保留
+  一个 `selectedCandidateId`，落选候选保留为 `contextCandidateIds`。
+  V17.7 起长 GAP 复合段 rejected round-trip candidate 会产出
+  `composite_gap_local_settlement` 诊断情景，进入右侧问题清单但不改线、不抢主解释。
+  V17.8 起 `moving_spike_cleanup` 支持高 reported speed 强几何 override；该 override
+  仅用于超过低速竞争阈值的单点，并要求前后 bridge 与后续前进方向对齐。
 - 策略版本、文档和测试必须同改；不能只改阈值或只改报告文案。

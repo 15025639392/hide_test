@@ -18,6 +18,10 @@ function scenarioByIntent(product, intent) {
     && scenario.evidence?.intent === intent);
 }
 
+function rawRangesOverlap(a, b) {
+  return a.startRawPointId <= b.endRawPointId && b.startRawPointId <= a.endRawPointId;
+}
+
 function rawPointAdder(events, baseLat, baseLng) {
   const cosLat = Math.cos(baseLat * Math.PI / 180);
   return (rawPointId, elapsedSeconds, eastMeters, northMeters, accuracy = 5,
@@ -330,6 +334,11 @@ test('buildSixLayerTrackProduct preserves a weak cave endpoint and simplifies th
   assert.deepEqual(sameRoadScenario.anchorRawPointIds, [643, 644]);
   assert.equal(sameRoadScenario.evidence.inputTrackPointCount, 30);
   assert.equal(sameRoadScenario.evidence.outputTrackPointCount, 13);
+  assert.equal(sameRoadScenario.evidence.sameRoadCollapseEligible, true);
+  assert.equal(sameRoadScenario.evidence.sameRoadCollapseReason,
+    'strong_same_road_geometry_without_round_trip_intent');
+  assert.equal(sameRoadScenario.evidence.durationSeconds, 602);
+  assert.ok(sameRoadScenario.evidence.maxSampleGapSeconds < 600);
   assert.ok(Array.isArray(sameRoadScenario.evidence.denseAreaIntents));
   assert.equal(typeof sameRoadScenario.evidence.roundTripIntentSupported, 'boolean');
   assert.ok(sameRoadScenario.confidence > 0.5);
@@ -361,6 +370,102 @@ test('buildSixLayerTrackProduct preserves a weak cave endpoint and simplifies th
     startRawPointId: 469,
     endRawPointId: 678
   });
+
+  const guardedProduct = buildSixLayerTrackProduct(events, {
+    config: {
+      restPhotoMicroMoveMaxEndpointDistanceMeters: 100,
+      restPhotoMicroMoveMaxBboxMeters: 30,
+      restPhotoMicroMoveMaxPathMeters: 200,
+      restPhotoMicroMoveMinPathNetRatio: 1,
+      roundTripSameRoadNoIntentMaxBboxMeters: 30
+    }
+  });
+  const guardedSameRoadScenario = scenarioByName(guardedProduct, 'same_road_round_trip');
+  const guardedLineScenario = scenarioByName(guardedProduct, 'round_trip_line');
+  assert.equal(guardedSameRoadScenario, undefined);
+  assert.ok(guardedLineScenario);
+  assert.equal(guardedLineScenario.action, 'rdp_line_simplify');
+  assert.equal(guardedLineScenario.evidence.simplifyToleranceMeters, 6);
+  assert.equal(guardedLineScenario.evidence.sameRoadCollapseEligible, false);
+  assert.equal(guardedLineScenario.evidence.sameRoadCollapseReason,
+    'missing_round_trip_intent_wide_corridor');
+});
+
+test('buildSixLayerTrackProduct keeps long no-intent round-trip candidate as local settlement context', () => {
+  const events = [
+    {
+      event: 'session_metadata',
+      sessionId: 'S1',
+      recordStartElapsedRealtimeNanos: 1_000_000_000
+    },
+    {
+      event: 'sampling_policy',
+      samplingEpochId: 1,
+      state: 'MOVING',
+      eventElapsedRealtimeNanos: 1_000_000_000
+    }
+  ];
+  const addRaw = rawPointAdder(events, 30, 120);
+
+  addRaw(469, 1, 0, 0, 5);
+  let rawPointId = 470;
+  let elapsedSeconds = 20;
+  for (const eastMeters of [6, 12, 20, 26, 18, 9, 15, 24, 30, 22, 14, 7, 16, 25, 31, 21]) {
+    addRaw(rawPointId++, elapsedSeconds, eastMeters, Math.sin(eastMeters) * 4, 5);
+    elapsedSeconds += 20;
+  }
+  addRaw(634, 500, 20, 5, 5);
+  addRaw(641, 1300, 150, 112, 48, 0);
+  addRaw(642, 1302, 148, 111, 38, 0);
+  addRaw(643, 1303, 150, 110, 33, 0);
+  addRaw(644, 1306, 151, 111, 64, 0);
+  addRaw(666, 2200, 30, -8, 8);
+  elapsedSeconds = 2220;
+  rawPointId = 668;
+  for (const [eastMeters, northMeters] of [
+    [24, -4], [18, 2], [10, 4], [4, -2], [12, -5], [20, 3],
+    [14, 5], [8, 3], [3, -1], [5, 2], [2, 0]
+  ]) {
+    addRaw(rawPointId++, elapsedSeconds, eastMeters, northMeters, 5);
+    elapsedSeconds += 20;
+  }
+  addRaw(679, elapsedSeconds, 2, 0, 5);
+
+  const product = buildSixLayerTrackProduct(events, {
+    config: {
+      denseAreaIntentEnabled: false,
+      restPhotoMicroMoveSimplifyEnabled: false
+    }
+  });
+  const compositeScenario = scenarioByName(product, 'composite_gap_local_settlement');
+  const coverage = product.scenarioCoverage.find((item) =>
+    item.scenario === 'composite_gap_local_settlement');
+  const contextPoint = product.track.find((point) =>
+    point.scenarioContexts?.some((context) =>
+      context.scenario === 'composite_gap_local_settlement'));
+
+  assert.equal(scenarioByName(product, 'same_road_round_trip'), undefined);
+  assert.equal(scenarioByName(product, 'round_trip_line'), undefined);
+  assert.ok(compositeScenario);
+  assert.equal(compositeScenario.primaryEligible, false);
+  assert.equal(compositeScenario.action, 'reject_round_trip_rewrite');
+  assert.equal(compositeScenario.localRebuild, 'local_settlement_pipeline');
+  assert.equal(compositeScenario.evidence.roundTripIntentSupported, false);
+  assert.equal(compositeScenario.evidence.sameRoadCollapseReason,
+    'missing_round_trip_intent_long_span');
+  assert.equal(compositeScenario.evidence.rejectionReason,
+    'missing_round_trip_intent_long_composite_span');
+  assert.ok(compositeScenario.evidence.durationSeconds > 1200);
+  assert.ok(compositeScenario.evidence.maxSampleGapSeconds > 600);
+  assert.ok(product.roundTripLineRejectedCandidates?.some((candidate) =>
+    candidate.rawRange.startRawPointId === compositeScenario.rawRange.startRawPointId
+      && candidate.rawRange.endRawPointId === compositeScenario.rawRange.endRawPointId));
+  assert.ok(coverage);
+  assert.equal(coverage.primaryTrackPointCount, 0);
+  assert.ok(coverage.contextTrackPointCount > 0);
+  assert.ok(contextPoint);
+  assert.notEqual(contextPoint.primaryExplanation?.scenario,
+    'composite_gap_local_settlement');
 });
 
 test('buildSixLayerTrackProduct recognizes a closed-loop round trip without a weak endpoint', () => {
@@ -492,7 +597,13 @@ test('buildSixLayerTrackProduct preserves dense area main route skeleton first',
   assert.ok(Array.isArray(product.forwardSpineOverlaps));
   assert.ok(Array.isArray(product.forwardSpineConflicts));
   assert.ok(product.forwardSpineDecisions.some((decision) =>
-    decision.reason === 'single_forward_spine_candidate'));
+    decision.reviewOnly === false
+    && ['merge', 'select'].includes(decision.decision)
+    && decision.candidateIds.length === 2
+    && decision.selectedCandidateId));
+  assert.equal(product.forwardSpineDecisions.filter((decision) =>
+    decision.reviewOnly === false
+    && rawRangesOverlap(decision.rawRange, scenario.rawRange)).length, 1);
   assert.ok(settledPoints.length >= 2);
   assert.equal(settledPoints[0].reason, 'dense_main_route_start');
   assert.equal(settledPoints.at(-1).reason, 'dense_main_route_end');
@@ -720,6 +831,45 @@ test('buildSixLayerTrackProduct collapses short rest micro move foldback', () =>
   assert.notEqual(collapsed.sourceRawPointId, 2461);
 });
 
+test('buildSixLayerTrackProduct filters weak rest photo shape without dropping movement', () => {
+  const events = loopEvents(30, 120, [
+    [0, 0], [3, 0], [5, 5], [6, 9], [6, 12],
+    [7, 8], [8, 4], [9, 0], [9, 3], [12, 0]
+  ], 8000, 3);
+  for (const event of events.filter((event) => event.event === 'raw_location')) {
+    event.speed = event.rawPointId === 8004 ? 0 : 1;
+  }
+  const stillWindow = events.find((event) =>
+    event.event === 'device_motion_window'
+    && event.endElapsedRealtimeNanos === 13_000_000_000);
+  stillWindow.linearAccelerationRmsMps2 = 0.03;
+  stillWindow.gyroscopeRmsRadps = 0.01;
+  stillWindow.stepDetectorCount = 0;
+
+  const product = buildSixLayerTrackProduct(events, {
+    config: {
+      restPhotoMicroMoveMinTrackPoints: 8,
+      restPhotoMicroMoveMaxTrackPoints: 8
+    }
+  });
+  const scenario = scenarioByName(product, 'rest_photo_micro_move');
+  const filteredPoints = product.track.filter((point) =>
+    point.reason.startsWith('rest_photo_micro_move_'));
+  const representativeDecision = product.rawPointDecisions.find((decision) =>
+    decision.rawPointId === 8004);
+
+  assert.ok(scenario);
+  assert.equal(scenario.action, 'filter_weak_micro_move_shape');
+  assert.equal(scenario.localRebuild, 'rest_photo_micro_move_shape_filter');
+  assert.ok(scenario.evidence.keptRawPointIds.includes(8003));
+  assert.ok(scenario.evidence.keptRawPointIds.includes(8005));
+  assert.ok(scenario.evidence.suppressedRawPointIds.includes(8004));
+  assert.equal(filteredPoints.some((point) => point.sourceRawPointId === 8004), false);
+  assert.ok(scenario.evidence.anchorDetourMeters > 12);
+  assert.equal(representativeDecision.entersTrustedGpx, false);
+  assert.equal(representativeDecision.primaryExplanation.scenario, 'rest_photo_micro_move');
+});
+
 test('buildSixLayerTrackProduct removes a single low-speed moving spike', () => {
   const events = loopEvents(30, 120, [
     [0, 0], [4, 0], [9, 0], [9, -6], [14, 1], [18, 2]
@@ -752,6 +902,101 @@ test('buildSixLayerTrackProduct removes a single low-speed moving spike', () => 
   assert.ok(coverage);
   assert.ok(coverage.contextTrackPointCount > 0);
   assert.ok(coverage.rawDecisionContextCount > 0);
+});
+
+test('buildSixLayerTrackProduct removes a high reported speed spike with strong forward geometry', () => {
+  const events = [
+    {
+      event: 'session_metadata',
+      sessionId: 'S1',
+      recordStartElapsedRealtimeNanos: 1_000_000_000
+    },
+    {
+      event: 'sampling_policy',
+      samplingEpochId: 1,
+      state: 'MOVING',
+      eventElapsedRealtimeNanos: 1_000_000_000
+    }
+  ];
+  const addRaw = rawPointAdder(events, 30, 120);
+  addRaw(4100, 1, 0, 0, 5, 1.0);
+  addRaw(4101, 4, 10, 0, 5, 1.0);
+  addRaw(4102, 7, 10, 10, 5, 2.6);
+  addRaw(4103, 10, 20, 0, 5, 1.0);
+  addRaw(4104, 13, 30, 0, 5, 1.0);
+
+  const product = buildSixLayerTrackProduct(events, {
+    config: {
+      denseAreaIntentEnabled: false,
+      restPhotoMicroMoveEnabled: false,
+      enclosedLoopSettlementEnabled: false,
+      positionSnapRecoveryEnabled: false
+    }
+  });
+  const scenario = product.scenarios.find((item) =>
+    item.scenario === 'moving_spike_cleanup'
+      && item.evidence?.spikeRawPointId === 4102);
+  const removedDecision = product.rawPointDecisions.find((decision) =>
+    decision.rawPointId === 4102);
+  const bridgePoint = product.track.find((point) =>
+    point.suppressedRawPointIds?.includes(4102));
+
+  assert.ok(scenario);
+  assert.equal(scenario.evidence.reportedSpeedMetersPerSecond, 2.6);
+  assert.equal(scenario.evidence.speedPolicy, 'high_reported_speed_geometry_override');
+  assert.ok(scenario.evidence.detourMeters > 5);
+  assert.ok(scenario.evidence.lateralMeters > 5);
+  assert.ok(scenario.evidence.forwardAngleDeltaDegrees < 1);
+  assert.equal(removedDecision.entersTrustedGpx, false);
+  assert.equal(removedDecision.primaryExplanation.scenario, 'moving_spike_cleanup');
+  assert.ok(bridgePoint);
+  assert.equal(bridgePoint.sourceRawPointId, 4103);
+  assert.deepEqual(bridgePoint.suppressedRawPointIds, [4102]);
+});
+
+test('buildSixLayerTrackProduct keeps a high reported speed real corner without forward alignment', () => {
+  const events = [
+    {
+      event: 'session_metadata',
+      sessionId: 'S1',
+      recordStartElapsedRealtimeNanos: 1_000_000_000
+    },
+    {
+      event: 'sampling_policy',
+      samplingEpochId: 1,
+      state: 'MOVING',
+      eventElapsedRealtimeNanos: 1_000_000_000
+    }
+  ];
+  const addRaw = rawPointAdder(events, 30, 120);
+  addRaw(4200, 1, 0, -10, 5, 1.0);
+  addRaw(4201, 4, 0, 0, 5, 1.0);
+  addRaw(4202, 7, 0, 10, 5, 2.6);
+  addRaw(4203, 10, 10, 10, 5, 1.0);
+  addRaw(4204, 13, 20, 10, 5, 1.0);
+
+  const product = buildSixLayerTrackProduct(events, {
+    config: {
+      denseAreaIntentEnabled: false,
+      restPhotoMicroMoveEnabled: false,
+      enclosedLoopSettlementEnabled: false,
+      positionSnapRecoveryEnabled: false
+    }
+  });
+  const scenario = product.scenarios.find((item) =>
+    item.scenario === 'moving_spike_cleanup'
+      && item.evidence?.spikeRawPointId === 4202);
+  const keptDecision = product.rawPointDecisions.find((decision) =>
+    decision.rawPointId === 4202);
+  const keptPoint = product.track.find((point) => point.sourceRawPointId === 4202);
+
+  assert.equal(scenario, undefined);
+  assert.equal(keptDecision.entersTrustedGpx, true);
+  assert.equal(keptDecision.primaryExplanation.source, 'primitive');
+  assert.ok(keptPoint);
+  assert.equal(keptPoint.reason, 'moving_good_fix');
+  assert.equal(product.track.some((point) =>
+    point.suppressedRawPointIds?.includes(4202)), false);
 });
 
 test('buildSixLayerTrackProduct removes moving spike before rest photo micro move settlement', () => {

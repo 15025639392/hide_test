@@ -78,7 +78,8 @@ SDK Core 不直接负责：
 | `stationary_drift_collapse` | 把停留漂移压成锚点。 |
 | `moving_spike_cleanup` | 删除单点尖刺，用前后正常点短接。 |
 | `gap_recovery_boundary` | GAP 后接回，但距离和运动时间置 0。 |
-| `same_road_round_trip` | 同路往返收成稳定中心线。 |
+| `same_road_round_trip` | 强同路证据的往返收成稳定中心线。 |
+| `composite_gap_local_settlement` | 长 GAP 复合段不跨整段改线，只作为局部策略上下文。 |
 | `enclosed_loop_cluster_settlement` | 遮挡回环压成锚点或短连接。 |
 | `transport_contamination` | 排除非徒步移动。 |
 

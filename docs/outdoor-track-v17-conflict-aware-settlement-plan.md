@@ -19,10 +19,10 @@ GPX 和高度门控仍属于基础安全边界；本阶段只处理 dense forwar
 six-layer-evidence-v16.1
 ```
 
-当前 V17.4 清洗版本：
+当前 V17.9 清洗版本：
 
 ```text
-six-layer-evidence-v17.4
+six-layer-evidence-v17.9
 ```
 
 V17 工作名：
@@ -188,6 +188,7 @@ V17 第一轮继续使用真实 evidence 做锚点。
 | `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#2461-2483` | 不出现短折返线。 |
 | `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#2795-2834` | 不出现短折返线。 |
 | `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#3192-3946` | 往返 + 轻微移动保持 bounded distance；多个局部方向不能叠加放大距离。 |
+| `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#417-900` | 同路往返证据不足且属于长 GAP 复合段时，不产生 active 往返清洗；记录 rejected candidate 和 `composite_gap_local_settlement`，让局部策略结算。 |
 | `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#3862-3929` | 不应归类为局部休息覆盖 forward；更适合进入主前进 / forward spine 仲裁。 |
 | `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#4562-4610` | 静止/休息微移动保持塌缩。 |
 | `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `Raw#5050-5094` | 局部休息微移动继续覆盖粗粒度 forward。 |
@@ -224,14 +225,15 @@ V17 启动阶段不做这些事：
 
 状态：已落盘为 `six-layer-evidence-v17.1`。
 
-- `rest_photo_micro_move` 默认应用到轨迹清洗：近静止折返塌成休息锚点，其余小移动简化为少量形状锚点。
+- `rest_photo_micro_move` 默认应用到轨迹清洗：强休息/近静止折返塌成休息锚点，
+  其余小移动按几何风险选择轻桥接或少量形状锚点。
 - Web 复核任务不再单独列出已沉淀的休息/拍照小移动；`scenarioCoverage[]` 和点级解释仍保留证据。
 
 ### V17.2 Moving Spike Cleanup Settlement
 
 状态：已落盘为 `six-layer-evidence-v17.2`。
 
-- `moving_spike_cleanup` 默认应用到轨迹清洗：删除低速侧向尖刺点，用前后可信移动点桥接。
+- `moving_spike_cleanup` 默认应用到轨迹清洗：删除侧向尖刺点，用前后可信移动点桥接。
 - `moving_spike_cleanup` 执行优先于 `rest_photo_micro_move`，先消除点级伪迹，再让
   休息/拍照小移动处理剩余区间。
 - Web 复核任务不再单独列出已沉淀的移动单点尖刺清理；`scenarioCoverage[]` 和点级解释仍保留证据。
@@ -259,13 +261,83 @@ V17 启动阶段不做这些事：
   `routeLineStrategy=bridge_previous_next`，清洗线直接连接前后有效路线点。
 - 这样保持轨迹连续，同时避免路线为了连续而折到漂移云中心，误表达“人真实经过该点”。
 
-### V17.5 Active Merge/Select
+### V17.5 Same-Road Round-Trip Guard
+
+状态：已落盘为 `six-layer-evidence-v17.5`。
+
+- `same_road_round_trip` 中心线塌缩只在强同路证据下执行。
+- 若缺少 `round_trip` dense intent，则必须同时满足更窄的 bbox、更近的 approach pair、
+  较短 duration 和较小 sample gap；否则降级为 `round_trip_line`。
+- 降级后的 `round_trip_line` 继续保留 `sameRoadBboxMeters`、
+  `sameRoadApproachPairDistanceMeters`、`sameRoadCollapseEligible=false` 和
+  `sameRoadCollapseReason`，方便复核为什么没有压成中心线。
+- 如果候选缺少 `round_trip` dense intent，且 duration / sample gap 已经说明它是
+  长 GAP 复合段，则不再降级成 active `round_trip_line`，只记录
+  `roundTripLineRejectedCandidates[]`，让后续局部 settlement 继续处理。
+- 真实样本 `5ccf3a9f-1d85-4c2b-8b24-61839d459845` 的 `Raw#417-900` 默认记录为
+  rejected round-trip candidate，不再产生 active `same_road_round_trip` 或
+  `round_trip_line`；轨迹由休息/小移动、弱恢复端点、GAP recovery 和静止锚点等局部
+  策略接管。
+
+### V17.6 Active Merge/Select
+
+状态：已落盘为 `six-layer-evidence-v17.6`。
 
 - 只启用同向重叠和包含候选的 merge/select。
+- `forwardSpineDecisions[]` 对同向 `overlap` 输出 active `merge`，对同源/同计划
+  `nested` 输出 active `select`；落选候选进入 `contextCandidateIds`。
+- winner 选择优先考虑已落盘的 `dense_main_route_settlement`、raw 覆盖、置信度和
+  path/net 比例，避免粗 intent 与已清洗骨架重复 active。
 - 不处理 crossing 为 active 改线。
 - 必须证明不会破坏 V16.1 已锁定的真实 evidence 回归。
 
-### V17.6 Crossing And Round-Trip Arbitration
+### V17.7 Composite GAP Local Settlement Diagnostic
+
+状态：已落盘为 `six-layer-evidence-v17.7`。
+
+- 将 `roundTripLineRejectedCandidates[]` 中的长 GAP 复合候选同步沉淀为
+  `composite_gap_local_settlement` 情景。
+- 该情景只做诊断和复核入口，不改写轨迹；`primaryEligible=false`，不会抢走
+  休息/小移动、弱恢复端点、GAP recovery、静止锚点等局部策略的点级主解释。
+- `scenarioCoverage[]` 和 Web 右侧问题清单会按 Raw 时间序列列出该复合段，审核人员
+  可以看到“为什么没有把整段压成同路往返或往返折线”。
+- 真实样本 `5ccf3a9f-1d85-4c2b-8b24-61839d459845` 的 `Raw#417-900` 覆盖：
+  无 active `same_road_round_trip` / `round_trip_line`，保留 rejected candidate，
+  同时输出 `composite_gap_local_settlement` 作为上下文。
+
+### V17.8 Moving Spike High-Speed Geometry Override
+
+状态：已落盘为 `six-layer-evidence-v17.8`。
+
+- `moving_spike_cleanup` 保留原有低速候选口径：普通 competing 点仍需要 reported speed
+  不超过低速竞争阈值，或与 strict 低速候选重叠并且几何得分更强。
+- 对 reported speed 高于低速竞争阈值、但仍低于交通速度的单点，不直接信任 reported
+  speed；只有同时满足更强 detour、更强 lateral、短 bridge，且 bridge 后方向能接上
+  后续前进路线时，才触发 `high_reported_speed_geometry_override`。
+- scenario evidence 写入 `speedPolicy` 和 `forwardAngleDeltaDegrees`，便于复核为什么
+  高 reported speed 点仍被当作尖刺删除。
+- 覆盖 `5ccf3a9f-1d85-4c2b-8b24-61839d459845` 中 `Raw#1585`：reported speed
+  为 `2.57m/s`，但 detour / lateral 强且 Raw#1578 -> Raw#1586 bridge 与后续前进方向
+  对齐，因此删除 Raw#1585，用 Raw#1578 -> Raw#1586 直连。
+- 同步加入合成反例：高 reported speed 的真实拐点如果 bridge 与后续方向不对齐，不触发
+  override，防止把真实转弯误删。
+
+### V17.9 Rest/Photo Weak Micro-Move Shape Filter
+
+状态：已落盘为 `six-layer-evidence-v17.9`。
+
+- 对短路径、点数少、入口/出口都能自然接回主路线的 `rest_photo_micro_move`，如果单个
+  休息锚点会制造明显额外绕行，则不再塌成 `rest_photo_micro_move_anchor`。
+- 该类弱微移动输出 `rest_photo_micro_move_shape_filter`：保留低速移动形状点，只移除
+  中间停留锚点并暂停休息耗时；代表锚点作为 evidence / suppressed raw 保留，不进入
+  可信 GPX 路线顶点。
+- scenario evidence 写入 `entryDistanceMeters`、`exitDistanceMeters`、
+  `bridgeDistanceMeters` 和 `anchorDetourMeters`，解释为何采用轻桥接而不是休息锚点。
+- 覆盖真实样本 `5ccf3a9f-1d85-4c2b-8b24-61839d459845` 的 `Raw#5015-5042`：
+  Raw#5015-5018 和 Raw#5039-5042 继续进入清洗线；Raw#5023 仍是代表证据，
+  但只作为 suppressed raw，不再作为清洗线顶点。
+
+### V17.10 Crossing And Round-Trip Arbitration
 
 - 对 crossing 候选和往返覆盖主方向做 review-only 到 active 的升级评估。
 - 只有真实样本和 targeted synthetic case 都稳定后，才允许 active。
@@ -320,6 +392,44 @@ V17.4 已完成：
 2. Web 清洗线和方向箭头按 `routeLineVertex=false` 跳过该点并桥接前后路线点。
 3. 点级解释、`scenarioCoverage[]` 和 raw 贡献归属继续保留在锚点上。
 
-下一步进入 V17.5 前，应先人工复盘 `forwardSpineOverlaps[]`，把真正可靠的同向重叠和
-包含候选提升为高置信 `forwardSpineConflicts[]`，再考虑 active merge/select；crossing
-和往返覆盖主方向继续 review-only。
+V17.5 已完成：
+
+1. 将 `same_road_round_trip` 从宽松几何升级改为强证据中心线塌缩。
+2. 缺少 `round_trip` dense intent 且 span 过长、sample gap 过大或同路几何偏宽时，
+   不允许 active same-road centerline；若同时是长 GAP 复合段，也不允许 active
+   `round_trip_line`。
+3. 覆盖 `5ccf3a9f-1d85-4c2b-8b24-61839d459845` 中 `Raw#417-900`：默认保留往返候选
+   拒绝证据，不再压成 same-road centerline，也不再横跨整段做 round-trip polyline；
+   后续局部策略继续结算该复合段。
+
+V17.6 已完成：
+
+1. 将保方向仲裁从 review-only 沉淀为可执行 decision：同向 `overlap` / `nested`
+   候选会产出 `reviewOnly=false` 的 `merge` / `select`。
+2. 同一 raw 子区间只选一个 `selectedCandidateId`；落选候选保留在
+   `contextCandidateIds`，不静默丢失。
+3. 合成 dense main route 回归已覆盖 active nested select；`npm test` 已通过。
+
+V17.7 已完成：
+
+1. 将长 GAP 复合段 rejected round-trip candidate 转成
+   `composite_gap_local_settlement` 诊断情景。
+2. 该情景进入 `scenarioCoverage[]` 和右侧问题清单，但不改写轨迹、不抢点级主解释。
+3. 合成长 GAP 无 intent case 与真实 `Raw#417-900` 回归已覆盖该诊断化路径。
+
+V17.8 已完成：
+
+1. 给 `moving_spike_cleanup` 增加高 reported speed 的强几何 override。
+2. override 只对超过低速竞争阈值的点生效，不改变原有低速候选仲裁。
+3. 覆盖真实 `Raw#1585` 删除，并用合成真实拐点验证不会误删缺少 forward alignment 的
+   高 reported speed 点。
+
+V17.9 已完成：
+
+1. 给 `rest_photo_micro_move` 增加弱微移动形状过滤分支。
+2. 短路径、入口/出口自然、但单锚点绕行代价高的片段不再强行塌成休息锚点。
+3. 覆盖真实 `Raw#5015-5042`，保留 Raw#5015-5018 和 Raw#5039-5042，
+   Raw#5023 只作为代表证据和 suppressed raw。
+
+下一步进入 V17.10 前，应继续人工复盘 crossing 和往返覆盖主方向样本；只有真实样本和
+targeted synthetic case 都稳定后，才允许 crossing active 仲裁。

@@ -5,7 +5,7 @@ const START_TOLERANCE_NANOS = 1_000_000_000;
 const MOTION_LOOKBACK_NANOS = 5_000_000_000;
 const NANOS_PER_SECOND = 1_000_000_000;
 
-export const SIX_LAYER_TRACK_ALGORITHM_VERSION = 'six-layer-evidence-v17.4';
+export const SIX_LAYER_TRACK_ALGORITHM_VERSION = 'six-layer-evidence-v17.9';
 
 export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   maxIntakeAccuracyMeters: 80,
@@ -54,9 +54,16 @@ export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   roundTripLineMaxRawPointIdSpanBefore: 240,
   roundTripLineMaxRawPointIdSpanAfter: 300,
   roundTripLineSimplifyToleranceMeters: 3,
+  roundTripLineSameRoadFallbackSimplifyToleranceMeters: 6,
+  roundTripLineNoIntentMaxDurationSeconds: 1200,
+  roundTripLineNoIntentMaxSampleGapSeconds: 600,
   roundTripSameRoadCollapseEnabled: true,
   roundTripSameRoadMaxBboxMeters: 80,
   roundTripSameRoadMaxApproachPairDistanceMeters: 35,
+  roundTripSameRoadNoIntentMaxBboxMeters: 40,
+  roundTripSameRoadNoIntentMaxApproachPairDistanceMeters: 20,
+  roundTripSameRoadNoIntentMaxDurationSeconds: 1200,
+  roundTripSameRoadNoIntentMaxSampleGapSeconds: 600,
   closedLoopRoundTripEnabled: true,
   closedLoopRoundTripMinTrackPoints: 30,
   closedLoopRoundTripMaxTrackPoints: 180,
@@ -97,9 +104,18 @@ export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   restPhotoMicroMoveLongCollapseMaxBboxMeters: 28,
   restPhotoMicroMoveLongCollapseMaxNetDistanceMeters: 10,
   restPhotoMicroMoveLongCollapseMaxPathMeters: 120,
+  restPhotoMicroMoveShapeFilterMaxPathMeters: 32,
+  restPhotoMicroMoveShapeFilterMaxTrackPoints: 10,
+  restPhotoMicroMoveShapeFilterMaxDurationSeconds: 150,
+  restPhotoMicroMoveShapeFilterMaxEdgeMeters: 6,
+  restPhotoMicroMoveShapeFilterMinAnchorDetourMeters: 12,
   movingSpikeCleanupEnabled: true,
   movingSpikeMaxReportedSpeedMetersPerSecond: 0.2,
   movingSpikeMaxCompetingReportedSpeedMetersPerSecond: 1.0,
+  movingSpikeGeometryOverrideMaxReportedSpeedMetersPerSecond: 3.0,
+  movingSpikeGeometryOverrideMinDetourMeters: 5,
+  movingSpikeGeometryOverrideMinLateralMeters: 5,
+  movingSpikeGeometryOverrideMaxForwardAngleDeltaDegrees: 30,
   movingSpikeMinDetourMeters: 1.5,
   movingSpikeMinLateralMeters: 2.5,
   movingSpikeMinNeighborDistanceMeters: 5,
@@ -125,6 +141,8 @@ export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   denseMainRouteMaxPathNetRatio: 3,
   denseMainRouteSimplifyToleranceMeters: 4,
   denseMainRouteMinPathReductionRatio: 0.15,
+  forwardSpineArbitrationEnabled: true,
+  forwardSpineSameDirectionMaxDeltaDegrees: 20,
   interwovenCorridorSimplifyEnabled: false,
   interwovenCorridorMinTrackPoints: 30,
   interwovenCorridorMinRawPointIdSpan: 200,
@@ -323,7 +341,7 @@ export function buildSixLayerTrackProduct(modelOrEvents, options = {}) {
   product.denseAreaSettlementPlan = buildDenseAreaSettlementPlan(product,
     pipeline.denseAreaIntents);
   product.denseIntentConflicts = buildDenseIntentConflicts(product);
-  applyForwardSpineArbitrationReview(product, pipeline.denseAreaIntents);
+  applyForwardSpineArbitrationReview(product, pipeline.denseAreaIntents, config);
   attachExplanationModel(product);
   product.scenarioCoverage = buildScenarioCoverage(product);
   product.findings = buildFindings(product, evidence);
@@ -1220,14 +1238,15 @@ function restMicroMoveConflictShouldPreferForwardSpine(product, scenario) {
       && rawRangesOverlap(candidate.rawRange, scenario.rawRange));
 }
 
-function applyForwardSpineArbitrationReview(product, denseAreaIntents = []) {
+function applyForwardSpineArbitrationReview(product, denseAreaIntents = [], config = {}) {
   const candidates = buildForwardSpineCandidates(product, denseAreaIntents);
   const overlaps = buildForwardSpineOverlaps(candidates);
   const conflicts = buildForwardSpineConflicts(product, candidates, overlaps);
   product.forwardSpineCandidates = candidates;
   product.forwardSpineOverlaps = overlaps;
   product.forwardSpineConflicts = conflicts;
-  product.forwardSpineDecisions = buildForwardSpineDecisions(candidates, overlaps, conflicts);
+  product.forwardSpineDecisions = buildForwardSpineDecisions(candidates, overlaps, conflicts,
+    config);
 }
 
 function buildForwardSpineCandidates(product, denseAreaIntents = []) {
@@ -1365,7 +1384,9 @@ function buildForwardSpineConflicts(product, candidates, overlaps) {
     || String(a.conflict).localeCompare(String(b.conflict)));
 }
 
-function buildForwardSpineDecisions(candidates, overlaps, conflicts) {
+function buildForwardSpineDecisions(candidates, overlaps, conflicts, config = {}) {
+  const candidateById = new Map(candidates.map((candidate) =>
+    [candidate.candidateId, candidate]));
   const conflictedCandidateIds = new Set(conflicts.flatMap((conflict) =>
     conflict.candidateIds || []));
   const decisions = conflicts.map((conflict) => ({
@@ -1375,8 +1396,20 @@ function buildForwardSpineDecisions(candidates, overlaps, conflicts) {
     reason: conflict.conflict,
     reviewOnly: conflict.reviewOnly !== false
   }));
+  const arbitratedCandidateIds = new Set();
+  if (config.forwardSpineArbitrationEnabled !== false) {
+    for (const overlap of overlaps) {
+      const decision = forwardSpineArbitrationDecision(overlap, candidateById, config);
+      if (!decision) continue;
+      decisions.push(decision);
+      for (const candidateId of decision.candidateIds) {
+        arbitratedCandidateIds.add(candidateId);
+      }
+    }
+  }
   for (const candidate of candidates) {
     if (conflictedCandidateIds.has(candidate.candidateId)) continue;
+    if (arbitratedCandidateIds.has(candidate.candidateId)) continue;
     decisions.push({
       rawRange: candidate.rawRange,
       candidateIds: [candidate.candidateId],
@@ -1392,6 +1425,68 @@ function buildForwardSpineDecisions(candidates, overlaps, conflicts) {
 
 function forwardSpineDecisionForConflict(conflict) {
   return 'review_only';
+}
+
+function forwardSpineArbitrationDecision(overlap, candidateById, config) {
+  if (!['overlap', 'nested'].includes(overlap.relationship)) return null;
+  const candidates = [candidateById.get(overlap.leftCandidateId),
+    candidateById.get(overlap.rightCandidateId)].filter(Boolean);
+  if (candidates.length !== 2) return null;
+  const samePlannedSettlement = candidates[0].plannedSettlement === candidates[1].plannedSettlement;
+  const directionCompatible = Number.isFinite(overlap.directionDeltaDegrees)
+    ? overlap.directionDeltaDegrees <= config.forwardSpineSameDirectionMaxDeltaDegrees
+    : overlap.relationship === 'nested' && samePlannedSettlement;
+  if (!directionCompatible) return null;
+  const winner = forwardSpineWinner(candidates);
+  const losers = candidates.filter((candidate) => candidate.candidateId !== winner.candidateId);
+  const decision = overlap.relationship === 'nested' ? 'select' : 'merge';
+  return {
+    rawRange: overlap.rawRange,
+    candidateIds: candidates.map((candidate) => candidate.candidateId),
+    selectedCandidateId: winner.candidateId,
+    contextCandidateIds: losers.map((candidate) => candidate.candidateId),
+    decision,
+    reason: decision === 'merge'
+      ? 'same_direction_forward_spine_overlap'
+      : 'nested_forward_spine_candidate_selected',
+    reviewOnly: false,
+    evidence: {
+      relationship: overlap.relationship,
+      directionDeltaDegrees: overlap.directionDeltaDegrees,
+      selectedSource: winner.source,
+      selectedRawCoverageCount: forwardSpineRawCoverageCount(winner),
+      selectedPathNetRatio: forwardSpinePathNetRatio(winner)
+    }
+  };
+}
+
+function forwardSpineWinner(candidates) {
+  return [...candidates].sort((left, right) =>
+    forwardSpineScore(right) - forwardSpineScore(left)
+    || forwardSpineRawCoverageCount(right) - forwardSpineRawCoverageCount(left)
+    || String(left.candidateId).localeCompare(String(right.candidateId)))[0];
+}
+
+function forwardSpineScore(candidate) {
+  const coverage = forwardSpineRawCoverageCount(candidate);
+  const pathNetRatio = forwardSpinePathNetRatio(candidate);
+  const settlementBonus = candidate.source === 'dense_main_route_settlement' ? 40 : 0;
+  const confidence = Number.isFinite(candidate.confidence) ? candidate.confidence * 10 : 0;
+  const ratioPenalty = Number.isFinite(pathNetRatio) ? Math.max(0, pathNetRatio - 1) * 5 : 0;
+  return coverage + settlementBonus + confidence - ratioPenalty;
+}
+
+function forwardSpineRawCoverageCount(candidate) {
+  if (!validRawRange(candidate?.rawRange)) return 0;
+  return candidate.rawRange.endRawPointId - candidate.rawRange.startRawPointId + 1;
+}
+
+function forwardSpinePathNetRatio(candidate) {
+  if (!Number.isFinite(candidate?.pathMeters) || !Number.isFinite(candidate?.netDistanceMeters)
+      || candidate.netDistanceMeters <= 0) {
+    return null;
+  }
+  return scenarioNumber(candidate.pathMeters / candidate.netDistanceMeters);
 }
 
 function rawDecisionPointsInRange(product, rawRange) {
@@ -2013,10 +2108,20 @@ function simplifyRoundTripLineSpans(product, config, denseAreaIntents = []) {
     return false;
   }
   const candidates = [];
+  const rejectedCandidates = [];
   for (let index = 0; index < product.track.length; index++) {
     if (product.track[index].reason !== 'weak_recovery_shape_anchor') continue;
-    const candidate = roundTripLineCandidate(product.track, index, config);
-    if (candidate) candidates.push(candidate);
+    const result = roundTripLineCandidate(product.track, index, config, denseAreaIntents);
+    if (!result) continue;
+    if (result.rejectedCandidate) rejectedCandidates.push(result.rejectedCandidate);
+    if (result.candidate) candidates.push(result.candidate);
+  }
+  if (rejectedCandidates.length > 0) {
+    product.roundTripLineRejectedCandidates = nonOverlappingRoundTripRejectedCandidates(
+      rejectedCandidates);
+    for (const rejectedCandidate of product.roundTripLineRejectedCandidates) {
+      addScenario(product, compositeGapLocalSettlementScenario(rejectedCandidate));
+    }
   }
   if (candidates.length === 0) return false;
 
@@ -2026,15 +2131,19 @@ function simplifyRoundTripLineSpans(product, config, denseAreaIntents = []) {
   let changed = false;
   const collapsedRawPointRanges = [];
   for (const candidate of accepted.sort((a, b) => b.startIndex - a.startIndex)) {
-    const sameRoad = isRoundTripSameRoadCorridor(candidate, config);
+    const sameRoadDecision = roundTripSameRoadDecision(candidate, config, denseAreaIntents);
+    const sameRoad = sameRoadDecision.allowed;
     if (!sameRoad && !config.roundTripLineSimplifyEnabled) continue;
+    const lineSimplifyToleranceMeters = roundTripLineSimplifyToleranceMeters(config,
+      sameRoadDecision, sameRoad);
+    candidate.appliedSimplifyToleranceMeters = lineSimplifyToleranceMeters;
     const collapsed = sameRoad
       ? roundTripSameRoadPoints(candidate, config)
-      : roundTripLinePoints(candidate, config);
+      : roundTripLinePoints(candidate, lineSimplifyToleranceMeters);
     product.track.splice(candidate.startIndex,
       candidate.endIndex - candidate.startIndex + 1, ...collapsed);
     addScenario(product, roundTripLineScenario(candidate, collapsed, sameRoad, config,
-      denseAreaIntents));
+      denseAreaIntents, sameRoadDecision));
     collapsedRawPointRanges.push({
       startRawPointId: candidate.start.sourceRawPointId,
       turnRawPointId: candidate.turn.sourceRawPointId,
@@ -2049,18 +2158,20 @@ function simplifyRoundTripLineSpans(product, config, denseAreaIntents = []) {
   rebuildRawPointDecisions(product);
   product.roundTripLineSimplify = {
     collapsedSpanCount: collapsedRawPointRanges.length,
-    collapsedRawPointRanges: collapsedRawPointRanges.reverse()
+    collapsedRawPointRanges: collapsedRawPointRanges.reverse(),
+    rejectedCandidateCount: product.roundTripLineRejectedCandidates?.length ?? 0
   };
   return true;
 }
 
-function roundTripLineCandidate(track, turnIndex, config) {
+function roundTripLineCandidate(track, turnIndex, config, denseAreaIntents = []) {
   const turn = track[turnIndex];
   const startLowerRawPointId = turn.sourceRawPointId
     - config.roundTripLineMaxRawPointIdSpanBefore;
   const endUpperRawPointId = turn.sourceRawPointId
     + config.roundTripLineMaxRawPointIdSpanAfter;
   const candidates = [];
+  const rejectedCandidates = [];
 
   for (let startIndex = turnIndex - 1; startIndex >= 0; startIndex--) {
     const start = track[startIndex];
@@ -2083,7 +2194,7 @@ function roundTripLineCandidate(track, turnIndex, config) {
     const crossTrack = roundTripLineMaxCrossTrackMeters(span, start, turn, end);
     if (crossTrack > config.roundTripLineMaxCrossTrackMeters) continue;
 
-    candidates.push({
+    const candidate = {
       startIndex,
       turnIndex,
       endIndex,
@@ -2091,20 +2202,42 @@ function roundTripLineCandidate(track, turnIndex, config) {
       turn,
       end,
       span,
+      rawRange: {
+        startRawPointId: start.sourceRawPointId,
+        endRawPointId: end.sourceRawPointId
+      },
+      durationSeconds: trackSpanDurationSeconds(span),
+      maxSampleGapSeconds: trackSpanMaxGapSeconds(span),
       endpointDistance,
       turnDistance,
       crossTrack
-    });
+    };
+    const sameRoadDecision = roundTripSameRoadDecision(candidate, config, denseAreaIntents);
+    const compositeBlockReason = roundTripLineCompositeBlockReason(candidate, config,
+      sameRoadDecision);
+    if (compositeBlockReason) {
+      rejectedCandidates.push(roundTripLineRejectedCandidate(candidate, sameRoadDecision,
+        compositeBlockReason));
+      continue;
+    }
+    candidates.push(candidate);
   }
 
-  return candidates.sort((a, b) =>
+  return {
+    candidate: candidates.sort((a, b) =>
     b.end.sourceRawPointId - a.end.sourceRawPointId
     || a.start.sourceRawPointId - b.start.sourceRawPointId
-    || a.endpointDistance - b.endpointDistance)[0] ?? null;
+    || a.endpointDistance - b.endpointDistance)[0] ?? null,
+    rejectedCandidate: rejectedCandidates.sort((a, b) =>
+      b.rawRange.endRawPointId - a.rawRange.endRawPointId
+      || a.rawRange.startRawPointId - b.rawRange.startRawPointId
+      || a.endpointDistanceMeters - b.endpointDistanceMeters)[0] ?? null
+  };
 }
 
-function roundTripLineScenario(candidate, collapsed, sameRoad, config, denseAreaIntents = []) {
-  const sameRoadEvidence = sameRoad ? roundTripSameRoadEvidence(candidate) : null;
+function roundTripLineScenario(candidate, collapsed, sameRoad, config, denseAreaIntents = [],
+  sameRoadDecision = null) {
+  const sameRoadEvidence = sameRoadDecision?.evidence ?? null;
   const turnEndpointRawPointId = candidate.turn.shapeEndpointRawPointId
     ?? candidate.turn.sourceRawPointId;
   const rawRange = {
@@ -2133,10 +2266,15 @@ function roundTripLineScenario(candidate, collapsed, sameRoad, config, denseArea
       endpointDistanceMeters: scenarioNumber(candidate.endpointDistance),
       turnDistanceMeters: scenarioNumber(candidate.turnDistance),
       crossTrackMeters: scenarioNumber(candidate.crossTrack),
-      simplifyToleranceMeters: scenarioNumber(config.roundTripLineSimplifyToleranceMeters),
+      durationSeconds: scenarioNumber(candidate.durationSeconds),
+      maxSampleGapSeconds: scenarioNumber(candidate.maxSampleGapSeconds),
+      simplifyToleranceMeters: scenarioNumber(candidate.appliedSimplifyToleranceMeters
+        ?? config.roundTripLineSimplifyToleranceMeters),
       sameRoadBboxMeters: scenarioNumber(sameRoadEvidence?.bboxMeters),
       sameRoadApproachPairDistanceMeters:
         scenarioNumber(sameRoadEvidence?.approachPairDistanceMeters),
+      sameRoadCollapseEligible: sameRoadDecision?.allowed === true,
+      sameRoadCollapseReason: sameRoadDecision?.reason ?? 'not_evaluated',
       denseAreaIntents: overlappingIntents.map((intent) => intent.intent),
       roundTripIntentSupported: overlappingIntents
         .some((intent) => intent.intent === 'round_trip')
@@ -2259,31 +2397,170 @@ function rangesOverlap(startA, endA, startB, endB) {
   return startA <= endB && startB <= endA;
 }
 
-function roundTripLinePoints(candidate, config) {
-  if (isRoundTripSameRoadCorridor(candidate, config)) {
-    return roundTripSameRoadPoints(candidate, config);
-  }
-  const keepIndexes = roundTripLineKeepIndexes(candidate, config);
-  return keepIndexes.map((spanIndex, keepIndex) =>
-    roundTripKeptPoint(candidate, keepIndexes, spanIndex, keepIndex));
+function roundTripLinePoints(candidate, simplifyToleranceMeters) {
+  const keepIndexes = roundTripLineKeepIndexes(candidate, simplifyToleranceMeters);
+  return keepIndexes.map((spanIndex, keepIndex) => {
+    const point = roundTripKeptPoint(candidate, keepIndexes, spanIndex, keepIndex);
+    return spanIndex === candidate.turnIndex - candidate.startIndex
+      ? roundTripWeakEndpointPoint(point)
+      : point;
+  });
 }
 
-function isRoundTripSameRoadCorridor(candidate, config) {
-  if (!config.roundTripSameRoadCollapseEnabled) return false;
+function roundTripLineSimplifyToleranceMeters(config, sameRoadDecision, sameRoad) {
+  if (sameRoad) return config.roundTripLineSimplifyToleranceMeters;
+  if (sameRoadDecision?.evidence
+      && sameRoadDecision.reason?.startsWith('missing_round_trip_intent_')) {
+    return Math.max(config.roundTripLineSimplifyToleranceMeters,
+      config.roundTripLineSameRoadFallbackSimplifyToleranceMeters);
+  }
+  return config.roundTripLineSimplifyToleranceMeters;
+}
+
+function roundTripLineCompositeBlockReason(candidate, config, sameRoadDecision) {
+  if (sameRoadDecision?.allowed === true
+      || sameRoadDecision?.roundTripIntentSupported === true) {
+    return '';
+  }
+  if (candidate.durationSeconds > config.roundTripLineNoIntentMaxDurationSeconds) {
+    return 'missing_round_trip_intent_long_composite_span';
+  }
+  if (candidate.maxSampleGapSeconds > config.roundTripLineNoIntentMaxSampleGapSeconds) {
+    return 'missing_round_trip_intent_large_composite_gap';
+  }
+  return '';
+}
+
+function roundTripLineRejectedCandidate(candidate, sameRoadDecision, reason) {
+  return {
+    rawRange: candidate.rawRange,
+    turnRawPointId: candidate.turn.sourceRawPointId,
+    endpointRawPointId: candidate.turn.shapeEndpointRawPointId ?? candidate.turn.sourceRawPointId,
+    inputTrackPointCount: candidate.span.length,
+    durationSeconds: scenarioNumber(candidate.durationSeconds),
+    maxSampleGapSeconds: scenarioNumber(candidate.maxSampleGapSeconds),
+    endpointDistanceMeters: scenarioNumber(candidate.endpointDistance),
+    turnDistanceMeters: scenarioNumber(candidate.turnDistance),
+    crossTrackMeters: scenarioNumber(candidate.crossTrack),
+    sameRoadBboxMeters: scenarioNumber(sameRoadDecision?.evidence?.bboxMeters),
+    sameRoadApproachPairDistanceMeters:
+      scenarioNumber(sameRoadDecision?.evidence?.approachPairDistanceMeters),
+    roundTripIntentSupported: sameRoadDecision?.roundTripIntentSupported === true,
+    sameRoadCollapseReason: sameRoadDecision?.reason ?? 'not_evaluated',
+    rejectionReason: reason
+  };
+}
+
+function compositeGapLocalSettlementScenario(candidate) {
+  return {
+    scenario: 'composite_gap_local_settlement',
+    confidence: scenarioNumber(compositeGapLocalSettlementConfidence(candidate)),
+    primaryEligible: false,
+    rawRange: candidate.rawRange,
+    anchorRawPointIds: uniqueNumbers([
+      candidate.turnRawPointId,
+      candidate.endpointRawPointId
+    ]),
+    action: 'reject_round_trip_rewrite',
+    localRebuild: 'local_settlement_pipeline',
+    evidence: {
+      rejectedCandidate: 'round_trip_line',
+      rejectionReason: candidate.rejectionReason,
+      sameRoadCollapseReason: candidate.sameRoadCollapseReason,
+      inputTrackPointCount: candidate.inputTrackPointCount,
+      durationSeconds: candidate.durationSeconds,
+      maxSampleGapSeconds: candidate.maxSampleGapSeconds,
+      endpointDistanceMeters: candidate.endpointDistanceMeters,
+      turnDistanceMeters: candidate.turnDistanceMeters,
+      crossTrackMeters: candidate.crossTrackMeters,
+      sameRoadBboxMeters: candidate.sameRoadBboxMeters,
+      sameRoadApproachPairDistanceMeters: candidate.sameRoadApproachPairDistanceMeters,
+      roundTripIntentSupported: candidate.roundTripIntentSupported === true
+    }
+  };
+}
+
+function compositeGapLocalSettlementConfidence(candidate) {
+  const durationScore = Math.min(1, (candidate.durationSeconds || 0) / 1800);
+  const gapScore = Math.min(1, (candidate.maxSampleGapSeconds || 0) / 600);
+  const noIntentScore = candidate.roundTripIntentSupported ? 0 : 0.2;
+  return clamp01(0.45 + durationScore * 0.2 + gapScore * 0.2 + noIntentScore);
+}
+
+function nonOverlappingRoundTripRejectedCandidates(candidates) {
+  return nonOverlappingRoundTripCandidates(candidates.map((candidate) => ({
+    ...candidate,
+    startIndex: candidate.rawRange.startRawPointId,
+    endIndex: candidate.rawRange.endRawPointId
+  }))).map(({ startIndex, endIndex, ...candidate }) => ({
+    ...candidate,
+    rawRange: {
+      startRawPointId: startIndex,
+      endRawPointId: endIndex
+    }
+  }));
+}
+
+function roundTripSameRoadDecision(candidate, config, denseAreaIntents = []) {
+  const rejected = (reason, evidence = null, overlappingIntents = []) => ({
+    allowed: false,
+    reason,
+    evidence,
+    roundTripIntentSupported: overlappingIntents
+      .some((intent) => intent.intent === 'round_trip')
+  });
+  if (!config.roundTripSameRoadCollapseEnabled) return rejected('same_road_disabled');
   const turnSpanIndex = candidate.turnIndex - candidate.startIndex;
-  if (turnSpanIndex <= 1 || turnSpanIndex >= candidate.span.length - 2) return false;
+  if (turnSpanIndex <= 1 || turnSpanIndex >= candidate.span.length - 2) {
+    return rejected('turn_not_inside_span');
+  }
   const beforeApproach = candidate.span[turnSpanIndex - 1];
   const afterApproach = candidate.span[turnSpanIndex + 1];
-  if (!hasValidLngLat(beforeApproach) || !hasValidLngLat(afterApproach)) return false;
+  if (!hasValidLngLat(beforeApproach) || !hasValidLngLat(afterApproach)) {
+    return rejected('missing_approach_coordinates');
+  }
   const sameRoadPoints = candidate.span.filter((point, index) =>
     index !== turnSpanIndex && hasValidLngLat(point));
-  if (sameRoadPoints.length < 4) return false;
-  if (bboxDiagonalMeters(sameRoadPoints) > config.roundTripSameRoadMaxBboxMeters) {
-    return false;
+  if (sameRoadPoints.length < 4) return rejected('too_few_same_road_points');
+  const evidence = roundTripSameRoadEvidence(candidate);
+  const overlappingIntents = denseAreaIntentsForRange(denseAreaIntents, candidate.rawRange);
+  const roundTripIntentSupported = overlappingIntents
+    .some((intent) => intent.intent === 'round_trip');
+  if (evidence.bboxMeters > config.roundTripSameRoadMaxBboxMeters) {
+    return rejected('same_road_bbox_too_wide', evidence, overlappingIntents);
   }
-  return distanceMeters(beforeApproach.lat, beforeApproach.lng,
-    afterApproach.lat, afterApproach.lng)
-    <= config.roundTripSameRoadMaxApproachPairDistanceMeters;
+  if (evidence.approachPairDistanceMeters
+      > config.roundTripSameRoadMaxApproachPairDistanceMeters) {
+    return rejected('same_road_approach_pair_too_wide', evidence, overlappingIntents);
+  }
+  if (roundTripIntentSupported) {
+    return {
+      allowed: true,
+      reason: 'round_trip_intent_supported',
+      evidence,
+      roundTripIntentSupported
+    };
+  }
+  if (candidate.durationSeconds > config.roundTripSameRoadNoIntentMaxDurationSeconds) {
+    return rejected('missing_round_trip_intent_long_span', evidence, overlappingIntents);
+  }
+  if (candidate.maxSampleGapSeconds > config.roundTripSameRoadNoIntentMaxSampleGapSeconds) {
+    return rejected('missing_round_trip_intent_large_gap', evidence, overlappingIntents);
+  }
+  if (evidence.bboxMeters > config.roundTripSameRoadNoIntentMaxBboxMeters) {
+    return rejected('missing_round_trip_intent_wide_corridor', evidence, overlappingIntents);
+  }
+  if (evidence.approachPairDistanceMeters
+      > config.roundTripSameRoadNoIntentMaxApproachPairDistanceMeters) {
+    return rejected('missing_round_trip_intent_wide_approach_pair', evidence,
+      overlappingIntents);
+  }
+  return {
+    allowed: true,
+    reason: 'strong_same_road_geometry_without_round_trip_intent',
+    evidence,
+    roundTripIntentSupported
+  };
 }
 
 function roundTripSameRoadPoints(candidate, config) {
@@ -2299,7 +2576,7 @@ function roundTripSameRoadPoints(candidate, config) {
   const keepIndexes = [...beforeIndexes, turnSpanIndex, ...afterIndexes];
   return keepIndexes.map((spanIndex, keepIndex) => {
     const point = roundTripKeptPoint(candidate, keepIndexes, spanIndex, keepIndex);
-    if (spanIndex === turnSpanIndex) return sameRoadCaveEndpointPoint(point);
+    if (spanIndex === turnSpanIndex) return roundTripWeakEndpointPoint(point);
     return sameRoadCenterlinePoint(point, coordinatesBySpanIndex.get(spanIndex));
   });
 }
@@ -2421,7 +2698,7 @@ function uniqueSorted(values) {
   return [...new Set(values)].sort((a, b) => a - b);
 }
 
-function sameRoadCaveEndpointPoint(point) {
+function roundTripWeakEndpointPoint(point) {
   if (!validCoordinate(point.shapeEndpointLat, point.shapeEndpointLng)) return point;
   return {
     ...point,
@@ -2431,7 +2708,7 @@ function sameRoadCaveEndpointPoint(point) {
     lng: point.shapeEndpointLng,
     coordinateSource: 'weak_recovery_endpoint_raw',
     virtualCoordinate: false,
-    boundaryState: 'round_trip_cave_endpoint_preserved'
+    boundaryState: 'round_trip_endpoint_preserved'
   };
 }
 
@@ -2448,7 +2725,7 @@ function sameRoadCenterlinePoint(point, station) {
   };
 }
 
-function roundTripLineKeepIndexes(candidate, config) {
+function roundTripLineKeepIndexes(candidate, simplifyToleranceMeters) {
   const keepIndexes = new Set([0, candidate.turnIndex - candidate.startIndex,
     candidate.span.length - 1]);
 
@@ -2464,7 +2741,7 @@ function roundTripLineKeepIndexes(candidate, config) {
         maxIndex = index;
       }
     }
-    if (maxDistance > config.roundTripLineSimplifyToleranceMeters) {
+    if (maxDistance > simplifyToleranceMeters) {
       keepIndexes.add(maxIndex);
       simplifyRange(startIndex, maxIndex);
       simplifyRange(maxIndex, endIndex);
@@ -2715,7 +2992,7 @@ function movingSpikeCandidates(track, config) {
   const candidates = [];
   for (let index = 1; index < track.length - 1; index++) {
     const candidate = movingSpikeCandidate(track[index - 1], track[index],
-      track[index + 1], index, config);
+      track[index + 1], track[index + 2] ?? null, index, config);
     if (candidate) candidates.push(candidate);
   }
   return candidates;
@@ -2723,6 +3000,7 @@ function movingSpikeCandidates(track, config) {
 
 function eligibleMovingSpikeCandidates(candidates) {
   return candidates.filter((candidate) => candidate.strictSpeed
+    || candidate.geometryOverride
     || candidates.some((strictCandidate) =>
       strictCandidate.strictSpeed
         && rangesOverlap(candidate.index - 1, candidate.index + 1,
@@ -2730,17 +3008,13 @@ function eligibleMovingSpikeCandidates(candidates) {
         && candidate.score > strictCandidate.score));
 }
 
-function movingSpikeCandidate(previous, point, next, index, config) {
+function movingSpikeCandidate(previous, point, next, afterNext, index, config) {
   if (!hasValidLngLat(previous) || !hasValidLngLat(point) || !hasValidLngLat(next)) return null;
   if (!point.entersTrustedGpx || !next.entersTrustedGpx) return null;
   if (point.reason !== 'motion_supported_low_speed' && point.reason !== 'moving_good_fix') {
     return null;
   }
-  if (!Number.isFinite(point.reportedSpeedMetersPerSecond)
-      || point.reportedSpeedMetersPerSecond
-        > config.movingSpikeMaxCompetingReportedSpeedMetersPerSecond) {
-    return null;
-  }
+  if (!Number.isFinite(point.reportedSpeedMetersPerSecond)) return null;
   const previousDistance = distanceMeters(previous.lat, previous.lng, point.lat, point.lng);
   const nextDistance = distanceMeters(point.lat, point.lng, next.lat, next.lng);
   const bridgeDistance = distanceMeters(previous.lat, previous.lng, next.lat, next.lng);
@@ -2755,6 +3029,16 @@ function movingSpikeCandidate(previous, point, next, index, config) {
       || lateral < config.movingSpikeMinLateralMeters) {
     return null;
   }
+  const strictSpeed = point.reportedSpeedMetersPerSecond
+    <= config.movingSpikeMaxReportedSpeedMetersPerSecond;
+  const competingSpeed = point.reportedSpeedMetersPerSecond
+    <= config.movingSpikeMaxCompetingReportedSpeedMetersPerSecond;
+  const geometryOverride = !competingSpeed
+    && movingSpikeGeometryOverride(previous, point, next, afterNext, {
+      detour,
+      lateral
+    }, config);
+  if (!competingSpeed && !geometryOverride) return null;
   return {
     index,
     previous,
@@ -2766,11 +3050,40 @@ function movingSpikeCandidate(previous, point, next, index, config) {
     detourMeters: detour,
     lateralMeters: lateral,
     reportedSpeedMetersPerSecond: point.reportedSpeedMetersPerSecond,
-    strictSpeed: point.reportedSpeedMetersPerSecond
-      <= config.movingSpikeMaxReportedSpeedMetersPerSecond,
+    strictSpeed,
+    geometryOverride,
+    speedPolicy: movingSpikeSpeedPolicy(strictSpeed, competingSpeed, geometryOverride),
+    forwardAngleDeltaDegrees: movingSpikeForwardAngleDeltaDegrees(previous, next, afterNext),
     score: detour * 2 + lateral
       - point.reportedSpeedMetersPerSecond * 0.25
   };
+}
+
+function movingSpikeGeometryOverride(previous, point, next, afterNext, metrics, config) {
+  return point.reportedSpeedMetersPerSecond
+      <= config.movingSpikeGeometryOverrideMaxReportedSpeedMetersPerSecond
+    && metrics.detour >= config.movingSpikeGeometryOverrideMinDetourMeters
+    && metrics.lateral >= config.movingSpikeGeometryOverrideMinLateralMeters
+    && movingSpikeForwardAligned(previous, next, afterNext, config);
+}
+
+function movingSpikeForwardAligned(previous, next, afterNext, config) {
+  const delta = movingSpikeForwardAngleDeltaDegrees(previous, next, afterNext);
+  return Number.isFinite(delta)
+    && delta <= config.movingSpikeGeometryOverrideMaxForwardAngleDeltaDegrees;
+}
+
+function movingSpikeForwardAngleDeltaDegrees(previous, next, afterNext) {
+  if (!afterNext?.entersTrustedGpx || !hasValidLngLat(afterNext)) return null;
+  return angleDeltaDegrees(directionDegreesForPoints([previous, next]),
+    directionDegreesForPoints([next, afterNext]));
+}
+
+function movingSpikeSpeedPolicy(strictSpeed, competingSpeed, geometryOverride) {
+  if (strictSpeed) return 'strict_low_reported_speed';
+  if (geometryOverride) return 'high_reported_speed_geometry_override';
+  if (competingSpeed) return 'competing_low_reported_speed';
+  return 'speed_rejected';
 }
 
 function nonOverlappingMovingSpikeCandidates(candidates) {
@@ -2811,7 +3124,9 @@ function movingSpikeScenario(previous, spike, next, candidate = null) {
       lateralMeters: scenarioNumber(candidate?.lateralMeters
         ?? distanceToSegmentMeters(spike, previous, next)),
       bridgeDistanceMeters: scenarioNumber(candidate?.bridgeDistanceMeters
-        ?? distanceMeters(previous.lat, previous.lng, next.lat, next.lng))
+        ?? distanceMeters(previous.lat, previous.lng, next.lat, next.lng)),
+      speedPolicy: candidate?.speedPolicy ?? 'unknown',
+      forwardAngleDeltaDegrees: scenarioNumber(candidate?.forwardAngleDeltaDegrees)
     }
   };
 }
@@ -3112,15 +3427,17 @@ function simplifyRestPhotoMicroMoveSpans(product, config, denseAreaIntents = [])
 
   const simplifiedRanges = [];
   for (const candidate of candidates.sort((a, b) => b.startIndex - a.startIndex)) {
-    const simplified = restPhotoMicroMoveShouldCollapse(candidate, config)
+    const rebuildKind = restPhotoMicroMoveRebuildKind(candidate, config);
+    const simplified = rebuildKind === 'anchor'
       ? [restPhotoMicroMoveCollapsedPoint(candidate)]
-      : restPhotoMicroMoveSimplifiedPoints(candidate, config);
+      : rebuildKind === 'shape_filter'
+        ? restPhotoMicroMoveShapeFilteredPoints(candidate)
+        : restPhotoMicroMoveSimplifiedPoints(candidate, config);
     if (simplified.length >= candidate.span.length) continue;
     product.track.splice(candidate.startIndex,
       candidate.endIndex - candidate.startIndex + 1, ...simplified);
-    addScenario(product, restPhotoMicroMoveShouldCollapse(candidate, config)
-      ? restPhotoMicroMoveCollapsedScenario(candidate, simplified[0], config, denseAreaIntents)
-      : restPhotoMicroMoveSimplifiedScenario(candidate, simplified, config, denseAreaIntents));
+    addScenario(product, restPhotoMicroMoveSettledScenario(candidate, simplified,
+      rebuildKind, config, denseAreaIntents));
     simplifiedRanges.push({
       startRawPointId: candidate.rawRange.startRawPointId,
       endRawPointId: candidate.rawRange.endRawPointId,
@@ -3139,6 +3456,12 @@ function simplifyRestPhotoMicroMoveSpans(product, config, denseAreaIntents = [])
   return true;
 }
 
+function restPhotoMicroMoveRebuildKind(candidate, config) {
+  if (restPhotoMicroMoveShouldShapeFilter(candidate, config)) return 'shape_filter';
+  if (restPhotoMicroMoveShouldCollapse(candidate, config)) return 'anchor';
+  return 'simplifier';
+}
+
 function restPhotoMicroMoveShouldCollapse(candidate, config) {
   const shortFoldback = candidate.bboxMeters <= config.restPhotoMicroMoveCollapseMaxBboxMeters
     && candidate.netDistanceMeters <= config.restPhotoMicroMoveCollapseMaxNetDistanceMeters
@@ -3149,6 +3472,55 @@ function restPhotoMicroMoveShouldCollapse(candidate, config) {
     && candidate.netDistanceMeters <= config.restPhotoMicroMoveLongCollapseMaxNetDistanceMeters
     && candidate.pathMeters <= config.restPhotoMicroMoveLongCollapseMaxPathMeters;
   return shortFoldback || longRestDrift;
+}
+
+function restPhotoMicroMoveShouldShapeFilter(candidate, config) {
+  if (!candidate.span.some((point, index) =>
+    restPhotoMicroMoveShapeFilterSuppressesPoint(point, index, candidate.span))) {
+    return false;
+  }
+  if (candidate.pathMeters > config.restPhotoMicroMoveShapeFilterMaxPathMeters) return false;
+  if (candidate.span.length > config.restPhotoMicroMoveShapeFilterMaxTrackPoints) return false;
+  if (candidate.durationSeconds > config.restPhotoMicroMoveShapeFilterMaxDurationSeconds) {
+    return false;
+  }
+  const geometry = restPhotoMicroMoveBridgeGeometry(candidate);
+  if (!geometry) return false;
+  return geometry.entryDistanceMeters <= config.restPhotoMicroMoveShapeFilterMaxEdgeMeters
+    && geometry.exitDistanceMeters <= config.restPhotoMicroMoveShapeFilterMaxEdgeMeters
+    && geometry.anchorDetourMeters >= config.restPhotoMicroMoveShapeFilterMinAnchorDetourMeters;
+}
+
+function restPhotoMicroMoveShapeFilterSuppressesPoint(point, index, span) {
+  if (index <= 0 || index >= span.length - 1) return false;
+  if (point.reason === 'stationary_anchor') return true;
+  return Number.isFinite(point.reportedSpeedMetersPerSecond)
+    && point.reportedSpeedMetersPerSecond <= 0.1;
+}
+
+function restPhotoMicroMoveBridgeGeometry(candidate) {
+  const previous = candidate.previousOutside;
+  const next = candidate.nextOutside;
+  const start = candidate.span[0];
+  const end = candidate.span.at(-1);
+  const representative = restPhotoMicroMoveCollapseRepresentative(candidate.span);
+  if (![previous, next, start, end, representative].every(hasValidLngLat)) return null;
+  const bridgeDistanceMeters = distanceMeters(previous.lat, previous.lng, next.lat, next.lng);
+  const entryDistanceMeters = distanceMeters(previous.lat, previous.lng, start.lat, start.lng);
+  const exitDistanceMeters = distanceMeters(end.lat, end.lng, next.lat, next.lng);
+  const anchorDetourMeters = distanceMeters(previous.lat, previous.lng,
+    representative.lat, representative.lng)
+    + distanceMeters(representative.lat, representative.lng, next.lat, next.lng)
+    - bridgeDistanceMeters;
+  return {
+    previousRawPointId: previous.sourceRawPointId,
+    nextRawPointId: next.sourceRawPointId,
+    representativeRawPointId: representative.sourceRawPointId,
+    bridgeDistanceMeters,
+    entryDistanceMeters,
+    exitDistanceMeters,
+    anchorDetourMeters
+  };
 }
 
 function restPhotoMicroMoveCollapsedPoint(candidate) {
@@ -3187,6 +3559,82 @@ function restPhotoMicroMoveCollapseRepresentative(span) {
     (Number.isFinite(a.reportedSpeedMetersPerSecond) ? a.reportedSpeedMetersPerSecond : 0)
       - (Number.isFinite(b.reportedSpeedMetersPerSecond) ? b.reportedSpeedMetersPerSecond : 0)
     || a.sourceRawPointId - b.sourceRawPointId)[0] ?? span[0];
+}
+
+function restPhotoMicroMoveShapeFilteredPoints(candidate) {
+  const filtered = [];
+  let pendingSuppressedRawPointIds = [];
+  for (let index = 0; index < candidate.span.length; index++) {
+    const point = candidate.span[index];
+    const suppressRestAnchor = restPhotoMicroMoveShapeFilterSuppressesPoint(point,
+      index, candidate.span);
+    if (suppressRestAnchor) {
+      pendingSuppressedRawPointIds = uniqueNumbers([
+        ...pendingSuppressedRawPointIds,
+        ...uniqueRawPointIds([point]),
+        ...uniqueSuppressedRawPointIds([point])
+      ]);
+      continue;
+    }
+    const isStart = filtered.length === 0;
+    const previousKept = filtered.at(-1) ?? null;
+    const isEnd = index === candidate.span.length - 1;
+    const bridgedOverSuppressed = pendingSuppressedRawPointIds.length > 0
+      && previousKept && hasValidLngLat(previousKept) && hasValidLngLat(point);
+    const distanceDeltaMeters = bridgedOverSuppressed
+      ? distanceMeters(previousKept.lat, previousKept.lng, point.lat, point.lng)
+      : point.distanceDeltaMeters || 0;
+    const movingTimeDeltaSeconds = bridgedOverSuppressed
+      ? 0
+      : point.movingTimeDeltaSeconds || 0;
+    const suppressedRawPointIds = uniqueNumbers([
+      ...pendingSuppressedRawPointIds,
+      ...uniqueSuppressedRawPointIds([point])
+    ]);
+    pendingSuppressedRawPointIds = [];
+    filtered.push(restPhotoMicroMoveShapeFilteredPoint(point, uniqueRawPointIds([point]),
+      suppressedRawPointIds, distanceDeltaMeters, movingTimeDeltaSeconds,
+      distanceDeltaMeters > 0 && point.countsDistance === true,
+      movingTimeDeltaSeconds > 0 && point.countsMovingTime === true,
+      isStart, isEnd, candidate));
+  }
+  if (pendingSuppressedRawPointIds.length > 0 && filtered.length > 0) {
+    const last = filtered.at(-1);
+    last.suppressedRawPointIds = uniqueNumbers([
+      ...suppressedRawPointIdsForPoint(last),
+      ...pendingSuppressedRawPointIds
+    ]);
+    last.cloudSampleCount = pointContextRawPointIds(last).length;
+    last.cloudWeightSum = last.cloudSampleCount;
+  }
+  return filtered;
+}
+
+function restPhotoMicroMoveShapeFilteredPoint(original, rawPointIds, suppressedRawPointIds,
+  distanceDeltaMeters, movingTimeDeltaSeconds, countsDistance, countsMovingTime,
+  isStart, isEnd, candidate) {
+  return {
+    ...original,
+    reason: restPhotoMicroMoveReason(isStart, isEnd),
+    distanceDeltaMeters,
+    movingTimeDeltaSeconds,
+    cloudType: 'REST_PHOTO_MICRO_MOVE_CLOUD',
+    cloudId: candidate.rawRange.startRawPointId,
+    cloudSampleCount: rawPointIds.length + suppressedRawPointIds.length,
+    cloudWeightSum: rawPointIds.length + suppressedRawPointIds.length,
+    cloudWeightedRadiusMeters: candidate.bboxMeters / 2,
+    representativeRawPointId: original.representativeRawPointId ?? original.sourceRawPointId,
+    contributingRawPointIds: rawPointIds,
+    ...(suppressedRawPointIds.length ? { suppressedRawPointIds } : {}),
+    coordinateSource: original.coordinateSource || 'raw_representative',
+    virtualCoordinate: original.virtualCoordinate === true,
+    activityState: 'rest_photo_micro_move',
+    boundaryState: 'rest_photo_micro_move_shape_filtered',
+    countsDistance,
+    countsMovingTime,
+    countsAscentWindow: false,
+    entersTrustedGpx: true
+  };
 }
 
 function restPhotoMicroMoveSimplifiedPoints(candidate, config) {
@@ -3323,6 +3771,34 @@ function restPhotoMicroMoveSimplifiedScenario(candidate, simplified, config,
   };
 }
 
+function restPhotoMicroMoveShapeFilteredScenario(candidate, filtered, config,
+  denseAreaIntents = []) {
+  const base = restPhotoMicroMoveScenario(candidate, config, denseAreaIntents);
+  const geometry = restPhotoMicroMoveBridgeGeometry(candidate);
+  const suppressedRawPointIds = uniqueSuppressedRawPointIds(filtered);
+  return {
+    ...base,
+    action: 'filter_weak_micro_move_shape',
+    localRebuild: 'rest_photo_micro_move_shape_filter',
+    anchorRawPointIds: uniqueNumbers(filtered.map((point) => point.sourceRawPointId)),
+    evidence: {
+      ...base.evidence,
+      inputTrackPointCount: candidate.span.length,
+      outputTrackPointCount: filtered.length,
+      keptRawPointIds: uniqueNumbers(filtered.map((point) => point.sourceRawPointId)),
+      suppressedRawPointIds,
+      shapeFilteredPathMeters: scenarioNumber(trackPathMeters(filtered)),
+      bridgeDistanceMeters: scenarioNumber(geometry?.bridgeDistanceMeters),
+      entryDistanceMeters: scenarioNumber(geometry?.entryDistanceMeters),
+      exitDistanceMeters: scenarioNumber(geometry?.exitDistanceMeters),
+      anchorDetourMeters: scenarioNumber(geometry?.anchorDetourMeters),
+      representativeRawPointId: geometry?.representativeRawPointId ?? null,
+      filteredMovingTimeSeconds: scenarioNumber(filtered.reduce((sum, point) =>
+        sum + (point.countsMovingTime ? point.movingTimeDeltaSeconds || 0 : 0), 0))
+    }
+  };
+}
+
 function restPhotoMicroMoveCollapsedScenario(candidate, collapsed, config,
   denseAreaIntents = []) {
   const base = restPhotoMicroMoveScenario(candidate, config, denseAreaIntents);
@@ -3340,6 +3816,20 @@ function restPhotoMicroMoveCollapsedScenario(candidate, collapsed, config,
       collapsedMovingTimeSeconds: 0
     }
   };
+}
+
+function restPhotoMicroMoveSettledScenario(candidate, settled, rebuildKind, config,
+  denseAreaIntents = []) {
+  if (rebuildKind === 'anchor') {
+    return restPhotoMicroMoveCollapsedScenario(candidate, settled[0], config,
+      denseAreaIntents);
+  }
+  if (rebuildKind === 'shape_filter') {
+    return restPhotoMicroMoveShapeFilteredScenario(candidate, settled, config,
+      denseAreaIntents);
+  }
+  return restPhotoMicroMoveSimplifiedScenario(candidate, settled, config,
+    denseAreaIntents);
 }
 
 function configSafeNumber(value, fallback) {
@@ -4308,6 +4798,8 @@ function restPhotoMicroMoveCandidates(product, config) {
         startIndex,
         endIndex,
         span,
+        previousOutside: track[startIndex - 1] ?? null,
+        nextOutside: track[endIndex + 1] ?? null,
         rawRange,
         pathMeters,
         netDistanceMeters,
@@ -4433,6 +4925,16 @@ function trackSpanDurationSeconds(span) {
   return elapsedSeconds(span[0].elapsedRealtimeNanos, span.at(-1).elapsedRealtimeNanos);
 }
 
+function trackSpanMaxGapSeconds(span) {
+  let maxGapSeconds = 0;
+  for (let index = 1; index < span.length; index++) {
+    maxGapSeconds = Math.max(maxGapSeconds,
+      elapsedSeconds(span[index - 1].elapsedRealtimeNanos,
+        span[index].elapsedRealtimeNanos));
+  }
+  return maxGapSeconds;
+}
+
 function rawPointRange(rawPointIds) {
   const finite = rawPointIds.filter(Number.isFinite);
   if (finite.length === 0) {
@@ -4547,6 +5049,7 @@ function scenarioUsesContinuousRawRange(name) {
     || name === 'weak_recovery_endpoint'
     || name === 'same_road_round_trip'
     || name === 'round_trip_line'
+    || name === 'composite_gap_local_settlement'
     || name === 'closed_loop_round_trip'
     || name === 'enclosed_gap_cluster'
     || name === 'enclosed_loop_cluster_settlement'
@@ -4592,19 +5095,28 @@ function scenariosForPoint(reason, rawPointIds, scenarioByName, scenarioByRawPoi
 }
 
 function preferredScenario(scenarios) {
-  return sortUniqueScenarios(scenarios)[0] ?? null;
+  return sortUniqueScenarios(scenarios).find((scenario) =>
+    scenarioPrimaryEligible(scenario)) ?? null;
 }
 
 function preferredScenarioForRawDecision(decision, directScenario, scenarioContexts) {
   const pointSpecific = sortUniqueScenarios(scenarioContexts)
-    .find((scenario) => rawPointSpecificScenario(scenario, decision.rawPointId));
-  return pointSpecific ?? directScenario ?? preferredScenario(scenarioContexts);
+    .find((scenario) => scenarioPrimaryEligible(scenario)
+      && rawPointSpecificScenario(scenario, decision.rawPointId));
+  const eligibleDirectScenario = scenarioPrimaryEligible(directScenario)
+    ? directScenario
+    : null;
+  return pointSpecific ?? eligibleDirectScenario ?? preferredScenario(scenarioContexts);
 }
 
 function rawPointSpecificScenario(scenario, rawPointId) {
   if (!Number.isFinite(rawPointId)) return false;
   return scenario?.scenario === 'moving_spike_cleanup'
     && scenario.evidence?.spikeRawPointId === rawPointId;
+}
+
+function scenarioPrimaryEligible(scenario) {
+  return scenario?.primaryEligible !== false;
 }
 
 function sortUniqueScenarios(scenarios) {
@@ -4745,6 +5257,7 @@ function scenarioPriority(name) {
     case 'round_trip_line': return 35;
     case 'weak_recovery_endpoint': return 40;
     case 'gap_recovery_boundary': return 50;
+    case 'composite_gap_local_settlement': return 55;
     case 'transport_contamination': return 60;
     case 'dense_area_intent': return 90;
     default: return 100;
@@ -4757,6 +5270,7 @@ function scenarioChineseLabel(name) {
     case 'same_road_round_trip': return '同路往返交织';
     case 'closed_loop_round_trip': return '闭合往返/回环';
     case 'round_trip_line': return '往返线形';
+    case 'composite_gap_local_settlement': return '复合 GAP 局部结算';
     case 'dense_area_intent': return '密集区意图判断';
     case 'enclosed_gap_cluster': return '山洞/室内类遮挡聚集';
     case 'enclosed_loop_cluster_settlement': return '遮挡回环聚集压缩';
@@ -4778,6 +5292,7 @@ function scenarioActionChineseLabel(action) {
     case 'centerline_with_endpoint': return '压成中心线并保留端点';
     case 'classify_loop_without_rewrite': return '只标注闭合往返，不改轨迹';
     case 'rdp_line_simplify': return '线形抽稀';
+    case 'reject_round_trip_rewrite': return '拒绝往返改线';
     case 'classify_dense_area_intent': return '判断密集区主意图';
     case 'classify_enclosed_gap_cluster': return '标注遮挡聚集，不跨 GAP 计距';
     case 'compress_enclosed_loop_low_speed_drift': return '压缩遮挡回环内低速碎点';
@@ -4786,6 +5301,7 @@ function scenarioActionChineseLabel(action) {
     case 'collapse_stationary_session': return '整段压成代表点';
     case 'collapse_drift_cloud': return '漂移云压成停留锚点';
     case 'classify_micro_move_without_rewrite': return '只标注小范围微移动';
+    case 'filter_weak_micro_move_shape': return '过滤弱微移动停留点';
     case 'simplify_micro_move_shape': return '简化小范围微移动';
     case 'collapse_micro_move_to_rest_anchor': return '压成休息锚点';
     case 'remove_single_point_spike': return '移除单点尖刺';
@@ -4801,6 +5317,7 @@ function localRebuildChineseLabel(localRebuild) {
     case 'same_road_centerline': return '同路中心线';
     case 'round_trip_diagnostic': return '往返诊断标注';
     case 'round_trip_polyline': return '往返折线';
+    case 'local_settlement_pipeline': return '局部策略管道结算';
     case 'dense_area_intent_classifier': return '密集区意图分类';
     case 'gap_stationary_cluster_diagnostic': return 'GAP/静止聚集诊断';
     case 'enclosed_loop_anchor_settlement': return '遮挡回环锚点压缩';
@@ -4809,6 +5326,7 @@ function localRebuildChineseLabel(localRebuild) {
     case 'stationary_session_anchor': return '整段静止代表点';
     case 'stationary_drift_anchor': return '停留漂移代表点';
     case 'rest_photo_micro_move_diagnostic': return '微移动诊断标注';
+    case 'rest_photo_micro_move_shape_filter': return '弱微移动形状过滤';
     case 'rest_photo_micro_move_simplifier': return '微移动简化';
     case 'rest_photo_micro_move_anchor': return '休息微移动锚点';
     case 'moving_spike_line_bridge': return '移动尖刺桥接';
@@ -4987,6 +5505,8 @@ function scenarioExplanationSummary(scenario) {
       return '轨迹路径较长但首尾接近，识别为闭合往返/回环片段。';
     case 'round_trip_line':
       return '往返线形被保守抽稀，保留起点、折返点和终点语义。';
+    case 'composite_gap_local_settlement':
+      return '缺少往返意图且跨长 GAP 的复合段不做往返改线，交给局部策略继续结算。';
     case 'dense_area_intent':
       return `密集区先判断为 ${scenario.evidence?.intent || 'unknown'}，再调度局部 settlement。`;
     case 'enclosed_gap_cluster':
@@ -5008,7 +5528,7 @@ function scenarioExplanationSummary(scenario) {
     case 'transport_contamination':
       return '疑似交通工具或高速污染被排除在徒步真值之外。';
     case 'moving_spike_cleanup':
-      return '连续移动中的单个低速侧向尖刺被移除，由前后可信移动点桥接。';
+      return '连续移动中的单个侧向尖刺被移除，由前后可信移动点桥接。';
     default:
       return `${scenario.scenario} 场景解释`;
   }

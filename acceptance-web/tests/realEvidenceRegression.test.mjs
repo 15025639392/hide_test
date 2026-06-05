@@ -143,6 +143,128 @@ test('real evidence session 5cc moving spike cleanup feeds later pipeline stages
   assert.equal(bridgePoint.primaryExplanation.scenario, 'moving_spike_cleanup');
 });
 
+test('real evidence session 5cc weak rest photo micro movement keeps shape', (t) => {
+  if (!existsSync(SESSION_5CC_PATH)) {
+    t.skip('real evidence session 5cc is not available on this machine');
+    return;
+  }
+
+  const product = buildProductFromEvidence(SESSION_5CC_PATH);
+  const scenario = scenarioByName(product, 'rest_photo_micro_move', 5015, 5042);
+  const points = trackPointsTouchingRawRange(product, 5015, 5042);
+  const representativeDecision = product.rawPointDecisions.find((decision) =>
+    decision.rawPointId === 5023);
+  const postRestPoint = points.find((point) => point.sourceRawPointId === 5039);
+
+  assert.ok(scenario);
+  assert.equal(scenario.action, 'filter_weak_micro_move_shape');
+  assert.equal(scenario.localRebuild, 'rest_photo_micro_move_shape_filter');
+  assert.equal(scenario.evidence.outputTrackPointCount, 8);
+  assert.equal(scenario.evidence.representativeRawPointId, 5023);
+  assert.ok(scenario.evidence.anchorDetourMeters > 12);
+  assert.deepEqual(points.map((point) => point.sourceRawPointId), [
+    5015, 5016, 5017, 5018, 5039, 5040, 5041, 5042
+  ]);
+  assert.ok(scenario.evidence.keptRawPointIds.includes(5018));
+  assert.ok(scenario.evidence.suppressedRawPointIds.includes(5023));
+  assert.equal(points.some((point) => point.reason === 'rest_photo_micro_move_anchor'), false);
+  assert.ok(postRestPoint);
+  assert.equal(postRestPoint.countsMovingTime, false);
+  assert.ok(postRestPoint.suppressedRawPointIds.includes(5023));
+  assert.equal(representativeDecision.entersTrustedGpx, false);
+  assert.equal(representativeDecision.primaryExplanation.scenario, 'rest_photo_micro_move');
+});
+
+test('real evidence session 5cc high-speed geometry spike cleanup removes raw 1585', (t) => {
+  if (!existsSync(SESSION_5CC_PATH)) {
+    t.skip('real evidence session 5cc is not available on this machine');
+    return;
+  }
+
+  const product = buildProductFromEvidence(SESSION_5CC_PATH);
+  const scenario = scenarioByName(product, 'moving_spike_cleanup', 1578, 1586);
+  const rawDecision = product.rawPointDecisions.find((decision) =>
+    decision.rawPointId === 1585);
+  const bridgePoint = product.track.find((point) =>
+    point.suppressedRawPointIds?.includes(1585));
+
+  assert.ok(scenario);
+  assert.equal(scenario.evidence.previousRawPointId, 1578);
+  assert.equal(scenario.evidence.spikeRawPointId, 1585);
+  assert.equal(scenario.evidence.nextRawPointId, 1586);
+  assert.equal(scenario.evidence.reportedSpeedMetersPerSecond, 2.57);
+  assert.equal(scenario.evidence.speedPolicy, 'high_reported_speed_geometry_override');
+  assert.ok(scenario.evidence.detourMeters > 6);
+  assert.ok(scenario.evidence.lateralMeters > 6);
+  assert.ok(scenario.evidence.forwardAngleDeltaDegrees < 3);
+  assert.equal(rawDecision.entersTrustedGpx, false);
+  assert.equal(rawDecision.countsDistance, false);
+  assert.equal(rawDecision.primaryExplanation.scenario, 'moving_spike_cleanup');
+  assert.ok(bridgePoint);
+  assert.equal(bridgePoint.sourceRawPointId, 1586);
+  assert.deepEqual(bridgePoint.contributingRawPointIds, [1586]);
+  assert.deepEqual(bridgePoint.suppressedRawPointIds, [1585]);
+  assert.equal(bridgePoint.primaryExplanation.scenario, 'moving_spike_cleanup');
+});
+
+test('real evidence session 5cc composite round trip candidate stays local', (t) => {
+  if (!existsSync(SESSION_5CC_PATH)) {
+    t.skip('real evidence session 5cc is not available on this machine');
+    return;
+  }
+
+  const product = buildProductFromEvidence(SESSION_5CC_PATH);
+  const sameRoadScenario = scenarioByName(product, 'same_road_round_trip', 417, 900);
+  const lineScenario = scenarioByName(product, 'round_trip_line', 417, 900);
+  const compositeScenario = scenarioByName(product, 'composite_gap_local_settlement',
+    417, 900);
+  const rejected = product.roundTripLineRejectedCandidates?.find((candidate) =>
+    candidate.rawRange.startRawPointId === 417
+      && candidate.rawRange.endRawPointId === 900);
+  const coverage = product.scenarioCoverage.find((item) =>
+    item.scenario === 'composite_gap_local_settlement'
+      && item.rawRange.startRawPointId === 417
+      && item.rawRange.endRawPointId === 900);
+  const points = trackPointsTouchingRawRange(product, 417, 900);
+  const reasons = new Set(points.map((point) => point.reason));
+
+  assert.equal(sameRoadScenario, undefined);
+  assert.equal(lineScenario, undefined);
+  assert.ok(compositeScenario);
+  assert.equal(compositeScenario.primaryEligible, false);
+  assert.equal(compositeScenario.action, 'reject_round_trip_rewrite');
+  assert.equal(compositeScenario.localRebuild, 'local_settlement_pipeline');
+  assert.ok(rejected);
+  assert.deepEqual(rejected.rawRange, {
+    startRawPointId: 417,
+    endRawPointId: 900
+  });
+  assert.equal(rejected.inputTrackPointCount, 71);
+  assert.equal(rejected.roundTripIntentSupported, false);
+  assert.equal(rejected.sameRoadCollapseReason,
+    'missing_round_trip_intent_long_span');
+  assert.equal(rejected.rejectionReason,
+    'missing_round_trip_intent_long_composite_span');
+  assert.equal(rejected.sameRoadBboxMeters, 54.966);
+  assert.equal(rejected.sameRoadApproachPairDistanceMeters, 20.628);
+  assert.ok(rejected.durationSeconds > 3000);
+  assert.ok(rejected.maxSampleGapSeconds > 1000);
+  assert.ok(coverage);
+  assert.equal(coverage.primaryTrackPointCount, 0);
+  assert.equal(coverage.contextTrackPointCount, points.length);
+  assert.equal(points.length, 28);
+  assert.ok(reasons.has('rest_photo_micro_move_anchor'));
+  assert.ok(reasons.has('weak_recovery_shape_anchor'));
+  assert.ok(reasons.has('gap_recovery'));
+  assert.ok(reasons.has('stationary_anchor'));
+  assert.ok(points.every((point) =>
+    point.primaryExplanation?.scenario !== 'composite_gap_local_settlement'));
+  assert.ok(points.some((point) =>
+    point.scenarioContexts?.some((context) =>
+      context.scenario === 'composite_gap_local_settlement')));
+  assert.ok(distanceForPoints(points) < 130);
+});
+
 test('real evidence session 5cc mixed loop cluster keeps bounded distance', (t) => {
   if (!existsSync(SESSION_5CC_PATH)) {
     t.skip('real evidence session 5cc is not available on this machine');

@@ -717,6 +717,9 @@ function humanConflictAction(conflict) {
   if (conflict.action === 'collapse_micro_move_to_rest_anchor') {
     return '处理结果：塌成一个休息锚点，不累计这段抖动距离。';
   }
+  if (conflict.action === 'filter_weak_micro_move_shape') {
+    return '处理结果：保留低速移动形状，只移除中间停留锚点并暂停休息耗时。';
+  }
   if (conflict.action === 'simplify_micro_move_shape') {
     return '处理结果：保留少量微移动锚点，删除多余折返。';
   }
@@ -1271,6 +1274,12 @@ function lineTreatmentForScenarios(scenarios) {
       review: '因为这段折线重复交织，但整体路线形状可以用更少点表达。'
     };
   }
+  if (scenarios.has('composite_gap_local_settlement')) {
+    return {
+      result: '没有把长 GAP 复合段压成同路来回或往返折线，保留给局部策略逐段结算。',
+      review: '因为这段缺少来回意图且中间采样中断明显，跨整段改线会掩盖休息、弱恢复和 GAP 边界。'
+    };
+  }
   if (scenarios.has('rest_photo_micro_move')) {
     return {
       result: '把休息或拍照时的小范围移动标成局部处理，必要时压成休息锚点。',
@@ -1365,7 +1374,8 @@ function isBoundaryOrRiskScenario(scenario) {
   return scenario === 'transport_contamination'
     || scenario === 'gap_recovery_boundary'
     || scenario === 'position_snap_recovery'
-    || scenario === 'moving_spike_cleanup';
+    || scenario === 'moving_spike_cleanup'
+    || scenario === 'composite_gap_local_settlement';
 }
 
 function sortScenarioCoverageForReview(coverage, dataset) {
@@ -1432,6 +1442,7 @@ function scenarioNameLabel(name) {
     same_road_round_trip: '同路来回',
     closed_loop_round_trip: '闭合来回标记',
     round_trip_line: '来回路线太密',
+    composite_gap_local_settlement: '长 GAP 复合段',
     enclosed_gap_cluster: '遮挡聚集标记',
     enclosed_loop_cluster_settlement: '遮挡后绕线',
     position_snap_recovery: '定位跳远后接回',
@@ -1681,6 +1692,12 @@ function reviewTaskForScenario(scenario) {
       title: '来回路线太密',
       note: '线会简化重复折返，检查是否保留真实转折',
       rank: 41
+    },
+    composite_gap_local_settlement: {
+      key: 'composite_gap',
+      title: '长 GAP 复合段',
+      note: '没有跨整段做往返改线，检查局部接线是否更像真实路线',
+      rank: 43
     },
     closed_loop_round_trip: {
       key: 'closed_loop',
