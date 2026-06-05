@@ -69,7 +69,7 @@ test('scenario repair helpers ignore unknown ids and summarize selection', () =>
   assert.equal(scenarioRepairSummary(DEFAULT_SCENARIO_REPAIR_IDS), '全部开启');
   assert.equal(scenarioRepairOption('round_trip_line').configKey,
     'roundTripLineSimplifyEnabled');
-  assert.equal(scenarioRepairOption('rest_photo_micro_move').kind, 'hybrid');
+  assert.equal(scenarioRepairOption('rest_photo_micro_move').kind, 'rewrite');
   assert.equal(scenarioRepairOption('dense_main_route_settlement').configKey,
     'denseMainRouteSettlementEnabled');
   assert.equal(scenarioRepairOption('unknown'), null);

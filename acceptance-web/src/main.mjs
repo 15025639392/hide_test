@@ -4,7 +4,7 @@ import {
   isEvidenceCandidatePath,
   parseEvidenceJsonl
 } from './diagnosticMap.mjs';
-import { buildCleanedLineFeatures } from './cleanedLineStyles.mjs';
+import { buildCleanedLineFeatures, cleanedRouteLinePoints } from './cleanedLineStyles.mjs';
 import {
   buildSixLayerTrackProduct,
   reviewTrackPointScenarioCoverage
@@ -22,10 +22,21 @@ const COLORS = ['#2dd4bf', '#fb7185', '#facc15', '#60a5fa', '#c084fc', '#34d399'
 const MAP_LINE_POINT_LIMIT = 6000;
 const MAP_RAW_POINT_LIMIT = 7000;
 const MAP_TRACK_POINT_LIMIT = 5000;
-const REVIEW_PLACE_CLUSTER_RADIUS_METERS = 80;
-const REVIEW_PLACE_CONTEXT_RADIUS_METERS = 160;
-const REVIEW_PLACE_RAW_GAP = 80;
-const REVIEW_EPISODE_POLYGON_GAP_METERS = 24;
+const REVIEW_TASK_STATUSES = [
+  { key: 'approved', label: '通过' },
+  { key: 'question', label: '存疑' },
+  { key: 'skipped', label: '跳过' }
+];
+const REVIEW_STATUS_LABELS = {
+  pending: '待看',
+  approved: '通过',
+  question: '存疑',
+  skipped: '跳过'
+};
+const SETTLED_REVIEW_SCENARIOS = new Set([
+  'rest_photo_micro_move',
+  'moving_spike_cleanup'
+]);
 const TERRAIN_EXAGGERATION = 1.15;
 const TERRAIN_TILEJSON_URL = 'https://tiles.mapterhorn.com/tilejson.json';
 const TERRAIN_TILE_TEMPLATE = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
@@ -51,6 +62,7 @@ const state = {
   selectedDatasetId: null,
   selectedPoint: null,
   scenarioReviewRangeText: '',
+  reviewTaskStatusByDataset: {},
   reviewFocusMode: false,
   focusedMapRange: null,
   currentProblemDrag: null,
@@ -155,6 +167,7 @@ async function importFiles(files, fromDirectory) {
     state.datasets = datasets;
     state.selectedDatasetId = datasets[0]?.id || null;
     state.selectedPoint = null;
+    state.reviewTaskStatusByDataset = {};
     setImportText(errors.length
       ? `找到 ${evidenceFiles.length} 个 evidence 文件，已导入 ${datasets.length} 个，失败 ${errors.length} 个：${errors[0]}`
       : `找到 ${evidenceFiles.length} 个 evidence 文件，已导入 ${datasets.length} 个`);
@@ -281,7 +294,18 @@ function fullScenarioConfig() {
 
 function buildRawDecisionIndex(targetProduct) {
   const decisions = new Map();
+  for (const decision of targetProduct?.rawPointDecisions || []) {
+    if (!Number.isFinite(decision.rawPointId)) continue;
+    decisions.set(decision.rawPointId, {
+      ...decision,
+      kind: decision.horizontalResult,
+      result: decision.horizontalResult,
+      reason: decision.horizontalReason,
+      source: 'targetProduct.rawPointDecisions'
+    });
+  }
   for (const point of targetProduct?.track || []) {
+    if (decisions.has(point.sourceRawPointId)) continue;
     if (Number.isFinite(point.sourceRawPointId)) {
       decisions.set(point.sourceRawPointId, {
         ...point,
@@ -364,6 +388,7 @@ function clearAll() {
   state.selectedDatasetId = null;
   state.selectedPoint = null;
   state.scenarioReviewRangeText = '';
+  state.reviewTaskStatusByDataset = {};
   state.reviewFocusMode = false;
   state.focusedMapRange = null;
   elements.folderInput.value = '';
@@ -436,20 +461,21 @@ function renderReviewDatasetOverview() {
     `${selectedIndex + 1}/${state.datasets.length}`;
   elements.reviewDatasetOverview.innerHTML = [
     datasetSummaryMarkup(dataset),
+    reviewQueueSummaryMarkup(dataset),
     state.datasets.length > 1 ? datasetSwitchMarkup() : ''
   ].join('');
 }
 
 function datasetSummaryMarkup(dataset) {
   const stats = dataset?.targetProduct?.stats || {};
-  const scenarioCoverageCount = dataset?.scenarioProduct?.scenarioCoverage?.length || 0;
+  const reviewIssueCount = buildReviewTasks(dataset).length;
   return `
     <section class="summary-block review-current-dataset">
       <h3>${escapeHtml(dataset?.fileName || '未选择样本')}</h3>
       <div class="metric-grid">
         ${metricCellMarkup('raw', formatPlainNumber(dataset?.model?.summary?.rawCount || 0))}
         ${metricCellMarkup('清洗点', formatPlainNumber(stats.trustedPointCount || 0))}
-        ${metricCellMarkup('问题区间', formatPlainNumber(scenarioCoverageCount))}
+        ${metricCellMarkup('待复核', formatPlainNumber(reviewIssueCount))}
         ${metricCellMarkup('运动里程', formatMeters(stats.totalDistanceMeters))}
         ${metricCellMarkup('运动耗时', formatDuration(stats.movingTimeSeconds))}
         ${metricCellMarkup('累计爬升', formatAscent(stats.selectedTotalAscentMeters))}
@@ -457,6 +483,35 @@ function datasetSummaryMarkup(dataset) {
       <span>${escapeHtml(dataset?.filePath || '-')}</span>
     </section>
   `;
+}
+
+function reviewQueueSummaryMarkup(dataset) {
+  const stats = reviewQueueStats(dataset);
+  return `
+    <section class="summary-block review-queue-summary">
+      <h3>审核队列</h3>
+      <div class="metric-grid review-queue-grid">
+        ${metricCellMarkup('问题段', formatPlainNumber(stats.total))}
+        ${metricCellMarkup('待看', formatPlainNumber(stats.pending))}
+        ${metricCellMarkup('已处理', formatPlainNumber(stats.done))}
+        ${metricCellMarkup('高风险', formatPlainNumber(stats.highRisk))}
+        ${metricCellMarkup('中断边界', formatPlainNumber(stats.gap))}
+        ${metricCellMarkup('交通混入', formatPlainNumber(stats.transport))}
+      </div>
+      <span>${escapeHtml(reviewQueueHint(stats))}</span>
+    </section>
+  `;
+}
+
+function reviewQueueHint(stats) {
+  if (!stats.total) return '当前样本没有需要优先复核的问题。';
+  if (stats.question > 0) {
+    return `还有 ${formatPlainNumber(stats.question)} 个存疑问题，建议优先回看地图和原始点。`;
+  }
+  if (stats.pending > 0) {
+    return `建议按 Raw 时间序列从上到下复核，先处理高风险、GAP 和交通混入。`;
+  }
+  return '本样本的问题都已标记，后续可切换样本继续复核。';
 }
 
 function metricCellMarkup(label, value) {
@@ -482,7 +537,7 @@ function datasetSwitchMarkup() {
 function datasetSwitchButtonMarkup(dataset, index) {
   const selected = dataset.id === state.selectedDatasetId;
   const stats = dataset.targetProduct?.stats || {};
-  const scenarioCoverageCount = dataset.scenarioProduct?.scenarioCoverage?.length || 0;
+  const reviewIssueCount = buildReviewTasks(dataset).length;
   return `
     <button
       class="dataset-switch-button ${selected ? 'selected' : ''}"
@@ -491,7 +546,7 @@ function datasetSwitchButtonMarkup(dataset, index) {
     >
       <span class="dataset-switch-title">
         <b>${escapeHtml(`${index + 1}. ${dataset.fileName}`)}</b>
-        <small>${escapeHtml(`${formatPlainNumber(scenarioCoverageCount)} 个问题区间`)}</small>
+        <small>${escapeHtml(`${formatPlainNumber(reviewIssueCount)} 个待复核问题`)}</small>
       </span>
       <span class="dataset-switch-metrics">
         ${escapeHtml(formatMeters(stats.totalDistanceMeters))}
@@ -738,7 +793,7 @@ function humanForwardSpineResolution(resolution) {
 
 function humanForwardSpineConflictSummary(conflict) {
   if (conflict.conflict === 'local_micro_move_overrides_forward_spine') {
-    return '这段局部形态像休息/拍照微移动，但它夹在主前进/回环骨架内；V17 先按保方向候选冲突复盘，不再直接当作休息覆盖 forward。';
+    return '普通休息/拍照小移动已按沉淀策略清洗；这段夹在主前进/回环骨架内，只有在保方向候选明显更合适时才作为候选冲突复盘。';
   }
   if (conflict.conflict === 'endpoint_touch_forward_spine_candidates') {
     return '两个保方向候选只在端点附近相接；端点应保留，两侧是否合并需要看前后方向和真实语义。';
@@ -753,6 +808,12 @@ function humanForwardSpineConflictSummary(conflict) {
 }
 
 function handleScenarioRangeReviewClick(event) {
+  const statusButton = event.target.closest('[data-review-task-key][data-review-task-status]');
+  if (statusButton) {
+    updateReviewTaskStatus(statusButton.dataset.reviewTaskKey,
+      statusButton.dataset.reviewTaskStatus);
+    return;
+  }
   const scenarioButton = event.target.closest('[data-scenario-start-track][data-scenario-end-track]');
   if (scenarioButton) {
     const startTrackPointId = Number(scenarioButton.dataset.scenarioStartTrack);
@@ -768,6 +829,36 @@ function handleScenarioRangeReviewClick(event) {
   const startRawPointId = Number(button.dataset.conflictStartRaw);
   const endRawPointId = Number(button.dataset.conflictEndRaw);
   focusDenseIntentConflict(startRawPointId, endRawPointId);
+}
+
+function updateReviewTaskStatus(taskKey, nextStatus) {
+  const dataset = selectedDataset();
+  if (!dataset || !taskKey || !reviewStatusIsValid(nextStatus)) return;
+  const statuses = datasetReviewStatuses(dataset);
+  const currentStatus = statuses[taskKey] || 'pending';
+  if (currentStatus === nextStatus) {
+    delete statuses[taskKey];
+  } else {
+    statuses[taskKey] = nextStatus;
+  }
+  renderReviewDatasetOverview();
+  renderCleaningAlgorithm();
+}
+
+function reviewStatusIsValid(status) {
+  return REVIEW_TASK_STATUSES.some((item) => item.key === status);
+}
+
+function datasetReviewStatuses(dataset) {
+  if (!dataset?.id) return {};
+  state.reviewTaskStatusByDataset[dataset.id] =
+    state.reviewTaskStatusByDataset[dataset.id] || {};
+  return state.reviewTaskStatusByDataset[dataset.id];
+}
+
+function reviewTaskStatus(dataset, taskKey) {
+  if (!dataset || !taskKey) return 'pending';
+  return datasetReviewStatuses(dataset)[taskKey] || 'pending';
 }
 
 function focusScenarioCoverage(startTrackPointId, endTrackPointId, startRawPointId,
@@ -1093,7 +1184,7 @@ function scenarioHitMarkup(item, useMatchedRange, actionable = false, dataset = 
   return `
     <${tagName} class="scenario-hit scenario-coverage-hit" data-review-kind="${escapeHtml(reviewLevel.kind)}" ${actionAttributes}>
       <div class="scenario-hit-title">
-        <strong>${escapeHtml(item.scenarioLabel || item.scenario || '-')}</strong>
+        <strong>${escapeHtml(item.scenarioLabel || scenarioNameLabel(item.scenario))}</strong>
         <span class="review-badge">${escapeHtml(reviewLevel.label)}</span>
       </div>
       <div class="scenario-hit-meta">
@@ -1280,6 +1371,7 @@ function isBoundaryOrRiskScenario(scenario) {
 function sortScenarioCoverageForReview(coverage, dataset) {
   return (coverage || [])
     .filter((item) => reviewerVisibleScenario(item?.scenario))
+    .filter((item) => !SETTLED_REVIEW_SCENARIOS.has(item?.scenario))
     .map((item, index) => ({ item, index, level: scenarioReviewLevel(item, dataset) }))
     .sort((left, right) =>
       (left.item.rawRange?.startRawPointId ?? Infinity)
@@ -1334,6 +1426,8 @@ function reviewerVisibleScenario(scenario) {
 
 function scenarioNameLabel(name) {
   const labels = {
+    dense_area_intent: '密集区意图',
+    dense_main_route_settlement: '密集区主路线',
     weak_recovery_endpoint: '弱信号恢复点',
     same_road_round_trip: '同路来回',
     closed_loop_round_trip: '闭合来回标记',
@@ -1387,212 +1481,80 @@ function algorithmBlock() {
   const taskCount = reviewTaskCount(dataset);
   if (elements.cleaningConfigState) {
     elements.cleaningConfigState.textContent = dataset
-      ? `${formatPlainNumber(taskCount)} 个剧集`
+      ? `${formatPlainNumber(taskCount)} 个问题`
       : '等待导入';
   }
   return `
-    <section class="summary-block algorithm-block">
-      <h3>情景剧集</h3>
-      ${reviewTaskListMarkup(dataset)}
-    </section>
+    <h3>问题清单</h3>
+    ${currentReviewSummaryMarkup(dataset)}
+    ${reviewTaskListMarkup(dataset)}
   `;
 }
 
 function reviewTaskCount(dataset) {
-  return buildReviewPlaceGroups(dataset).length;
+  return buildReviewTasks(dataset).length;
+}
+
+function reviewQueueStats(dataset) {
+  const tasks = buildReviewTasks(dataset);
+  const stats = {
+    total: tasks.length,
+    pending: 0,
+    approved: 0,
+    question: 0,
+    skipped: 0,
+    done: 0,
+    highRisk: 0,
+    gap: 0,
+    transport: 0
+  };
+  for (const task of tasks) {
+    const status = reviewTaskStatus(dataset, task.reviewKey);
+    stats[status] = (stats[status] || 0) + 1;
+    if (status !== 'pending') stats.done++;
+    if (reviewTaskIsHighRisk(task, dataset)) stats.highRisk++;
+    if (task.item?.scenario === 'gap_recovery_boundary') stats.gap++;
+    if (task.item?.scenario === 'transport_contamination') stats.transport++;
+  }
+  return stats;
 }
 
 function reviewTaskListMarkup(dataset) {
-  const groups = buildReviewPlaceGroups(dataset);
+  const tasks = buildReviewTasks(dataset);
   if (!dataset) {
-    return '<span>导入 evidence.jsonl 后显示需要复核的问题</span>';
+    return '<span>导入 evidence.jsonl 后按 Raw 时间序列显示问题清单</span>';
   }
-  if (groups.length === 0) {
+  if (tasks.length === 0) {
     return '<span>当前样本没有需要优先复核的问题</span>';
   }
+  return tasks.map((task, index) => reviewTaskMarkup(task, dataset, index)).join('');
+}
+
+function currentReviewSummaryMarkup(dataset) {
+  if (!dataset || !state.scenarioReviewRangeText) return '';
+  const parsed = parseScenarioRangeText(state.scenarioReviewRangeText);
+  if (!parsed) return '';
+  const review = reviewTrackPointScenarioCoverage(dataset.targetProduct,
+    parsed.startTrackPointId, parsed.endTrackPointId);
+  if (!review.valid) return '';
+  const visibleCoverage = reviewerVisibleScenarioCoverage(review.scenarioCoverage);
+  const scenarios = visibleCoverage.length > 0
+    ? visibleCoverage.map((item) => item.scenario)
+    : review.primaryScenarios;
+  const treatment = lineTreatmentForScenarios(new Set(scenarios));
   return `
-    <div class="review-task-list">
-      ${groups.map((group, index) => reviewPlaceGroupMarkup(group, index, dataset)).join('')}
-    </div>
+    <section class="current-review-summary">
+      <b>当前复核</b>
+      <span class="current-review-range">${escapeHtml(`清洗#${review.requestedTrackPointRange.startTrackPointId}-${review.requestedTrackPointRange.endTrackPointId}`)}</span>
+      <span class="current-review-meta">${escapeHtml([
+        formatScenarioRawRange(review.rawRange),
+        `${formatPlainNumber(review.trackPointCount)} 个清洗点`,
+        formatReviewerScenarioNames(scenarios)
+      ].join(' · '))}</span>
+      <p>${escapeHtml(treatment.result)}</p>
+      <p>${escapeHtml(treatment.review)}</p>
+    </section>
   `;
-}
-
-function buildReviewPlaceGroups(dataset) {
-  const tasks = buildReviewTasks(dataset);
-  const groups = [];
-  for (const task of tasks) {
-    const center = taskCenterPoint(dataset, task);
-    const polygonBounds = taskScenarioPolygonBounds(dataset, task);
-    const group = groups.find((candidate) =>
-      reviewTaskBelongsToPlace(candidate, task, center, polygonBounds));
-    if (group) {
-      group.tasks.push(task);
-      group.center = averagePoint(group.center, center, group.tasks.length);
-      group.polygonBounds = mergeGeoBounds(group.polygonBounds, polygonBounds);
-      group.startRawPointId = Math.min(group.startRawPointId, task.startRawPointId);
-      group.endRawPointId = Math.max(group.endRawPointId, task.endRawPointId ?? task.startRawPointId);
-      group.placeKinds.add(reviewPlaceKind(task.item?.scenario));
-      continue;
-    }
-    groups.push({
-      center,
-      polygonBounds,
-      tasks: [task],
-      startRawPointId: task.startRawPointId,
-      endRawPointId: task.endRawPointId ?? task.startRawPointId,
-      placeKinds: new Set([reviewPlaceKind(task.item?.scenario)])
-    });
-  }
-  return groups.sort((left, right) =>
-    left.startRawPointId - right.startRawPointId
-    || left.tasks[0].title.localeCompare(right.tasks[0].title, 'zh-Hans-CN'));
-}
-
-function reviewTaskBelongsToPlace(group, task, center, polygonBounds) {
-  if (group.polygonBounds && polygonBounds) {
-    return geoBoundsTouch(group.polygonBounds, polygonBounds,
-      REVIEW_EPISODE_POLYGON_GAP_METERS);
-  }
-  const rawGap = rawRangeGap(group, task);
-  if (rawGap <= 0) return true;
-  const distance = group.center && center ? haversineMeters(group.center, center) : Infinity;
-  const kind = reviewPlaceKind(task.item?.scenario);
-  if (rawGap <= REVIEW_PLACE_RAW_GAP && distance <= REVIEW_PLACE_CONTEXT_RADIUS_METERS) return true;
-  if (kind === 'place' && group.placeKinds.has('place')
-      && distance <= REVIEW_PLACE_CONTEXT_RADIUS_METERS) {
-    return true;
-  }
-  if (reviewPlaceKindsComplement(group.placeKinds, kind)
-      && distance <= REVIEW_PLACE_CLUSTER_RADIUS_METERS) {
-    return true;
-  }
-  return distance <= REVIEW_PLACE_CLUSTER_RADIUS_METERS
-    && rawGap <= REVIEW_PLACE_RAW_GAP * 2;
-}
-
-function taskScenarioPolygonBounds(dataset, task) {
-  const rawRange = task.item?.rawRange;
-  const scenario = task.item?.scenario;
-  if (!dataset || !scenario || !Number.isFinite(rawRange?.startRawPointId)
-      || !Number.isFinite(rawRange?.endRawPointId)) {
-    return null;
-  }
-  const features = (dataset.scenarioPolygonFeatures || [])
-    .filter((feature) => {
-      if (feature.properties?.fallbackRegion === true) return false;
-      if (feature.properties?.scenario !== scenario) return false;
-      const featureRawRange = rawRangeFromText(feature.properties?.rawRange);
-      return featureRawRange ? rawRangesOverlap(featureRawRange, rawRange) : false;
-    });
-  return features.reduce((bounds, feature) =>
-    mergeGeoBounds(bounds, geoBoundsForFeature(feature)), null);
-}
-
-function geoBoundsForFeature(feature) {
-  const coordinates = feature?.geometry?.coordinates?.[0] || [];
-  const points = coordinates
-    .map(([lng, lat]) => ({ lng, lat }))
-    .filter(hasValidLngLat);
-  return boundsForPoints(points);
-}
-
-function mergeGeoBounds(left, right) {
-  if (!left) return right || null;
-  if (!right) return left;
-  return {
-    minLat: Math.min(left.minLat, right.minLat),
-    maxLat: Math.max(left.maxLat, right.maxLat),
-    minLng: Math.min(left.minLng, right.minLng),
-    maxLng: Math.max(left.maxLng, right.maxLng)
-  };
-}
-
-function geoBoundsTouch(left, right, gapMeters = 0) {
-  if (!left || !right) return false;
-  const expandedLeft = expandGeoBounds(left, gapMeters);
-  const expandedRight = expandGeoBounds(right, gapMeters);
-  return expandedLeft.minLat <= expandedRight.maxLat
-    && expandedRight.minLat <= expandedLeft.maxLat
-    && expandedLeft.minLng <= expandedRight.maxLng
-    && expandedRight.minLng <= expandedLeft.maxLng;
-}
-
-function expandGeoBounds(bounds, meters) {
-  if (!bounds || !Number.isFinite(meters) || meters <= 0) return bounds;
-  const centerLat = (bounds.minLat + bounds.maxLat) / 2;
-  const latDelta = meters / 111320;
-  const lngDelta = meters / Math.max(1, 111320 * Math.cos(degreesToRadians(centerLat)));
-  return {
-    minLat: bounds.minLat - latDelta,
-    maxLat: bounds.maxLat + latDelta,
-    minLng: bounds.minLng - lngDelta,
-    maxLng: bounds.maxLng + lngDelta
-  };
-}
-
-function rawRangeGap(group, task) {
-  const start = task.startRawPointId;
-  const end = task.endRawPointId ?? task.startRawPointId;
-  if (!Number.isFinite(start) || !Number.isFinite(end)
-      || !Number.isFinite(group.startRawPointId) || !Number.isFinite(group.endRawPointId)) {
-    return Infinity;
-  }
-  if (start <= group.endRawPointId && end >= group.startRawPointId) return 0;
-  if (start > group.endRawPointId) return start - group.endRawPointId;
-  return group.startRawPointId - end;
-}
-
-function reviewPlaceKind(scenario) {
-  if ([
-    'stationary_session_collapse',
-    'stationary_drift_collapse',
-    'rest_photo_micro_move',
-    'enclosed_loop_cluster_settlement',
-    'enclosed_gap_cluster',
-    'closed_loop_round_trip'
-  ].includes(scenario)) return 'place';
-  if ([
-    'position_snap_recovery',
-    'moving_spike_cleanup',
-    'weak_recovery_endpoint',
-    'gap_recovery_boundary'
-  ].includes(scenario)) return 'boundary';
-  if ([
-    'same_road_round_trip',
-    'round_trip_line'
-  ].includes(scenario)) return 'route';
-  return 'other';
-}
-
-function reviewPlaceKindsComplement(kinds, kind) {
-  return kind === 'boundary' && (kinds.has('place') || kinds.has('route'));
-}
-
-function taskCenterPoint(dataset, task) {
-  const rawRange = task.item?.rawRange;
-  if (dataset && Number.isFinite(rawRange?.startRawPointId)
-      && Number.isFinite(rawRange?.endRawPointId)) {
-    const points = rawPointsInRange(dataset, rawRange).filter(hasValidLngLat);
-    if (points.length > 0) return averageLngLat(points);
-  }
-  return null;
-}
-
-function averageLngLat(points) {
-  const sum = points.reduce((acc, point) => ({
-    lat: acc.lat + point.lat,
-    lng: acc.lng + point.lng
-  }), { lat: 0, lng: 0 });
-  return { lat: sum.lat / points.length, lng: sum.lng / points.length };
-}
-
-function averagePoint(current, next, count) {
-  if (!current) return next;
-  if (!next) return current;
-  return {
-    lat: current.lat + (next.lat - current.lat) / count,
-    lng: current.lng + (next.lng - current.lng) / count
-  };
 }
 
 function buildReviewTasks(dataset) {
@@ -1604,6 +1566,7 @@ function buildReviewTasks(dataset) {
     return {
       ...task,
       key: `${task.key}-${index}`,
+      reviewKey: reviewTaskKeyForScenarioItem(item, index),
       item,
       items: [item],
       startRawPointId: item.rawRange?.startRawPointId ?? Infinity,
@@ -1627,7 +1590,8 @@ function buildReviewTasks(dataset) {
       startRawPointId: item.rawRange?.startRawPointId ?? Infinity,
       endRawPointId: item.rawRange?.endRawPointId ?? item.rawRange?.startRawPointId ?? Infinity,
       startTrackPointId: Infinity,
-      conflict: true
+      conflict: true,
+      reviewKey: reviewTaskKeyForConflict(item, index)
     });
   });
   return tasks.sort((left, right) =>
@@ -1635,6 +1599,31 @@ function buildReviewTasks(dataset) {
     || left.startTrackPointId - right.startTrackPointId
     || left.rank - right.rank
     || left.title.localeCompare(right.title, 'zh-Hans-CN'));
+}
+
+function reviewTaskKeyForScenarioItem(item, index) {
+  const rawRange = item?.rawRange || {};
+  const trackRange = item?.trackPointRange || item?.matchedTrackPointRange || {};
+  return [
+    'scenario',
+    item?.scenario || 'unknown',
+    rawRange.startRawPointId ?? 'raw',
+    rawRange.endRawPointId ?? 'raw',
+    trackRange.startTrackPointId ?? 'track',
+    trackRange.endTrackPointId ?? 'track',
+    item?.scenarioId ?? index
+  ].join(':');
+}
+
+function reviewTaskKeyForConflict(item, index) {
+  const rawRange = item?.rawRange || {};
+  return [
+    'conflict',
+    item?.conflict || item?.resolution || 'local',
+    rawRange.startRawPointId ?? 'raw',
+    rawRange.endRawPointId ?? 'raw',
+    (item?.candidateIds || []).join(',') || index
+  ].join(':');
 }
 
 function reviewTaskForScenario(scenario) {
@@ -1726,75 +1715,126 @@ function reviewTaskForScenario(scenario) {
   };
 }
 
-function reviewPlaceGroupMarkup(group, index, dataset) {
-  const typeNames = [...new Set(group.tasks.map((task) => task.title))];
-  const title = `剧集 ${formatPlainNumber(index + 1)}：${reviewPlaceGroupTitle(group)}`;
-  const range = Number.isFinite(group.startRawPointId) && Number.isFinite(group.endRawPointId)
-    ? `Raw#${formatPlainNumber(group.startRawPointId)}-${formatPlainNumber(group.endRawPointId)}`
-    : 'Raw#-';
+function reviewTaskMarkup(task, dataset, index = null) {
+  const status = reviewTaskStatus(dataset, task.reviewKey);
+  const reviewLevel = task.conflict
+    ? { kind: 'conflict', label: '先看冲突' }
+    : scenarioReviewLevel(task.item, dataset);
+  const metaText = reviewTaskTimelineMetaText(task);
+  const orderMarkup = Number.isFinite(index)
+    ? `<span class="review-task-order">${escapeHtml(formatPlainNumber(index + 1))}</span>`
+    : '';
   return `
-    <section class="review-place-group">
-      <div class="review-place-heading">
-        <b>${escapeHtml(title)}</b>
-        <span>${escapeHtml(`${formatPlainNumber(group.tasks.length)} 段`)}</span>
-      </div>
-      <p>${escapeHtml(`${range}；${typeNames.join('、')}`)}</p>
-      <div class="review-place-task-list">
-        ${group.tasks.map((task) => reviewTaskMarkup(task, dataset)).join('')}
-      </div>
+    <section
+      class="review-task"
+      data-review-status-state="${escapeHtml(status)}"
+      data-review-kind="${escapeHtml(reviewLevel.kind)}"
+      ${reviewTaskActionAttributes(task)}
+    >
+      ${orderMarkup}
+      <b class="review-task-title">${escapeHtml(task.title)}</b>
+      <span class="review-badge">${escapeHtml(reviewLevel.label)}</span>
+      ${metaText ? `<span class="review-task-meta">${escapeHtml(metaText)}</span>` : ''}
+      <p class="review-task-summary">${escapeHtml(reviewTaskSummary(task))}</p>
+      <p class="review-task-action">${escapeHtml(reviewTaskActionText(task))}</p>
+      ${reviewTaskStatusControlsMarkup(task, status)}
     </section>
   `;
 }
 
-function reviewPlaceGroupTitle(group) {
-  const scenarios = new Set(group.tasks.map((task) => task.item?.scenario));
-  if (scenarios.has('stationary_session_collapse')
-      || scenarios.has('stationary_drift_collapse')
-      || scenarios.has('rest_photo_micro_move')) {
-    return '停留/拍照点';
+function reviewTaskActionAttributes(task) {
+  if (task.conflict) {
+    return [
+      `data-conflict-start-raw="${escapeHtml(String(task.item?.rawRange?.startRawPointId ?? ''))}"`,
+      `data-conflict-end-raw="${escapeHtml(String(task.item?.rawRange?.endRawPointId ?? ''))}"`
+    ].join(' ');
   }
-  if (scenarios.has('enclosed_loop_cluster_settlement')
-      || scenarios.has('enclosed_gap_cluster')) {
-    return '遮挡绕线点';
-  }
-  if (scenarios.has('same_road_round_trip')
-      || scenarios.has('round_trip_line')
-      || scenarios.has('closed_loop_round_trip')) {
-    return '往返路线段';
-  }
-  if (scenarios.has('position_snap_recovery')
-      || scenarios.has('moving_spike_cleanup')
-      || scenarios.has('gap_recovery_boundary')
-      || scenarios.has('weak_recovery_endpoint')) {
-    return '接线边界';
-  }
-  if (scenarios.has('transport_contamination')) return '疑似非徒步段';
-  return '复合处理点';
+  const item = task.item || {};
+  const trackRange = item.trackPointRange;
+  const rawRange = item.rawRange;
+  const startTrack = trackRange?.startTrackPointId;
+  const endTrack = trackRange?.endTrackPointId;
+  if (!Number.isFinite(startTrack) || !Number.isFinite(endTrack)) return '';
+  return [
+    `data-scenario-start-track="${escapeHtml(String(startTrack))}"`,
+    `data-scenario-end-track="${escapeHtml(String(endTrack))}"`,
+    `data-scenario-start-raw="${escapeHtml(String(Number.isFinite(rawRange?.startRawPointId) ? rawRange.startRawPointId : ''))}"`,
+    `data-scenario-end-raw="${escapeHtml(String(Number.isFinite(rawRange?.endRawPointId) ? rawRange.endRawPointId : ''))}"`
+  ].join(' ');
 }
 
-function reviewTaskMarkup(task, dataset) {
-  const badge = task.conflict ? '先看' : reviewTaskRangeLabel(task.item);
-  const body = task.conflict
-    ? forwardSpineConflictListMarkup(task.items)
-    : scenarioHitListMarkup(task.items, false, 1, true, dataset);
+function reviewTaskTimelineMetaText(task) {
+  const parts = [
+    reviewTaskRawRangeLabel(task),
+    reviewTaskTrackRangeLabel(task),
+    reviewTaskPointCountLabel(task)
+  ].filter(Boolean);
+  return parts.join(' · ');
+}
+
+function reviewTaskSummary(task) {
+  if (task.conflict) return humanForwardSpineConflictSummary(task.item);
+  return task.item?.summary || task.note || '-';
+}
+
+function reviewTaskActionText(task) {
+  if (task.conflict) return '点击定位地图；处理结果：先复盘，不改变当前清洗轨迹。';
+  const action = task.item?.actionLabel || task.item?.action || '-';
+  const rebuild = task.item?.localRebuildLabel || task.item?.localRebuild || '-';
+  return `点击查看区间；${action}；${rebuild}`;
+}
+
+function reviewTaskStatusControlsMarkup(task, status) {
   return `
-    <section class="review-task">
-      <div class="review-task-heading">
-        <b>${escapeHtml(task.title)}</b>
-        <span>${escapeHtml(badge)}</span>
-      </div>
-      <p>${escapeHtml(task.note)}</p>
-      ${body}
-    </section>
+    <span class="review-task-status-label" aria-label="审核状态">${escapeHtml(REVIEW_STATUS_LABELS[status] || REVIEW_STATUS_LABELS.pending)}</span>
+    ${REVIEW_TASK_STATUSES.map((option) => `
+      <button
+        class="review-status-button ${status === option.key ? 'selected' : ''}"
+        type="button"
+        aria-pressed="${status === option.key ? 'true' : 'false'}"
+        data-review-task-key="${escapeHtml(task.reviewKey)}"
+        data-review-task-status="${escapeHtml(option.key)}"
+      >${escapeHtml(option.label)}</button>
+    `).join('')}
   `;
 }
 
-function reviewTaskRangeLabel(item) {
-  const rawStart = item?.rawRange?.startRawPointId;
-  if (Number.isFinite(rawStart)) return `Raw#${rawStart}`;
-  const trackStart = item?.trackPointRange?.startTrackPointId
-    ?? item?.matchedTrackPointRange?.startTrackPointId;
-  return Number.isFinite(trackStart) ? `清洗#${trackStart}` : '时间段';
+function reviewTaskIsHighRisk(task, dataset) {
+  if (task.conflict) return true;
+  const level = scenarioReviewLevel(task.item, dataset);
+  return level.kind === 'conflict'
+    || level.kind === 'risk'
+    || task.item?.scenario === 'transport_contamination'
+    || task.item?.scenario === 'gap_recovery_boundary';
+}
+
+function reviewTaskRawRangeLabel(task) {
+  const start = task?.startRawPointId;
+  const end = task?.endRawPointId;
+  if (!Number.isFinite(start)) return '';
+  return Number.isFinite(end) && end !== start
+    ? `Raw#${formatPlainNumber(start)}-${formatPlainNumber(end)}`
+    : `Raw#${formatPlainNumber(start)}`;
+}
+
+function reviewTaskTrackRangeLabel(task) {
+  if (task?.conflict) return '';
+  const item = task?.item || {};
+  const range = item.trackPointRange || item.matchedTrackPointRange;
+  const start = range?.startTrackPointId;
+  const end = range?.endTrackPointId;
+  if (!Number.isFinite(start)) return '';
+  return Number.isFinite(end) && end !== start
+    ? `清洗#${formatPlainNumber(start)}-${formatPlainNumber(end)}`
+    : `清洗#${formatPlainNumber(start)}`;
+}
+
+function reviewTaskPointCountLabel(task) {
+  if (task?.conflict) return '';
+  const primary = task?.item?.primaryTrackPointCount || 0;
+  const context = task?.item?.contextTrackPointCount || 0;
+  if (!primary && !context) return '';
+  return `主解释 ${formatPlainNumber(primary)} / 关联 ${formatPlainNumber(context)}`;
 }
 
 function scenarioCoverageOverviewMarkup(dataset) {
@@ -1946,7 +1986,13 @@ function cleanedPointDetailsMarkup(dataset, point) {
       `cloudSampleCount ${valueOrDash(point.cloudSampleCount)}`,
       `cloudWeightSum ${formatOneDecimal(point.cloudWeightSum)}`,
       `cloudWeightedRadius ${formatMeters(point.cloudWeightedRadiusMeters)}`,
-      `representativeRawPointId ${valueOrDash(point.representativeRawPointId)}`
+      `representativeRawPointId ${valueOrDash(point.representativeRawPointId)}`,
+      ...(point.routeLineVertex === false
+        ? [`routeLine ${point.routeLineStrategy || 'not_route_vertex'}`]
+        : []),
+      ...(point.suppressedRawPointIds?.length
+        ? [`suppressedRawPointIds ${formatIdPreview(point.suppressedRawPointIds)}`]
+        : [])
     ])}
 	    ${collapsibleDetailBlock('清洗轨迹状态', [
       `参数 ${dataset.targetProduct.usesDefaultConfig ? '默认' : '自定义'}`,
@@ -2906,8 +2952,8 @@ function directionArrowFeaturesForDataset(dataset) {
   if (elements.showCleaned.checked) {
     lines.push({
       kind: 'cleaned',
-      points: focusTrackPoints(dataset, pointsFromIds(dataset.targetTrackPointById,
-        dataset.mapRender?.cleanedLineTrackPointIds))
+      points: cleanedRouteLinePoints(focusTrackPoints(dataset,
+        pointsFromIds(dataset.targetTrackPointById, dataset.mapRender?.cleanedLineTrackPointIds)))
     });
   }
 

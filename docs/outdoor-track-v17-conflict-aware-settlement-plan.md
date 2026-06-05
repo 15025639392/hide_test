@@ -19,10 +19,10 @@ GPX 和高度门控仍属于基础安全边界；本阶段只处理 dense forwar
 six-layer-evidence-v16.1
 ```
 
-当前 V17.0 review-only 版本：
+当前 V17.4 清洗版本：
 
 ```text
-six-layer-evidence-v17.0
+six-layer-evidence-v17.4
 ```
 
 V17 工作名：
@@ -220,13 +220,52 @@ V17 启动阶段不做这些事：
   不等于冲突，也不应直接上图。
 - 不改变当前清洗轨迹。
 
-### V17.1 Active Merge/Select
+### V17.1 Rest/Photo Micro-Move Settlement
+
+状态：已落盘为 `six-layer-evidence-v17.1`。
+
+- `rest_photo_micro_move` 默认应用到轨迹清洗：近静止折返塌成休息锚点，其余小移动简化为少量形状锚点。
+- Web 复核任务不再单独列出已沉淀的休息/拍照小移动；`scenarioCoverage[]` 和点级解释仍保留证据。
+
+### V17.2 Moving Spike Cleanup Settlement
+
+状态：已落盘为 `six-layer-evidence-v17.2`。
+
+- `moving_spike_cleanup` 默认应用到轨迹清洗：删除低速侧向尖刺点，用前后可信移动点桥接。
+- `moving_spike_cleanup` 执行优先于 `rest_photo_micro_move`，先消除点级伪迹，再让
+  休息/拍照小移动处理剩余区间。
+- Web 复核任务不再单独列出已沉淀的移动单点尖刺清理；`scenarioCoverage[]` 和点级解释仍保留证据。
+
+### V17.3 Pipeline Settlement Ordering
+
+状态：已落盘为 `six-layer-evidence-v17.3`。
+
+- 情景 settlement 按管道执行：每个会改线的阶段先更新 `product.track` 和
+  `rawPointDecisions`，后续情景只能基于更新后的清洗轨迹继续识别和改线。
+- `moving_spike_cleanup` 提升为前置点级清理，先于 `dense_area_intent`、
+  `dense_main_route_settlement`、`rest_photo_micro_move` 等 span 级情景执行。
+- 被移除的尖刺 raw point 进入 `suppressedRawPointIds` 诊断链；它仍有 raw 决策和
+  `scenarioContexts`，但不再作为后续情景的 active `contributingRawPointIds`。
+- 尖刺候选不再限定为 reported speed 为 0；低速 `accept` 点只要 detour / lateral
+  几何证据更强，也会优先于相邻的弱候选被删除。
+
+### V17.4 Stationary Drift Route-Line Bridge
+
+状态：已落盘为 `six-layer-evidence-v17.4`。
+
+- `stationary_drift_anchor` 继续保留为停留漂移解释锚点，承载 raw 贡献归属、
+  点级解释和场景覆盖。
+- 该锚点不再作为清洗路线顶点：输出 `routeLineVertex=false`、
+  `routeLineStrategy=bridge_previous_next`，清洗线直接连接前后有效路线点。
+- 这样保持轨迹连续，同时避免路线为了连续而折到漂移云中心，误表达“人真实经过该点”。
+
+### V17.5 Active Merge/Select
 
 - 只启用同向重叠和包含候选的 merge/select。
 - 不处理 crossing 为 active 改线。
 - 必须证明不会破坏 V16.1 已锁定的真实 evidence 回归。
 
-### V17.2 Crossing And Round-Trip Arbitration
+### V17.6 Crossing And Round-Trip Arbitration
 
 - 对 crossing 候选和往返覆盖主方向做 review-only 到 active 的升级评估。
 - 只有真实样本和 targeted synthetic case 都稳定后，才允许 active。
@@ -253,8 +292,34 @@ V17.0 已完成：
 2. 输出 `forwardSpineOverlaps[]`、高置信 `forwardSpineConflicts[]` 和
    `forwardSpineDecisions[]`。
 3. UI 冲突详情展示 forward spine conflict，并可点击定位地图。
-4. 不改变当前清洗轨迹，先验证冲突列表是否准确反映“多个保方向互相叠加”的位置。
 
-下一步进入 V17.1 前，应先人工复盘 `forwardSpineOverlaps[]`，把真正可靠的同向重叠和
+V17.1 已完成：
+
+1. 将 `rest_photo_micro_move` 从 diagnostic-first 调整为默认清洗策略。
+2. Web 复核任务过滤已沉淀的休息/拍照小移动，避免审核清单重复列出稳定策略。
+
+V17.2 已完成：
+
+1. 将 `moving_spike_cleanup` 标记为已沉淀默认清洗策略。
+2. 调整执行顺序，让移动单点尖刺清理优先于休息/拍照小移动 settlement。
+3. Web 复核任务过滤已沉淀的移动单点尖刺清理，避免审核清单重复列出稳定策略。
+
+V17.3 已完成：
+
+1. 将默认 settlement 收敛为管道式执行，后续情景基于前序情景改写后的
+   `product.track` 继续处理。
+2. 将 `moving_spike_cleanup` 放到 dense / rest / loop 等 span 级情景之前执行。
+3. 将被删除尖刺 raw 从 active `contributingRawPointIds` 拆到 `suppressedRawPointIds`，
+   保留诊断解释但不污染后续情景贡献输入。
+4. 对相邻尖刺候选做非重叠仲裁，选择 detour / lateral 更强的候选，覆盖
+   `5ccf3a9f-1d85-4c2b-8b24-61839d459845` 中 `Raw#1666` 低速 accept 尖刺。
+
+V17.4 已完成：
+
+1. 将 `stationary_drift_anchor` 标记为解释锚点而非路线顶点。
+2. Web 清洗线和方向箭头按 `routeLineVertex=false` 跳过该点并桥接前后路线点。
+3. 点级解释、`scenarioCoverage[]` 和 raw 贡献归属继续保留在锚点上。
+
+下一步进入 V17.5 前，应先人工复盘 `forwardSpineOverlaps[]`，把真正可靠的同向重叠和
 包含候选提升为高置信 `forwardSpineConflicts[]`，再考虑 active merge/select；crossing
 和往返覆盖主方向继续 review-only。

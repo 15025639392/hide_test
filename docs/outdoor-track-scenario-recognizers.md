@@ -130,9 +130,9 @@ primitiveFacts:
 | `enclosed_loop_cluster_settlement` | 遮挡聚集叠加闭合往返时，低速碎点和漂移锚点会形成额外折返距离。 | `enclosed_loop_anchor_settlement` | 只保留贴近进出口走廊的少量锚点；内部碎点并入贡献 raw，不累计距离、运动时间或爬升。 |
 | `position_snap_recovery` | GNSS 短时跳到新位置，但 reported speed 不支持交通判断，随后恢复稳定低速点。 | `position_snap_recovery_anchor` | 跳变恢复点作为零距离锚点；跳变弱点写入贡献 raw；后续低速点继续正常计距。 |
 | `stationary_session_collapse` | 整个 session 基本静止，raw 点云只是定位漂移。 | `stationary_session_anchor` | 全段压成一个代表点；距离、运动时间、爬升均不累计。 |
-| `stationary_drift_collapse` | 局部停留期间产生长串漂移点，容易膨胀里程。 | `stationary_drift_anchor` | 漂移云压成一个停留锚点；贡献 raw 全部被解释，不进入距离。 |
-| `rest_photo_micro_move` | 休息、拍照、找路时在小范围内来回挪动。 | `rest_photo_micro_move_diagnostic` / `rest_photo_micro_move_simplifier` / `rest_photo_micro_move_anchor` | 短促片段只做诊断；有少量真实挪动时保留少数微移动锚点；几乎静止时压成休息锚点。 |
-| `moving_spike_cleanup` | 连续移动中的单个低速侧向回跳点。 | `moving_spike_line_bridge` | 删除单点尖刺，用前后可信移动点直连；raw 仍作为贡献证据保留。 |
+| `stationary_drift_collapse` | 局部停留期间产生长串漂移点，容易膨胀里程。 | `stationary_drift_anchor` | 漂移云压成一个停留解释锚点；贡献 raw 全部被解释，不进入距离，也不作为清洗路线顶点。 |
+| `rest_photo_micro_move` | 休息、拍照、找路时在小范围内来回挪动。 | `rest_photo_micro_move_diagnostic` / `rest_photo_micro_move_simplifier` / `rest_photo_micro_move_anchor` | 默认作为已沉淀清洗策略：近静止折返压成休息锚点，其余小移动保留少数形状锚点；只有显式关闭重建时才退回诊断。 |
+| `moving_spike_cleanup` | 连续移动中的单个低速侧向回跳点。 | `moving_spike_line_bridge` | 默认作为已沉淀清洗策略：删除单点尖刺，用前后可信移动点直连；尖刺 raw 作为 suppressed 诊断证据保留，不再作为后续情景贡献输入或常规复核任务列出。 |
 | `gap_recovery_boundary` | GAP 后恢复点可能进入 GPX，但不能跨 GAP 计距。 | `gap_recovery_anchor` | 恢复点开启/重置 segment；距离、运动时间、GNSS/气压爬升 delta 为 0。 |
 | `transport_contamination` | 景区车、缆车、电梯、骑行或高速移动混入徒步记录。 | `transport_diagnostic_continuity` | 可以保留诊断连续性；不进入徒步距离、运动时间、可信 GPX 或徒步爬升。 |
 
@@ -366,12 +366,16 @@ V16.1 行为：
 重建动作：
 
 - 区间压成一个 `stationary_drift_anchor`。
+- V17.4 起该锚点是解释点，不是路线顶点：`routeLineVertex=false`，
+  `routeLineStrategy=bridge_previous_next`；清洗线直接连接前后有效路线点，
+  不折到漂移云中心。
 - 从 weak/reject/intakeRejected 中移除已被锚点解释的 raw id，避免同一 raw
   同时被“清掉”和“保留”。
 
 不能做：
 
 - 不能把停留漂移贡献到距离、运动时间或爬升窗口。
+- 不能把漂移云中心表达为真实经过点；它只能作为停留漂移解释锚点展示。
 
 ### `rest_photo_micro_move`
 
@@ -383,13 +387,15 @@ V16.1 行为：
 
 重建动作：
 
-- 较短片段只输出 `rest_photo_micro_move_diagnostic`。
-- 不压缩短促真实微移动，先让人工复盘可以看到“这里更像拍照/休息/找路”。
-- 当片段持续时间足够、bbox 很小、路径长度明显大于首尾净距离，并且人工复盘确认
-  “有少量真实挪动但没有这么乱”时，可以输出 `rest_photo_micro_move_simplifier`：
+- V17.1 起默认把该场景作为可执行清洗策略，不再要求人工复盘确认后才改线。
+- 执行前会先清理 `moving_spike_cleanup` 这类点级伪迹，避免低速侧向尖刺被误选为
+  休息锚点或微移动形状点。
+- 当 bbox 和首尾净距仍接近静止折返时，输出 `rest_photo_micro_move_anchor`：
+  压成一个休息锚点，距离、运动时间和爬升窗口均不累计。
+- 其余已识别的小范围来回挪动输出 `rest_photo_micro_move_simplifier`：
   保留首尾和少数形状锚点，合并中间来回抖动点，距离按简化后的微移动形状结算。
-- 当 bbox 和首尾净距离都很小，且片段更接近“几乎静止不动”时，可以输出
-  `rest_photo_micro_move_anchor`：压成一个休息锚点，距离、运动时间和爬升窗口均不累计。
+- 只有显式关闭 `restPhotoMicroMoveSimplifyEnabled` 时，才输出
+  `rest_photo_micro_move_diagnostic` 作为复盘证据，不改写 TrackPoint。
 - 对 2 分钟以上、bbox/path 都很小的拍照休息片段，首尾净距在约 12 米内仍可视作
   近静止微移动塌缩；这覆盖“有少量真实挪动但线路不该这么乱”的休息拍照区间。
 - 场景 evidence 会记录重叠的 dense intent，并显式标出
@@ -428,14 +434,23 @@ V16.1 行为：
 识别证据：
 
 - 前后点构成连续移动方向，桥接距离仍合理。
-- 中间单点 reported speed 为 0 或极低，但相对前后连线有明显横向偏离。
+- 中间单点 reported speed 处于低速范围，即使已经是 `accept`，只要相对前后连线有
+  明显横向偏离，也可以作为尖刺候选。
 - 通过中间点的折线距离明显大于前后直连距离。
+- 当相邻三点窗口同时产生多个尖刺候选时，按 detour 和 lateral 选择几何证据更强的
+  单个候选，避免把连续两个点一起删掉。
 
 重建动作：
 
+- V17.2 起默认把该场景作为可执行清洗策略，不再作为常规复核任务列出。
+- V17.3 起它作为前置点级伪迹清理，执行顺序优先于 `dense_area_intent`、
+  `rest_photo_micro_move` 等大范围 span settlement；后续情景基于清理后的
+  `product.track` 继续处理。
 - 输出 `moving_spike_line_bridge`。
 - 尖刺 raw point 不进入可信 GPX，不计距离和运动时间。
-- 后一个可信移动点吸收尖刺 raw id 到 `contributingRawPointIds`，距离按前一点到后一点直连重算。
+- 后一个可信移动点按前一点到后一点直连重算距离；尖刺 raw id 进入
+  `suppressedRawPointIds`，用于 raw 决策和解释链，不进入后续 active
+  `contributingRawPointIds`。
 
 不能做：
 
@@ -510,4 +525,10 @@ V16.1 行为：
   V17.0 已把多个 `dense_main_route_settlement` / 保方向候选整理为 review-only
   `forwardSpineCandidates[]`、`forwardSpineConflicts[]` 和 `forwardSpineDecisions[]`，
   普通候选 overlap 只留在 `forwardSpineOverlaps[]` 调试，不直接扩大 active 改线范围。
+  V17.1 将 `rest_photo_micro_move` 从复核候选沉淀为默认清洗策略；Web 复核任务不再
+  单独列出该场景，但 `scenarioCoverage[]`、点解释和 raw 贡献证据仍保留。
+  V17.2 将 `moving_spike_cleanup` 同样沉淀为默认清洗策略；Web 复核任务不再
+  单独列出移动单点尖刺清理。V17.3 起默认 settlement 按管道执行，尖刺 raw 进入
+  `suppressedRawPointIds` 诊断链，保留 `scenarioCoverage[]` 和点解释，但不再污染
+  后续情景的 active raw 贡献输入。
 - 策略版本、文档和测试必须同改；不能只改阈值或只改报告文案。

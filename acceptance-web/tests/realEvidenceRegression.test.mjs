@@ -5,11 +5,18 @@ import { existsSync, readFileSync } from 'node:fs';
 import { buildTargetOutput, parseEvidenceJsonl } from '../src/diagnosticMap.mjs';
 import { buildSixLayerTrackProduct } from '../src/sixLayerTrackProduct.mjs';
 
-const SESSION_5CC_PATH = '/Users/ldy/Desktop/device_fix_track_evidence_20260523_210422/track_sessions/5ccf3a9f-1d85-4c2b-8b24-61839d459845/evidence.jsonl';
+const SESSION_5CC_PATH = firstExistingPath([
+  '/Users/ldy/Desktop/gps_data/gnss_evidence_5ccf3a9f-1d85-4c2b-8b24-61839d459845.jsonl',
+  '/Users/ldy/Desktop/device_fix_track_evidence_20260523_210422/track_sessions/5ccf3a9f-1d85-4c2b-8b24-61839d459845/evidence.jsonl'
+]);
 const SESSION_0DD_PATH = '/Users/ldy/Desktop/device_fix_track_evidence_20260523_210422/track_sessions/0ddf2d35-02e2-454c-9057-667265fe8a71/evidence.jsonl';
 
 const modelCache = new Map();
 const productCache = new Map();
+
+function firstExistingPath(paths) {
+  return paths.find((path) => existsSync(path)) ?? paths[0];
+}
 
 function buildModelFromEvidence(path) {
   if (modelCache.has(path)) return modelCache.get(path);
@@ -97,6 +104,45 @@ test('real evidence session 5cc key dense rest ranges stay collapsed', (t) => {
   }
 });
 
+test('real evidence session 5cc moving spike cleanup feeds later pipeline stages', (t) => {
+  if (!existsSync(SESSION_5CC_PATH)) {
+    t.skip('real evidence session 5cc is not available on this machine');
+    return;
+  }
+
+  const product = buildProductFromEvidence(SESSION_5CC_PATH);
+  const scenario = scenarioByName(product, 'moving_spike_cleanup', 1666, 1668);
+  const denseIntent = scenarioByName(product, 'dense_area_intent', 1667, 1685);
+  const rawDecision = product.rawPointDecisions.find((decision) =>
+    decision.rawPointId === 1666);
+  const bridgePoint = product.track.find((point) =>
+    point.sourceRawPointId === 1667);
+  const previousPoint = product.track.find((point) =>
+    point.sourceRawPointId === 1665);
+
+  assert.ok(scenario);
+  assert.equal(scenario.evidence.previousRawPointId, 1665);
+  assert.equal(scenario.evidence.spikeRawPointId, 1666);
+  assert.equal(scenario.evidence.nextRawPointId, 1667);
+  assert.equal(scenario.evidence.reportedSpeedMetersPerSecond, 0.89);
+  assert.ok(scenario.evidence.detourMeters > 6);
+  assert.ok(denseIntent);
+  assert.deepEqual(denseIntent.rawRange, {
+    startRawPointId: 1667,
+    endRawPointId: 1685
+  });
+  assert.equal(denseIntent.evidence.trackPointCount, 16);
+  assert.equal(rawDecision.entersTrustedGpx, false);
+  assert.equal(rawDecision.countsDistance, false);
+  assert.equal(rawDecision.primaryExplanation.scenario, 'moving_spike_cleanup');
+  assert.ok(previousPoint);
+  assert.deepEqual(previousPoint.contributingRawPointIds, [1665]);
+  assert.ok(bridgePoint);
+  assert.deepEqual(bridgePoint.contributingRawPointIds, [1667]);
+  assert.deepEqual(bridgePoint.suppressedRawPointIds, [1666]);
+  assert.equal(bridgePoint.primaryExplanation.scenario, 'moving_spike_cleanup');
+});
+
 test('real evidence session 5cc mixed loop cluster keeps bounded distance', (t) => {
   if (!existsSync(SESSION_5CC_PATH)) {
     t.skip('real evidence session 5cc is not available on this machine');
@@ -132,6 +178,8 @@ test('real evidence session 0dd stationary range collapses to one drift anchor',
   assert.equal(points.length, 1);
   assert.equal(points[0].reason, 'stationary_drift_anchor');
   assert.equal(points[0].countsDistance, false);
+  assert.equal(points[0].routeLineVertex, false);
+  assert.equal(points[0].routeLineStrategy, 'bridge_previous_next');
   assert.equal(distanceForPoints(points), 0);
   assert.ok(scenario);
   assert.deepEqual(scenario.rawRange, {

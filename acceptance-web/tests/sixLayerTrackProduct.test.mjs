@@ -582,7 +582,7 @@ test('buildSixLayerTrackProduct classifies dense stationary intent', () => {
   assert.equal(scenarioByName(product, 'dense_main_route_settlement'), undefined);
 });
 
-test('buildSixLayerTrackProduct recognizes rest photo micro movement', () => {
+test('buildSixLayerTrackProduct keeps rest photo micro movement diagnostic when rewrite is disabled', () => {
   const events = loopEvents(30, 120, [
     [0, 0], [-2, 2], [-5, 1], [-6, 5], [-3, 8], [-7, 12],
     [-5, 9], [-2, 7], [-1, 2], [-6, 1], [-4, -1], [0, 0]
@@ -611,6 +611,33 @@ test('buildSixLayerTrackProduct recognizes rest photo micro movement', () => {
     assert.ok(product.findings.some((finding) =>
       finding.includes('dense intent conflict')));
   }
+});
+
+test('buildSixLayerTrackProduct applies settled rest photo micro movement cleanup by default', () => {
+  const events = loopEvents(30, 120, [
+    [0, 0], [-2, 2], [-5, 1], [-6, 5], [-3, 8], [-7, 12],
+    [-5, 9], [-2, 7], [-1, 2], [-6, 1], [-4, -1], [0, 0]
+  ], 1, 3);
+
+  const product = buildSixLayerTrackProduct(events, {
+    config: { restPhotoMicroMoveMaxPathMeters: 200 }
+  });
+  const scenario = scenarioByName(product, 'rest_photo_micro_move');
+  const collapsed = product.track.find((point) =>
+    point.reason === 'rest_photo_micro_move_anchor');
+  const mergedDecision = product.rawPointDecisions.find((decision) =>
+    decision.rawPointId === 2);
+
+  assert.ok(scenario);
+  assert.ok(collapsed);
+  assert.equal(scenario.action, 'collapse_micro_move_to_rest_anchor');
+  assert.equal(scenario.localRebuild, 'rest_photo_micro_move_anchor');
+  assert.equal(scenario.evidence.outputTrackPointCount, 1);
+  assert.equal(product.track.length, 1);
+  assert.equal(collapsed.countsDistance, false);
+  assert.equal(collapsed.countsMovingTime, false);
+  assert.equal(mergedDecision.entersTrustedGpx, false);
+  assert.equal(mergedDecision.primaryExplanation.scenario, 'rest_photo_micro_move');
 });
 
 test('buildSixLayerTrackProduct simplifies confirmed rest photo micro movement', () => {
@@ -706,7 +733,7 @@ test('buildSixLayerTrackProduct removes a single low-speed moving spike', () => 
   const rawDecision = product.rawPointDecisions.find((decision) =>
     decision.rawPointId === 1667);
   const bridgePoint = product.track.find((point) =>
-    point.contributingRawPointIds.includes(1667));
+    point.suppressedRawPointIds?.includes(1667));
 
   assert.ok(scenario);
   assert.equal(scenario.action, 'remove_single_point_spike');
@@ -715,6 +742,8 @@ test('buildSixLayerTrackProduct removes a single low-speed moving spike', () => 
   assert.equal(rawDecision.countsDistance, false);
   assert.equal(rawDecision.primaryExplanation.scenario, 'moving_spike_cleanup');
   assert.equal(bridgePoint.sourceRawPointId, 1668);
+  assert.deepEqual(bridgePoint.contributingRawPointIds, [1668]);
+  assert.deepEqual(bridgePoint.suppressedRawPointIds, [1667]);
   assert.equal(bridgePoint.primaryExplanation.scenario, 'moving_spike_cleanup');
   assert.ok(bridgePoint.scenarioContexts.some((context) =>
     context.scenario === 'moving_spike_cleanup'));
@@ -723,6 +752,88 @@ test('buildSixLayerTrackProduct removes a single low-speed moving spike', () => 
   assert.ok(coverage);
   assert.ok(coverage.contextTrackPointCount > 0);
   assert.ok(coverage.rawDecisionContextCount > 0);
+});
+
+test('buildSixLayerTrackProduct removes moving spike before rest photo micro move settlement', () => {
+  const events = loopEvents(30, 120, [
+    [0, 0], [5, 0], [10, 0], [10, -6], [5, 1],
+    [0, 2], [-4, 0], [-2, -3], [3, -2], [0, 0]
+  ], 2400, 3);
+  for (const event of events.filter((event) => event.event === 'raw_location')) {
+    event.speed = event.rawPointId === 2403 ? 0 : 1.2;
+  }
+
+  const product = buildSixLayerTrackProduct(events, {
+    config: {
+      restPhotoMicroMoveMaxPathMeters: 38,
+      denseMainRouteSettlementEnabled: false,
+      enclosedLoopSettlementEnabled: false
+    }
+  });
+  const spikeScenario = scenarioByName(product, 'moving_spike_cleanup');
+  const restScenario = scenarioByName(product, 'rest_photo_micro_move');
+  const rawDecision = product.rawPointDecisions.find((decision) =>
+    decision.rawPointId === 2403);
+  const bridgePoint = product.track.find((point) =>
+    point.suppressedRawPointIds?.includes(2403));
+  const restPoints = product.track.filter((point) =>
+    point.reason.startsWith('rest_photo_micro_move_'));
+
+  assert.ok(spikeScenario);
+  assert.ok(restScenario);
+  assert.equal(spikeScenario.evidence.spikeRawPointId, 2403);
+  assert.equal(restScenario.evidence.inputTrackPointCount, 9);
+  assert.equal(restScenario.evidence.pathMeters, 37.008);
+  assert.equal(rawDecision.entersTrustedGpx, false);
+  assert.equal(rawDecision.primaryExplanation.scenario, 'moving_spike_cleanup');
+  assert.notEqual(restScenario.anchorRawPointIds?.[0], 2403);
+  assert.ok(bridgePoint);
+  assert.deepEqual(bridgePoint.contributingRawPointIds, [
+    2400, 2401, 2402, 2404, 2405, 2406, 2407, 2408, 2409
+  ]);
+  assert.deepEqual(bridgePoint.suppressedRawPointIds, [2403]);
+  assert.ok(bridgePoint.scenarioContexts.some((context) =>
+    context.scenario === 'moving_spike_cleanup'));
+  assert.ok(restPoints.length > 0);
+});
+
+test('buildSixLayerTrackProduct picks the strongest adjacent moving spike candidate', () => {
+  const events = loopEvents(30, 120, [
+    [0, 0], [3.4, 3.9], [3.4, -1.7], [8.6, -4.2], [12.2, -5.5], [16, -6.2]
+  ], 3000, 3);
+  for (const event of events.filter((event) => event.event === 'raw_location')) {
+    if (event.rawPointId === 3001) event.speed = 0.89;
+    else if (event.rawPointId === 3002) event.speed = 0;
+    else event.speed = 1.2;
+  }
+
+  const product = buildSixLayerTrackProduct(events, {
+    config: {
+      denseAreaIntentEnabled: false,
+      restPhotoMicroMoveSimplifyEnabled: false,
+      enclosedLoopSettlementEnabled: false
+    }
+  });
+  const scenario = scenarioByName(product, 'moving_spike_cleanup');
+  const removedDecision = product.rawPointDecisions.find((decision) =>
+    decision.rawPointId === 3001);
+  const keptDecision = product.rawPointDecisions.find((decision) =>
+    decision.rawPointId === 3002);
+  const bridgePoint = product.track.find((point) =>
+    point.sourceRawPointId === 3002);
+
+  assert.ok(scenario);
+  assert.equal(scenario.evidence.spikeRawPointId, 3001);
+  assert.equal(scenario.evidence.nextRawPointId, 3002);
+  assert.equal(scenario.evidence.reportedSpeedMetersPerSecond, 0.89);
+  assert.ok(scenario.evidence.detourMeters > 6);
+  assert.equal(removedDecision.entersTrustedGpx, false);
+  assert.equal(removedDecision.primaryExplanation.scenario, 'moving_spike_cleanup');
+  assert.equal(keptDecision.entersTrustedGpx, true);
+  assert.ok(bridgePoint);
+  assert.deepEqual(bridgePoint.contributingRawPointIds, [3002]);
+  assert.deepEqual(bridgePoint.suppressedRawPointIds, [3001]);
+  assert.equal(product.track.some((point) => point.sourceRawPointId === 3001), false);
 });
 
 test('buildSixLayerTrackProduct keeps composable scenario contexts on overlapping spans', () => {
@@ -1052,6 +1163,8 @@ test('buildSixLayerTrackProduct collapses a marked dwell drift cloud into one an
     point.rawPointId >= 256 && point.rawPointId <= 312), false);
   assert.equal(product.dwellDriftCollapse.collapsedCloudCount, 1);
   assert.equal(collapsed.countsDistance, false);
+  assert.equal(collapsed.routeLineVertex, false);
+  assert.equal(collapsed.routeLineStrategy, 'bridge_previous_next');
   const driftScenario = scenarioByName(product, 'stationary_drift_collapse');
   assert.ok(driftScenario);
   assert.equal(collapsed.primaryExplanation.scenario, 'stationary_drift_collapse');

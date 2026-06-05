@@ -5,7 +5,7 @@ const START_TOLERANCE_NANOS = 1_000_000_000;
 const MOTION_LOOKBACK_NANOS = 5_000_000_000;
 const NANOS_PER_SECOND = 1_000_000_000;
 
-export const SIX_LAYER_TRACK_ALGORITHM_VERSION = 'six-layer-evidence-v17.0';
+export const SIX_LAYER_TRACK_ALGORITHM_VERSION = 'six-layer-evidence-v17.4';
 
 export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   maxIntakeAccuracyMeters: 80,
@@ -99,6 +99,7 @@ export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   restPhotoMicroMoveLongCollapseMaxPathMeters: 120,
   movingSpikeCleanupEnabled: true,
   movingSpikeMaxReportedSpeedMetersPerSecond: 0.2,
+  movingSpikeMaxCompetingReportedSpeedMetersPerSecond: 1.0,
   movingSpikeMinDetourMeters: 1.5,
   movingSpikeMinLateralMeters: 2.5,
   movingSpikeMinNeighborDistanceMeters: 5,
@@ -311,54 +312,65 @@ export function buildSixLayerTrackProduct(modelOrEvents, options = {}) {
     }
   }
 
-  const collapsedStationarySession = collapseStationarySession(product, evidence, config);
-  const denseAreaIntents = collapsedStationarySession
-    ? []
-    : analyzeDenseAreaIntents(product, config);
-  const settledDenseMainRoute = collapsedStationarySession
-    ? false
-    : settleDenseMainRouteSpans(product, config, denseAreaIntents);
-  const collapsedDwellDrift = collapsedStationarySession
-    ? false
-    : collapseDwellDriftClouds(product, evidence, config, denseAreaIntents);
-  const preservedWeakRecoveryShape = collapsedStationarySession
-    ? false
-    : preserveWeakRecoveryShapeAnchors(product, evidence, config);
-  const simplifiedRoundTripLine = collapsedStationarySession
-    ? false
-    : simplifyRoundTripLineSpans(product, config, denseAreaIntents);
-  const simplifiedInterwovenCorridor = collapsedStationarySession
-    ? false
-    : simplifyInterwovenCorridorSpans(product, config);
-  const simplifiedRestPhotoMicroMove = collapsedStationarySession
-    ? false
-    : simplifyRestPhotoMicroMoveSpans(product, config, denseAreaIntents);
-  const cleanedMovingSpikes = collapsedStationarySession
-    ? false
-    : cleanMovingSpikePoints(product, config);
-  const settledEnclosedLoop = collapsedStationarySession
-    ? false
-    : settleEnclosedLoopClusters(product, config, denseAreaIntents);
-  const settledPositionSnapRecovery = collapsedStationarySession
-    ? false
-    : settlePositionSnapRecoveries(product, config);
-  if (collapsedStationarySession || settledDenseMainRoute || collapsedDwellDrift || preservedWeakRecoveryShape
-      || simplifiedRoundTripLine || simplifiedInterwovenCorridor
-      || simplifiedRestPhotoMicroMove || cleanedMovingSpikes || settledEnclosedLoop
-      || settledPositionSnapRecovery) {
+  const pipeline = runSixLayerSettlementPipeline(product, evidence, config);
+  if (pipeline.changed) {
     recomputeLocationAltitudeAscent(product, evidence, config);
   }
-  product.denseAreaIntents = denseAreaIntents;
+  product.denseAreaIntents = pipeline.denseAreaIntents;
   applyBarometerAscent(product, evidence, config);
   finalizeStats(product);
   addPostSettlementScenarios(product);
-  product.denseAreaSettlementPlan = buildDenseAreaSettlementPlan(product, denseAreaIntents);
+  product.denseAreaSettlementPlan = buildDenseAreaSettlementPlan(product,
+    pipeline.denseAreaIntents);
   product.denseIntentConflicts = buildDenseIntentConflicts(product);
-  applyForwardSpineArbitrationReview(product, denseAreaIntents);
+  applyForwardSpineArbitrationReview(product, pipeline.denseAreaIntents);
   attachExplanationModel(product);
   product.scenarioCoverage = buildScenarioCoverage(product);
   product.findings = buildFindings(product, evidence);
   return product;
+}
+
+function runSixLayerSettlementPipeline(product, evidence, config) {
+  const changedStages = [];
+  const mark = (name, changed) => {
+    if (changed) changedStages.push(name);
+    return changed;
+  };
+
+  if (mark('stationary_session_collapse',
+    collapseStationarySession(product, evidence, config))) {
+    return {
+      denseAreaIntents: [],
+      changedStages,
+      changed: true
+    };
+  }
+
+  // Each stage mutates product.track; later recognizers intentionally read that updated track.
+  mark('moving_spike_cleanup', cleanMovingSpikePoints(product, config));
+  const denseAreaIntents = analyzeDenseAreaIntents(product, config);
+  mark('dense_main_route_settlement',
+    settleDenseMainRouteSpans(product, config, denseAreaIntents));
+  mark('stationary_drift_collapse',
+    collapseDwellDriftClouds(product, evidence, config, denseAreaIntents));
+  mark('weak_recovery_shape_preserve',
+    preserveWeakRecoveryShapeAnchors(product, evidence, config));
+  mark('round_trip_line_simplify',
+    simplifyRoundTripLineSpans(product, config, denseAreaIntents));
+  mark('interwoven_corridor_simplify',
+    simplifyInterwovenCorridorSpans(product, config));
+  mark('rest_photo_micro_move_simplify',
+    simplifyRestPhotoMicroMoveSpans(product, config, denseAreaIntents));
+  mark('enclosed_loop_cluster_settlement',
+    settleEnclosedLoopClusters(product, config, denseAreaIntents));
+  mark('position_snap_recovery',
+    settlePositionSnapRecoveries(product, config));
+
+  return {
+    denseAreaIntents,
+    changedStages,
+    changed: changedStages.length > 0
+  };
 }
 
 function buildEvidence(events) {
@@ -1596,6 +1608,7 @@ function denseMainRouteKeptPoint(candidate, keepIndexes, spanIndex, keepIndex) {
   const previousKeptSpanIndex = keepIndex === 0 ? -1 : keepIndexes[keepIndex - 1];
   const group = candidate.span.slice(previousKeptSpanIndex + 1, spanIndex + 1);
   const rawPointIds = uniqueRawPointIds(group);
+  const suppressedRawPointIds = uniqueSuppressedRawPointIds(group);
   const previousKept = keepIndex === 0 ? null : candidate.span[previousKeptSpanIndex];
   const distanceDeltaMeters = previousKept
     ? distanceMeters(previousKept.lat, previousKept.lng, original.lat, original.lng)
@@ -1611,11 +1624,12 @@ function denseMainRouteKeptPoint(candidate, keepIndexes, spanIndex, keepIndex) {
     movingTimeDeltaSeconds: aggregateMovingTime,
     cloudType: 'DENSE_MAIN_ROUTE_CLOUD',
     cloudId: candidate.rawRange.startRawPointId,
-    cloudSampleCount: rawPointIds.length,
-    cloudWeightSum: rawPointIds.length,
+    cloudSampleCount: rawPointIds.length + suppressedRawPointIds.length,
+    cloudWeightSum: rawPointIds.length + suppressedRawPointIds.length,
     cloudWeightedRadiusMeters: candidate.bboxMeters / 2,
     representativeRawPointId: original.representativeRawPointId ?? original.sourceRawPointId,
     contributingRawPointIds: rawPointIds,
+    ...(suppressedRawPointIds.length ? { suppressedRawPointIds } : {}),
     coordinateSource: original.coordinateSource || 'raw_representative',
     virtualCoordinate: original.virtualCoordinate === true,
     activityState: 'dense_main_route',
@@ -2467,6 +2481,7 @@ function roundTripKeptPoint(candidate, keepIndexes, spanIndex, keepIndex) {
   const previousKeptSpanIndex = keepIndex === 0 ? -1 : keepIndexes[keepIndex - 1];
   const group = candidate.span.slice(previousKeptSpanIndex + 1, spanIndex + 1);
   const rawPointIds = uniqueRawPointIds(group);
+  const suppressedRawPointIds = uniqueSuppressedRawPointIds(group);
   const aggregateDistance = group.reduce((sum, point) =>
     sum + (point.countsDistance ? point.distanceDeltaMeters || 0 : 0), 0);
   const aggregateMovingTime = group.reduce((sum, point) =>
@@ -2483,11 +2498,12 @@ function roundTripKeptPoint(candidate, keepIndexes, spanIndex, keepIndex) {
     startsNewSegment: isTurn ? true : original.startsNewSegment === true,
     cloudType: isTurn ? original.cloudType : 'ROUND_TRIP_INTERWOVEN_CLOUD',
     cloudId: candidate.start.sourceRawPointId,
-    cloudSampleCount: rawPointIds.length,
-    cloudWeightSum: rawPointIds.length,
+    cloudSampleCount: rawPointIds.length + suppressedRawPointIds.length,
+    cloudWeightSum: rawPointIds.length + suppressedRawPointIds.length,
     cloudWeightedRadiusMeters: candidate.crossTrack,
     representativeRawPointId: original.representativeRawPointId ?? original.sourceRawPointId,
     contributingRawPointIds: rawPointIds,
+    ...(suppressedRawPointIds.length ? { suppressedRawPointIds } : {}),
     coordinateSource: original.coordinateSource || 'raw_representative',
     virtualCoordinate: original.virtualCoordinate === true,
     activityState: isTurn ? original.activityState : 'round_trip_interwoven',
@@ -2612,6 +2628,7 @@ function interwovenCorridorKeptPoint(candidate, keepIndexes, spanIndex, keepInde
   const previousKeptSpanIndex = keepIndex === 0 ? -1 : keepIndexes[keepIndex - 1];
   const group = candidate.span.slice(previousKeptSpanIndex + 1, spanIndex + 1);
   const rawPointIds = uniqueRawPointIds(group);
+  const suppressedRawPointIds = uniqueSuppressedRawPointIds(group);
   const aggregateDistance = group.reduce((sum, point) =>
     sum + (point.countsDistance ? point.distanceDeltaMeters || 0 : 0), 0);
   const aggregateMovingTime = group.reduce((sum, point) =>
@@ -2626,11 +2643,12 @@ function interwovenCorridorKeptPoint(candidate, keepIndexes, spanIndex, keepInde
     movingTimeDeltaSeconds: aggregateMovingTime,
     cloudType: 'INTERWOVEN_CORRIDOR_CLOUD',
     cloudId: candidate.start.sourceRawPointId,
-    cloudSampleCount: rawPointIds.length,
-    cloudWeightSum: rawPointIds.length,
+    cloudSampleCount: rawPointIds.length + suppressedRawPointIds.length,
+    cloudWeightSum: rawPointIds.length + suppressedRawPointIds.length,
     cloudWeightedRadiusMeters: configSafeNumber(candidate.crossTrack, 0),
     representativeRawPointId: original.representativeRawPointId ?? original.sourceRawPointId,
     contributingRawPointIds: rawPointIds,
+    ...(suppressedRawPointIds.length ? { suppressedRawPointIds } : {}),
     coordinateSource: original.coordinateSource || 'raw_representative',
     virtualCoordinate: original.virtualCoordinate === true,
     activityState: 'interwoven_corridor',
@@ -2650,53 +2668,78 @@ function interwovenCorridorReason(isStart, isEnd) {
 
 function cleanMovingSpikePoints(product, config) {
   if (!config.movingSpikeCleanupEnabled) return false;
-  const removeIndexes = [];
-  for (let index = 1; index < product.track.length - 1; index++) {
-    if (isMovingSpikePoint(product.track[index - 1], product.track[index],
-      product.track[index + 1], config)) {
-      removeIndexes.push(index);
-    }
-  }
-  if (removeIndexes.length === 0) return false;
+  const candidates = nonOverlappingMovingSpikeCandidates(
+    eligibleMovingSpikeCandidates(movingSpikeCandidates(product.track, config))
+  );
+  if (candidates.length === 0) return false;
 
-  for (const index of removeIndexes.sort((a, b) => b - a)) {
+  for (const candidate of candidates.sort((a, b) => b.index - a.index)) {
+    const index = candidate.index;
+    const previous = product.track[index - 1];
     const spike = product.track[index];
     const next = product.track[index + 1];
-    next.contributingRawPointIds = uniqueRawPointIds([spike, next]);
+    const activeRawPointIds = uniqueRawPointIds([next]);
+    const suppressedRawPointIds = uniqueNumbers([
+      ...suppressedRawPointIdsForPoint(next),
+      ...pointRawPointIds(spike),
+      ...suppressedRawPointIdsForPoint(spike)
+    ]);
+    next.contributingRawPointIds = activeRawPointIds;
+    next.suppressedRawPointIds = suppressedRawPointIds;
     next.distanceDeltaMeters = distanceMeters(product.track[index - 1].lat,
       product.track[index - 1].lng, next.lat, next.lng);
     next.movingTimeDeltaSeconds = (spike.countsMovingTime ? spike.movingTimeDeltaSeconds || 0 : 0)
       + (next.countsMovingTime ? next.movingTimeDeltaSeconds || 0 : 0);
     next.cloudType = 'MOVING_SPIKE_CLEANUP_CLOUD';
     next.cloudId = spike.sourceRawPointId;
-    next.cloudSampleCount = next.contributingRawPointIds.length;
-    next.cloudWeightSum = next.contributingRawPointIds.length;
+    next.cloudSampleCount = activeRawPointIds.length + suppressedRawPointIds.length;
+    next.cloudWeightSum = activeRawPointIds.length + suppressedRawPointIds.length;
     next.cloudWeightedRadiusMeters = distanceToSegmentMeters(spike,
       product.track[index - 1], next);
     next.boundaryState = 'moving_spike_cleaned';
     next.countsDistance = next.distanceDeltaMeters > 0;
     next.countsMovingTime = next.movingTimeDeltaSeconds > 0;
     product.track.splice(index, 1);
-    addScenario(product, movingSpikeScenario(product.track[index - 1], spike, next));
+    addScenario(product, movingSpikeScenario(previous, spike, next, candidate));
   }
 
   renumberTrackPoints(product);
   rebuildRawPointDecisions(product);
   product.movingSpikeCleanup = {
-    cleanedPointCount: removeIndexes.length
+    cleanedPointCount: candidates.length
   };
   return true;
 }
 
-function isMovingSpikePoint(previous, point, next, config) {
-  if (!hasValidLngLat(previous) || !hasValidLngLat(point) || !hasValidLngLat(next)) return false;
-  if (!point.entersTrustedGpx || !next.entersTrustedGpx) return false;
+function movingSpikeCandidates(track, config) {
+  const candidates = [];
+  for (let index = 1; index < track.length - 1; index++) {
+    const candidate = movingSpikeCandidate(track[index - 1], track[index],
+      track[index + 1], index, config);
+    if (candidate) candidates.push(candidate);
+  }
+  return candidates;
+}
+
+function eligibleMovingSpikeCandidates(candidates) {
+  return candidates.filter((candidate) => candidate.strictSpeed
+    || candidates.some((strictCandidate) =>
+      strictCandidate.strictSpeed
+        && rangesOverlap(candidate.index - 1, candidate.index + 1,
+          strictCandidate.index - 1, strictCandidate.index + 1)
+        && candidate.score > strictCandidate.score));
+}
+
+function movingSpikeCandidate(previous, point, next, index, config) {
+  if (!hasValidLngLat(previous) || !hasValidLngLat(point) || !hasValidLngLat(next)) return null;
+  if (!point.entersTrustedGpx || !next.entersTrustedGpx) return null;
   if (point.reason !== 'motion_supported_low_speed' && point.reason !== 'moving_good_fix') {
-    return false;
+    return null;
   }
   if (!Number.isFinite(point.reportedSpeedMetersPerSecond)
-      || point.reportedSpeedMetersPerSecond > config.movingSpikeMaxReportedSpeedMetersPerSecond) {
-    return false;
+      || point.reportedSpeedMetersPerSecond
+        > config.movingSpikeMaxCompetingReportedSpeedMetersPerSecond) {
+    return null;
   }
   const previousDistance = distanceMeters(previous.lat, previous.lng, point.lat, point.lng);
   const nextDistance = distanceMeters(point.lat, point.lng, next.lat, next.lng);
@@ -2704,15 +2747,50 @@ function isMovingSpikePoint(previous, point, next, config) {
   if (previousDistance < config.movingSpikeMinNeighborDistanceMeters
       || nextDistance < config.movingSpikeMinNeighborDistanceMeters
       || bridgeDistance > config.movingSpikeMaxBridgeDistanceMeters) {
-    return false;
+    return null;
   }
   const detour = previousDistance + nextDistance - bridgeDistance;
   const lateral = distanceToSegmentMeters(point, previous, next);
-  return detour >= config.movingSpikeMinDetourMeters
-    && lateral >= config.movingSpikeMinLateralMeters;
+  if (detour < config.movingSpikeMinDetourMeters
+      || lateral < config.movingSpikeMinLateralMeters) {
+    return null;
+  }
+  return {
+    index,
+    previous,
+    spike: point,
+    next,
+    previousDistanceMeters: previousDistance,
+    nextDistanceMeters: nextDistance,
+    bridgeDistanceMeters: bridgeDistance,
+    detourMeters: detour,
+    lateralMeters: lateral,
+    reportedSpeedMetersPerSecond: point.reportedSpeedMetersPerSecond,
+    strictSpeed: point.reportedSpeedMetersPerSecond
+      <= config.movingSpikeMaxReportedSpeedMetersPerSecond,
+    score: detour * 2 + lateral
+      - point.reportedSpeedMetersPerSecond * 0.25
+  };
 }
 
-function movingSpikeScenario(previous, spike, next) {
+function nonOverlappingMovingSpikeCandidates(candidates) {
+  const accepted = [];
+  for (const candidate of [...candidates].sort((a, b) =>
+    b.score - a.score
+    || b.detourMeters - a.detourMeters
+    || a.reportedSpeedMetersPerSecond - b.reportedSpeedMetersPerSecond
+    || a.index - b.index)) {
+    if (accepted.some((existing) =>
+      rangesOverlap(candidate.index - 1, candidate.index + 1,
+        existing.index - 1, existing.index + 1))) {
+      continue;
+    }
+    accepted.push(candidate);
+  }
+  return accepted.sort((a, b) => a.index - b.index);
+}
+
+function movingSpikeScenario(previous, spike, next, candidate = null) {
   return {
     scenario: 'moving_spike_cleanup',
     confidence: 0.82,
@@ -2727,9 +2805,13 @@ function movingSpikeScenario(previous, spike, next) {
       previousRawPointId: previous.sourceRawPointId,
       spikeRawPointId: spike.sourceRawPointId,
       nextRawPointId: next.sourceRawPointId,
-      lateralMeters: scenarioNumber(distanceToSegmentMeters(spike, previous, next)),
-      bridgeDistanceMeters: scenarioNumber(distanceMeters(previous.lat, previous.lng,
-        next.lat, next.lng))
+      reportedSpeedMetersPerSecond: scenarioNumber(
+        candidate?.reportedSpeedMetersPerSecond ?? spike.reportedSpeedMetersPerSecond),
+      detourMeters: scenarioNumber(candidate?.detourMeters),
+      lateralMeters: scenarioNumber(candidate?.lateralMeters
+        ?? distanceToSegmentMeters(spike, previous, next)),
+      bridgeDistanceMeters: scenarioNumber(candidate?.bridgeDistanceMeters
+        ?? distanceMeters(previous.lat, previous.lng, next.lat, next.lng))
     }
   };
 }
@@ -2797,9 +2879,12 @@ function enclosedLoopClusterSettledPoints(candidate, previousOutside, nextOutsid
   }
   if (pending.length > 0 && points.length > 0) {
     const last = points.at(-1);
-    last.contributingRawPointIds = uniqueRawPointIds([...pending, last]);
-    last.cloudSampleCount = last.contributingRawPointIds.length;
-    last.cloudWeightSum = last.contributingRawPointIds.length;
+    const group = [...pending, last];
+    const suppressedRawPointIds = uniqueSuppressedRawPointIds(group);
+    last.contributingRawPointIds = uniqueRawPointIds(group);
+    if (suppressedRawPointIds.length) last.suppressedRawPointIds = suppressedRawPointIds;
+    last.cloudSampleCount = last.contributingRawPointIds.length + suppressedRawPointIds.length;
+    last.cloudWeightSum = last.contributingRawPointIds.length + suppressedRawPointIds.length;
   }
   return {
     points,
@@ -2854,6 +2939,7 @@ function enclosedLoopClusterRepresentativeIndex(span, corridorStart, corridorEnd
 
 function enclosedLoopClusterKeptPoint(group, fallback, previousSettledPoint, isStart, isEnd) {
   const rawPointIds = uniqueRawPointIds(group);
+  const suppressedRawPointIds = uniqueSuppressedRawPointIds(group);
   return {
     ...fallback,
     reason: fallback.reason === 'gap_recovery'
@@ -2863,10 +2949,11 @@ function enclosedLoopClusterKeptPoint(group, fallback, previousSettledPoint, isS
     movingTimeDeltaSeconds: 0,
     cloudType: 'ENCLOSED_LOOP_SETTLEMENT_CLOUD',
     cloudId: rawPointIds[0] ?? fallback.sourceRawPointId,
-    cloudSampleCount: rawPointIds.length,
-    cloudWeightSum: rawPointIds.length,
+    cloudSampleCount: rawPointIds.length + suppressedRawPointIds.length,
+    cloudWeightSum: rawPointIds.length + suppressedRawPointIds.length,
     representativeRawPointId: fallback.representativeRawPointId ?? fallback.sourceRawPointId,
     contributingRawPointIds: rawPointIds,
+    ...(suppressedRawPointIds.length ? { suppressedRawPointIds } : {}),
     coordinateSource: fallback.coordinateSource || 'raw_representative',
     virtualCoordinate: fallback.virtualCoordinate === true,
     activityState: 'enclosed_loop_settlement',
@@ -3020,9 +3107,7 @@ function simplifyRestPhotoMicroMoveSpans(product, config, denseAreaIntents = [])
   const candidates = nonOverlappingScenarioCandidates(
     restPhotoMicroMoveCandidates(product, config),
     []
-  ).filter((candidate) =>
-    restPhotoMicroMoveShouldCollapse(candidate, config)
-      || restPhotoMicroMoveNeedsSimplify(candidate, config));
+  );
   if (candidates.length === 0) return false;
 
   const simplifiedRanges = [];
@@ -3066,21 +3151,10 @@ function restPhotoMicroMoveShouldCollapse(candidate, config) {
   return shortFoldback || longRestDrift;
 }
 
-function restPhotoMicroMoveNeedsSimplify(candidate, config) {
-  if (candidate.span.length <= 2) return false;
-  if (candidate.durationSeconds < config.restPhotoMicroMoveSimplifyMinDurationSeconds) {
-    return false;
-  }
-  if (candidate.pathMeters <= candidate.bboxMeters) return false;
-  const reducedPath = restPhotoMicroMoveSimplifiedPath(candidate, config);
-  if (!Number.isFinite(reducedPath) || reducedPath <= 0) return false;
-  return reducedPath / Math.max(candidate.pathMeters, 1)
-    <= 1 - config.restPhotoMicroMoveSimplifyMinPathReductionRatio;
-}
-
 function restPhotoMicroMoveCollapsedPoint(candidate) {
   const representative = restPhotoMicroMoveCollapseRepresentative(candidate.span);
   const rawPointIds = uniqueRawPointIds(candidate.span);
+  const suppressedRawPointIds = uniqueSuppressedRawPointIds(candidate.span);
   return {
     ...representative,
     reason: 'rest_photo_micro_move_anchor',
@@ -3088,12 +3162,13 @@ function restPhotoMicroMoveCollapsedPoint(candidate) {
     movingTimeDeltaSeconds: 0,
     cloudType: 'REST_PHOTO_MICRO_MOVE_CLOUD',
     cloudId: candidate.rawRange.startRawPointId,
-    cloudSampleCount: rawPointIds.length,
-    cloudWeightSum: rawPointIds.length,
+    cloudSampleCount: rawPointIds.length + suppressedRawPointIds.length,
+    cloudWeightSum: rawPointIds.length + suppressedRawPointIds.length,
     cloudWeightedRadiusMeters: candidate.bboxMeters / 2,
     representativeRawPointId: representative.representativeRawPointId
       ?? representative.sourceRawPointId,
     contributingRawPointIds: rawPointIds,
+    ...(suppressedRawPointIds.length ? { suppressedRawPointIds } : {}),
     coordinateSource: representative.coordinateSource || 'raw_representative',
     virtualCoordinate: representative.virtualCoordinate === true,
     activityState: 'rest_photo_micro_move',
@@ -3112,12 +3187,6 @@ function restPhotoMicroMoveCollapseRepresentative(span) {
     (Number.isFinite(a.reportedSpeedMetersPerSecond) ? a.reportedSpeedMetersPerSecond : 0)
       - (Number.isFinite(b.reportedSpeedMetersPerSecond) ? b.reportedSpeedMetersPerSecond : 0)
     || a.sourceRawPointId - b.sourceRawPointId)[0] ?? span[0];
-}
-
-function restPhotoMicroMoveSimplifiedPath(candidate, config) {
-  const keepIndexes = restPhotoMicroMoveKeepIndexes(candidate, config);
-  const kept = keepIndexes.map((index) => candidate.span[index]);
-  return trackPathMeters(kept);
 }
 
 function restPhotoMicroMoveSimplifiedPoints(candidate, config) {
@@ -3171,6 +3240,7 @@ function restPhotoMicroMoveKeptPoint(candidate, keepIndexes, spanIndex, keepInde
   const group = candidate.span.slice(previousKeptSpanIndex + 1, spanIndex + 1);
   const original = restPhotoMicroMoveRepresentativePoint(group, fallback, config);
   const rawPointIds = uniqueRawPointIds(group);
+  const suppressedRawPointIds = uniqueSuppressedRawPointIds(group);
   const simplifiedDistance = previousSimplifiedPoint
     ? distanceMeters(previousSimplifiedPoint.lat, previousSimplifiedPoint.lng,
       original.lat, original.lng)
@@ -3187,11 +3257,12 @@ function restPhotoMicroMoveKeptPoint(candidate, keepIndexes, spanIndex, keepInde
     movingTimeDeltaSeconds: aggregateMovingTime,
     cloudType: 'REST_PHOTO_MICRO_MOVE_CLOUD',
     cloudId: candidate.rawRange.startRawPointId,
-    cloudSampleCount: rawPointIds.length,
-    cloudWeightSum: rawPointIds.length,
+    cloudSampleCount: rawPointIds.length + suppressedRawPointIds.length,
+    cloudWeightSum: rawPointIds.length + suppressedRawPointIds.length,
     cloudWeightedRadiusMeters: candidate.bboxMeters / 2,
     representativeRawPointId: original.representativeRawPointId ?? original.sourceRawPointId,
     contributingRawPointIds: rawPointIds,
+    ...(suppressedRawPointIds.length ? { suppressedRawPointIds } : {}),
     coordinateSource: original.coordinateSource || 'raw_representative',
     virtualCoordinate: original.virtualCoordinate === true,
     activityState: 'rest_photo_micro_move',
@@ -3292,10 +3363,21 @@ function uniqueRawPointIds(points) {
   const rawPointIds = [];
   const seen = new Set();
   for (const point of points) {
-    const pointRawPointIds = point.contributingRawPointIds?.length
-      ? point.contributingRawPointIds
-      : [point.sourceRawPointId];
+    const pointRawPointIds = pointRawPointIdsForPoint(point);
     for (const rawPointId of pointRawPointIds) {
+      if (seen.has(rawPointId)) continue;
+      seen.add(rawPointId);
+      rawPointIds.push(rawPointId);
+    }
+  }
+  return rawPointIds;
+}
+
+function uniqueSuppressedRawPointIds(points) {
+  const rawPointIds = [];
+  const seen = new Set();
+  for (const point of points) {
+    for (const rawPointId of suppressedRawPointIdsForPoint(point)) {
       if (seen.has(rawPointId)) continue;
       seen.add(rawPointId);
       rawPointIds.push(rawPointId);
@@ -3447,6 +3529,8 @@ function dwellDriftAnchor(interval, template) {
     contributingRawPointIds: interval.rawPoints.map((point) => point.rawPointId),
     coordinateSource: 'cloud_center',
     virtualCoordinate: true,
+    routeLineVertex: false,
+    routeLineStrategy: 'bridge_previous_next',
     activityState: 'stationary_drift',
     boundaryState: 'dwell_collapsed',
     gnssAltitudeResult: 'reset',
@@ -3543,9 +3627,7 @@ function renumberTrackPoints(product) {
 function rebuildRawPointDecisions(product) {
   const decisions = [];
   for (const point of product.track) {
-    const rawPointIds = point.contributingRawPointIds?.length
-      ? point.contributingRawPointIds
-      : [point.sourceRawPointId];
+    const rawPointIds = pointRawPointIdsForPoint(point);
     for (const rawPointId of rawPointIds) {
       decisions.push(rawPointDecision({
         ...point,
@@ -3559,6 +3641,15 @@ function rebuildRawPointDecisions(product) {
       }, point.countsDistance && rawPointId === point.sourceRawPointId,
       point.countsMovingTime && rawPointId === point.sourceRawPointId,
       point.entersTrustedGpx && rawPointId === point.sourceRawPointId));
+    }
+    for (const rawPointId of suppressedRawPointIdsForPoint(point)) {
+      if (rawPointIds.includes(rawPointId)) continue;
+      decisions.push(rawPointDecision({
+        ...point,
+        sourceRawPointId: rawPointId,
+        distanceDeltaMeters: 0,
+        movingTimeDeltaSeconds: 0
+      }, false, false, false));
     }
   }
   for (const point of product.excluded.weak) {
@@ -4375,7 +4466,8 @@ function attachExplanationModel(product) {
     const scenarioContexts = scenariosForPoint(decision.horizontalReason,
       [decision.rawPointId], scenarioByName, scenarioByRawPointId);
     const directScenario = scenarioForReason(decision.horizontalReason, scenarioByName);
-    const scenario = directScenario ?? preferredScenario(scenarioContexts);
+    const scenario = preferredScenarioForRawDecision(decision, directScenario,
+      scenarioContexts);
     return {
       ...decision,
       primitiveFacts,
@@ -4395,7 +4487,7 @@ function attachExplanationModel(product) {
 
 function attachPointExplanation(point, scenarioByName, scenarioByRawPointId) {
   const primitiveFacts = primitiveFactsForPoint(point);
-  const scenarioContexts = scenariosForPoint(point.reason, pointRawPointIds(point),
+  const scenarioContexts = scenariosForPoint(point.reason, pointContextRawPointIds(point),
     scenarioByName, scenarioByRawPointId);
   const directScenario = scenarioForReason(point.reason, scenarioByName);
   const scenario = directScenario ?? preferredScenario(scenarioContexts);
@@ -4470,8 +4562,23 @@ function addNumbers(target, values) {
 }
 
 function pointRawPointIds(point) {
+  return pointRawPointIdsForPoint(point);
+}
+
+function pointRawPointIdsForPoint(point) {
   if (point.contributingRawPointIds?.length) return point.contributingRawPointIds;
   return [point.sourceRawPointId ?? point.rawPointId].filter(Number.isFinite);
+}
+
+function suppressedRawPointIdsForPoint(point) {
+  return (point?.suppressedRawPointIds || []).filter(Number.isFinite);
+}
+
+function pointContextRawPointIds(point) {
+  return uniqueNumbers([
+    ...pointRawPointIdsForPoint(point),
+    ...suppressedRawPointIdsForPoint(point)
+  ]);
 }
 
 function scenariosForPoint(reason, rawPointIds, scenarioByName, scenarioByRawPointId) {
@@ -4486,6 +4593,18 @@ function scenariosForPoint(reason, rawPointIds, scenarioByName, scenarioByRawPoi
 
 function preferredScenario(scenarios) {
   return sortUniqueScenarios(scenarios)[0] ?? null;
+}
+
+function preferredScenarioForRawDecision(decision, directScenario, scenarioContexts) {
+  const pointSpecific = sortUniqueScenarios(scenarioContexts)
+    .find((scenario) => rawPointSpecificScenario(scenario, decision.rawPointId));
+  return pointSpecific ?? directScenario ?? preferredScenario(scenarioContexts);
+}
+
+function rawPointSpecificScenario(scenario, rawPointId) {
+  if (!Number.isFinite(rawPointId)) return false;
+  return scenario?.scenario === 'moving_spike_cleanup'
+    && scenario.evidence?.spikeRawPointId === rawPointId;
 }
 
 function sortUniqueScenarios(scenarios) {

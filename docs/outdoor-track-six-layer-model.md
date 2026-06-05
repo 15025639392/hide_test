@@ -151,8 +151,9 @@ Web 六层算法会将主场景解释写入 `primaryExplanation`，把同一点�
 | `dense_main_route_settlement` | 对定位点密集且存在明确前进方向的区域，先保主路线骨架，再交给局部情景修复。 |
 | `enclosed_gap_cluster` | 标注小范围内多次 GAP recovery 和静止锚点聚集的遮挡片段。 |
 | `stationary_session_collapse` | 将整段静止 session 压成单个代表锚点。 |
-| `stationary_drift_collapse` | 将局部停留漂移点云压成一个停留锚点。 |
-| `rest_photo_micro_move` | 标注拍照、休息、找路时的小范围来回挪动。 |
+| `stationary_drift_collapse` | 将局部停留漂移点云压成一个停留解释锚点；清洗路线桥接前后有效路线点，不经过漂移云中心。 |
+| `rest_photo_micro_move` | 清洗拍照、休息、找路时的小范围来回挪动：近静止折返压成休息锚点，其余微移动简化为少量形状锚点。 |
+| `moving_spike_cleanup` | 清洗连续移动中的单点尖刺：删除低速侧向回跳点，用前后可信移动点桥接。 |
 | `gap_recovery_boundary` | 解释 GAP 恢复点是零距离、零运动时间的边界重置。 |
 | `transport_contamination` | 标注交通工具或高速移动混入，不计入徒步真值。 |
 
@@ -160,12 +161,25 @@ V16.1 中 `dense_area_intent` 是上层调度诊断：`forward_motion` 已用于
 `dense_main_route_settlement`；`stationary` 和 `round_trip` 会写入对应停留/往返
 场景 evidence 作为支撑信号。目标输出同时包含 `denseAreaSettlementPlan[]`，
 用于复盘每个密集窗口的计划 settlement、调度优先级和实际命中的具体场景，但暂不
-强制阻断原有场景识别。`rest_photo_micro_move` 对 2 分钟以上、bbox/path 都很小的
-拍照休息片段，允许把约 12m 内首尾净距视作近静止微移动并塌成休息锚点。
+强制阻断原有场景识别。V17.1 起 `rest_photo_micro_move` 已沉淀为默认清洗策略：
+识别到的休息/拍照小移动会优先塌成休息锚点，否则简化成少量形状锚点；显式关闭
+`restPhotoMicroMoveSimplifyEnabled` 时才退回诊断标注。对 2 分钟以上、bbox/path 都
+很小的拍照休息片段，约 12m 内首尾净距仍视作近静止微移动并塌成休息锚点。
+V17.2 起 `moving_spike_cleanup` 同样沉淀为默认清洗策略：单个低速侧向尖刺不进
+可信 GPX，不计距离和运动时间，后一个可信移动点按前后点直连重算距离。
+V17.3 起默认 settlement 按管道执行：`moving_spike_cleanup` 作为前置点级清理，
+先于 `dense_area_intent`、`dense_main_route_settlement`、`rest_photo_micro_move`
+等后续情景执行；尖刺 raw id 进入 `suppressedRawPointIds` 诊断链，保留 raw 决策
+和解释，但不再作为后续情景的 active `contributingRawPointIds`。相邻候选同时成立时，
+按 detour / lateral 选择几何证据更强的单点尖刺，低速 accept 点不会仅因
+reported speed 非 0 而逃过清理。
+V17.4 起 `stationary_drift_anchor` 只作为停留漂移解释点，不作为清洗路线顶点：
+它继续保留 raw 贡献归属和点级解释，但输出 `routeLineVertex=false`，清洗线直接
+桥接前后有效路线点，避免把漂移云中心误表达为真实经过点。
 
 V17.0 已落盘密集区保方向候选仲裁的 review-only 结构：同一 dense raw 区间可以产生
 多个主前进骨架候选，但同一 raw 子区间最终只能有一个 active 主脊线；一致候选合并，
-冲突候选 review-only 或降级为解释上下文。当前 V17.0 输出
+冲突候选 review-only 或降级为解释上下文。V17.0 输出
 `forwardSpineCandidates[]`、`forwardSpineOverlaps[]`、`forwardSpineConflicts[]` 和
 `forwardSpineDecisions[]`，但普通 overlap / endpoint-touch 只保留为内部调试证据，
 不直接上图或进入冲突详情；不默认扩大改线范围。计划见

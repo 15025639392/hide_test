@@ -25,7 +25,7 @@ export const SCENARIO_REPAIR_OPTIONS = Object.freeze([
     id: 'rest_photo_micro_move',
     label: '休息小移动',
     configKey: 'restPhotoMicroMoveEnabled',
-    kind: 'hybrid'
+    kind: 'rewrite'
   },
   {
     id: 'enclosed_loop_cluster_settlement',

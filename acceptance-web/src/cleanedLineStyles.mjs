@@ -11,7 +11,7 @@ const DEFAULT_CLEANED_LINE_WIDTH = 4;
 const DEFAULT_CLEANED_LINE_OPACITY = 0.95;
 
 export function buildCleanedLineFeatures(dataset, points, options = {}) {
-  const validPoints = (points || []).filter(hasValidLngLat);
+  const validPoints = cleanedRouteLinePoints(points);
   if (validPoints.length < 2) return [];
 
   const enabledIds = new Set(enabledScenarioRepairIds(options.enabledScenarioRepairIds));
@@ -45,6 +45,11 @@ export function buildCleanedLineFeatures(dataset, points, options = {}) {
 
   if (current) features.push(cleanedLineFeature(current));
   return features;
+}
+
+export function cleanedRouteLinePoints(points) {
+  return (points || []).filter((point) =>
+    hasValidLngLat(point) && point.routeLineVertex !== false);
 }
 
 export function cleanedLineStyleForPoint(point, enabledIds = new Set()) {

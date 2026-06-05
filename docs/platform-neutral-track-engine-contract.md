@@ -178,12 +178,17 @@ TrackPoint:
   distanceDeltaMeters
   movingTimeDeltaSeconds
   startsNewSegment
+  routeLineVertex optional
+  routeLineStrategy optional
   primaryExplanation
   scenarioContexts[]
   primitiveFacts[]
 ```
 
 可信 GPX 只能来自可信 TrackPoint。weak/reject 不进入 trusted GPX。
+`routeLineVertex=false` 表示该 TrackPoint 是解释锚点而非真实路线折线顶点；
+路线渲染和路线导出应按 `routeLineStrategy=bridge_previous_next` 直接连接前后有效路线点。
+点级解释、raw 贡献归属和 scenario coverage 仍保留在该 TrackPoint 上。
 
 ### RawPointDecision
 
