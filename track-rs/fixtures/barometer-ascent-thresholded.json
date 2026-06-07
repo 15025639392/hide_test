@@ -1,0 +1,86 @@
+{
+  "ruleId": "barometer_ascent_v0",
+  "ruleVersion": "0.1.0",
+  "source": "web_algorithm",
+  "request": {
+    "config": {
+      "strategyVersion": "rust-poc"
+    },
+    "input": {
+      "sessionContext": {
+        "sessionId": "barometer-ascent-thresholded",
+        "strategyVersion": "rust-poc",
+        "createdElapsedRealtimeNanos": 0,
+        "createdWallTimeMillis": 0
+      },
+      "locationSamples": [],
+      "barometerWindows": [
+        {
+          "windowId": "barometer-1",
+          "startElapsedRealtimeNanos": 0,
+          "endElapsedRealtimeNanos": 1000000000,
+          "sampleCount": 4,
+          "minPressureHpa": 1000.0,
+          "maxPressureHpa": 1001.0,
+          "avgPressureHpa": 1000.5,
+          "deltaPressureHpa": 1.0,
+          "minRawBarometerAltitudeMeters": 99.5,
+          "maxRawBarometerAltitudeMeters": 100.5,
+          "avgRawBarometerAltitudeMeters": 100.0,
+          "deltaRawBarometerAltitudeMeters": 1.0,
+          "lastSensorAccuracy": 3
+        },
+        {
+          "windowId": "barometer-2",
+          "startElapsedRealtimeNanos": 1000000000,
+          "endElapsedRealtimeNanos": 11000000000,
+          "sampleCount": 4,
+          "minPressureHpa": 999.0,
+          "maxPressureHpa": 1000.0,
+          "avgPressureHpa": 999.5,
+          "deltaPressureHpa": 1.0,
+          "minRawBarometerAltitudeMeters": 119.5,
+          "maxRawBarometerAltitudeMeters": 120.5,
+          "avgRawBarometerAltitudeMeters": 120.0,
+          "deltaRawBarometerAltitudeMeters": 1.0,
+          "lastSensorAccuracy": 3
+        },
+        {
+          "windowId": "barometer-3",
+          "startElapsedRealtimeNanos": 11000000000,
+          "endElapsedRealtimeNanos": 21000000000,
+          "sampleCount": 4,
+          "minPressureHpa": 1002.0,
+          "maxPressureHpa": 1003.0,
+          "avgPressureHpa": 1002.5,
+          "deltaPressureHpa": 1.0,
+          "minRawBarometerAltitudeMeters": 89.5,
+          "maxRawBarometerAltitudeMeters": 90.5,
+          "avgRawBarometerAltitudeMeters": 90.0,
+          "deltaRawBarometerAltitudeMeters": 1.0,
+          "lastSensorAccuracy": 3
+        }
+      ]
+    }
+  },
+  "expected": {
+    "trackPointCount": 0,
+    "gpxTrackPointCount": 0,
+    "segmentCount": 0,
+    "totalDistanceMeters": 0.0,
+    "movingTimeSeconds": 0.0,
+    "ascentMeters": 7.0,
+    "ascentMetersTolerance": 0.000001,
+    "ascentSource": "BAROMETER",
+    "barometerAscentMeters": 7.0,
+    "barometerAscentMetersTolerance": 0.000001,
+    "acceptedRawPointIds": [],
+    "rejectedRawPointIds": [],
+    "decisionReasons": {},
+    "barometerDecisionReasons": {
+      "barometer-1": "barometer_sample_accepted",
+      "barometer-2": "barometer_sample_accepted",
+      "barometer-3": "barometer_sample_accepted"
+    }
+  }
+}

@@ -5,9 +5,10 @@ mod metrics;
 use std::collections::HashSet;
 
 use track_model::{
+    BarometerCalibration, BarometerCalibrationDecision, BarometerWindowDecision,
     CleanedTrackDebugResult, CleanedTrackPoint, CleanedTrackResult, CleanedTrackSegment,
-    NormalizedLocationSample, OutdoorTrackInput, RawPointDecision, SamplingEpoch, TrackConfig,
-    TrackSummary,
+    NormalizedBarometerWindow, NormalizedLocationSample, OutdoorTrackInput, RawPointDecision,
+    SamplingEpoch, TrackConfig, TrackSummary,
 };
 
 use crate::metrics::{haversine_distance_meters, initial_bearing_degrees};
@@ -26,6 +27,16 @@ const RECOVERY_CLOUD_MIN_SAMPLES: usize = 2;
 const STATIONARY_DISTANCE_METERS: f64 = 5.0;
 const STATIONARY_ACCURACY_MULTIPLIER: f64 = 1.5;
 const START_TOLERANCE_NANOS: i64 = 1_000_000_000;
+const BAROMETER_ALPHA: f64 = 0.35;
+const BAROMETER_CLIMB_THRESHOLD_METERS: f64 = 3.0;
+const BAROMETER_DROP_THRESHOLD_METERS: f64 = 1.5;
+const MAX_BAROMETER_SAMPLE_GAP_NANOS: i64 = 30_000_000_000;
+const MAX_HIKING_VERTICAL_SPEED_METERS_PER_SECOND: f64 = 2.0;
+const BAROMETER_PRESSURE_JUMP_RESET_REJECT_COUNT: usize = 2;
+const GNSS_ALPHA: f64 = 0.15;
+const MAX_GNSS_VERTICAL_ACCURACY_METERS: f64 = 12.0;
+const MAX_GNSS_ASCENT_HORIZONTAL_ACCURACY_METERS: f64 = 30.0;
+const MIN_GNSS_ASCENT_HORIZONTAL_DISTANCE_METERS: f64 = 5.0;
 
 pub fn process(input: OutdoorTrackInput, config: TrackConfig) -> CleanedTrackResult {
     process_debug(input, config).cleaned_track
@@ -34,6 +45,8 @@ pub fn process(input: OutdoorTrackInput, config: TrackConfig) -> CleanedTrackRes
 pub fn process_debug(input: OutdoorTrackInput, _config: TrackConfig) -> CleanedTrackDebugResult {
     let session_context = input.session_context;
     let sampling_epochs = input.sampling_epochs;
+    let barometer_windows = input.barometer_windows;
+    let barometer_calibrations = input.barometer_calibrations;
     let mut samples = input.location_samples;
     samples.sort_by_key(|sample| (sample.elapsed_realtime_nanos, sample.raw_point_id));
 
@@ -42,12 +55,24 @@ pub fn process_debug(input: OutdoorTrackInput, _config: TrackConfig) -> CleanedT
         &sampling_epochs,
         session_context.created_elapsed_realtime_nanos,
     );
-    let cleaned_track = build_cleaned_track(&accepted_samples);
+    let barometer_ascent = calculate_barometer_ascent(&barometer_windows);
+    let gnss_ascent_meters = calculate_gnss_ascent(&accepted_samples);
+    let selected_ascent = select_ascent(barometer_ascent.ascent_meters, gnss_ascent_meters);
+    let cleaned_track = build_cleaned_track(&accepted_samples, selected_ascent);
+    let barometer_calibration_decisions = decide_barometer_calibrations(&barometer_calibrations);
 
-    CleanedTrackDebugResult::new(cleaned_track, raw_point_decisions)
+    CleanedTrackDebugResult::from_parts(
+        cleaned_track,
+        raw_point_decisions,
+        barometer_ascent.decisions,
+        barometer_calibration_decisions,
+    )
 }
 
-fn build_cleaned_track(accepted_samples: &[AcceptedTrackSample<'_>]) -> CleanedTrackResult {
+fn build_cleaned_track(
+    accepted_samples: &[AcceptedTrackSample<'_>],
+    selected_ascent: SelectedAscent,
+) -> CleanedTrackResult {
     let mut track_points = Vec::with_capacity(accepted_samples.len());
     let mut segments = Vec::new();
     let mut total_distance_meters = 0.0;
@@ -144,9 +169,491 @@ fn build_cleaned_track(accepted_samples: &[AcceptedTrackSample<'_>]) -> CleanedT
             total_distance_meters,
             moving_time_seconds,
             pace_seconds_per_km,
-            ascent_meters: 0.0,
+            ascent_meters: selected_ascent.ascent_meters,
+            ascent_source: selected_ascent.source.to_string(),
+            barometer_ascent_meters: selected_ascent.barometer_ascent_meters,
+            gnss_ascent_meters: selected_ascent.gnss_ascent_meters,
         },
     }
+}
+
+#[derive(Clone, Copy)]
+struct SelectedAscent {
+    ascent_meters: f64,
+    source: &'static str,
+    barometer_ascent_meters: Option<f64>,
+    gnss_ascent_meters: Option<f64>,
+}
+
+fn select_ascent(
+    barometer_ascent_meters: Option<f64>,
+    gnss_ascent_meters: Option<f64>,
+) -> SelectedAscent {
+    if let Some(ascent_meters) = barometer_ascent_meters {
+        SelectedAscent {
+            ascent_meters,
+            source: "BAROMETER",
+            barometer_ascent_meters,
+            gnss_ascent_meters,
+        }
+    } else if let Some(ascent_meters) = gnss_ascent_meters {
+        SelectedAscent {
+            ascent_meters,
+            source: "GNSS",
+            barometer_ascent_meters,
+            gnss_ascent_meters,
+        }
+    } else {
+        SelectedAscent {
+            ascent_meters: 0.0,
+            source: "NONE",
+            barometer_ascent_meters,
+            gnss_ascent_meters,
+        }
+    }
+}
+
+struct BarometerAscentResult {
+    ascent_meters: Option<f64>,
+    decisions: Vec<BarometerWindowDecision>,
+}
+
+fn calculate_barometer_ascent(windows: &[NormalizedBarometerWindow]) -> BarometerAscentResult {
+    let mut windows = windows.iter().collect::<Vec<_>>();
+    windows.sort_by_key(|window| (window.end_elapsed_realtime_nanos, &window.window_id));
+
+    let mut engine = BarometerAscentEngine::default();
+    let mut decisions = Vec::with_capacity(windows.len());
+    for window in windows {
+        if let Some(reason) = barometer_window_reject_reason(window) {
+            decisions.push(BarometerWindowDecision::reject(&window.window_id, reason));
+            continue;
+        }
+        let decision = engine.on_sample(BarometerAltitudeSample {
+            elapsed_realtime_nanos: window.end_elapsed_realtime_nanos,
+            altitude_meters: window.avg_raw_barometer_altitude_meters,
+        });
+        decisions.push(match decision {
+            BarometerAscentDecision::Accepted {
+                reason,
+                sample_index,
+            } => BarometerWindowDecision::accept(&window.window_id, reason, sample_index as i64),
+            BarometerAscentDecision::Rejected(reason) => {
+                BarometerWindowDecision::reject(&window.window_id, reason)
+            }
+        });
+    }
+    BarometerAscentResult {
+        ascent_meters: engine.finish(),
+        decisions,
+    }
+}
+
+fn barometer_window_reject_reason(window: &NormalizedBarometerWindow) -> Option<&'static str> {
+    if window.sample_count <= 0 {
+        Some("barometer_empty_window")
+    } else if window.start_elapsed_realtime_nanos < 0
+        || window.end_elapsed_realtime_nanos < window.start_elapsed_realtime_nanos
+    {
+        Some("barometer_invalid_time_window")
+    } else if !window.avg_pressure_hpa.is_finite() || window.avg_pressure_hpa <= 0.0 {
+        Some("barometer_invalid_pressure")
+    } else if !window.avg_raw_barometer_altitude_meters.is_finite() {
+        Some("barometer_invalid_altitude")
+    } else {
+        None
+    }
+}
+
+fn decide_barometer_calibrations(
+    calibrations: &[BarometerCalibration],
+) -> Vec<BarometerCalibrationDecision> {
+    let mut calibrations = calibrations.iter().collect::<Vec<_>>();
+    calibrations.sort_by_key(|calibration| {
+        (
+            calibration.pressure_sample_elapsed_realtime_nanos,
+            &calibration.calibration_id,
+        )
+    });
+
+    calibrations
+        .into_iter()
+        .map(|calibration| {
+            if let Some(reason) = barometer_calibration_reject_reason(calibration) {
+                BarometerCalibrationDecision::reject(&calibration.calibration_id, reason)
+            } else {
+                BarometerCalibrationDecision::accept(
+                    &calibration.calibration_id,
+                    "barometer_calibration_accepted",
+                    calibration.raw_barometer_altitude_meters
+                        + calibration.calibration_offset_meters,
+                )
+            }
+        })
+        .collect()
+}
+
+fn barometer_calibration_reject_reason(calibration: &BarometerCalibration) -> Option<&'static str> {
+    if calibration.calibration_id.trim().is_empty() {
+        Some("barometer_calibration_missing_id")
+    } else if calibration.source.trim().is_empty() {
+        Some("barometer_calibration_missing_source")
+    } else if calibration.pressure_sample_elapsed_realtime_nanos < 0 {
+        Some("barometer_calibration_invalid_time")
+    } else if !calibration.raw_barometer_altitude_meters.is_finite() {
+        Some("barometer_calibration_invalid_raw_altitude")
+    } else if !calibration.reference_altitude_meters.is_finite() {
+        Some("barometer_calibration_invalid_reference_altitude")
+    } else if !calibration.calibration_offset_meters.is_finite() {
+        Some("barometer_calibration_invalid_offset")
+    } else {
+        None
+    }
+}
+
+fn calculate_gnss_ascent(accepted_samples: &[AcceptedTrackSample<'_>]) -> Option<f64> {
+    let mut engine = GnssAscentEngine::default();
+    for (index, accepted) in accepted_samples.iter().enumerate() {
+        if is_anchor_reason(accepted.decision_reason) {
+            if let Some(sample) = gnss_altitude_sample(accepted.sample) {
+                engine.reset_altitude_anchor(sample);
+            }
+            continue;
+        }
+        if accepted.decision_reason != "moving_good_fix" {
+            continue;
+        }
+
+        let distance_delta_meters = if index == 0 {
+            0.0
+        } else {
+            let previous = accepted_samples[index - 1].sample;
+            let distance = haversine_distance_meters(
+                previous.latitude,
+                previous.longitude,
+                accepted.sample.latitude,
+                accepted.sample.longitude,
+            );
+            sample_distance_delta_override(*accepted, distance)
+        };
+        if distance_delta_meters < MIN_GNSS_ASCENT_HORIZONTAL_DISTANCE_METERS {
+            continue;
+        }
+        if let Some(sample) = gnss_altitude_sample(accepted.sample) {
+            engine.on_sample(sample);
+        }
+    }
+    engine.finish()
+}
+
+fn gnss_altitude_sample(sample: &NormalizedLocationSample) -> Option<GnssAltitudeSample> {
+    let altitude_meters = sample.altitude_meters?;
+    let vertical_accuracy_meters = sample.vertical_accuracy_meters?;
+    if altitude_meters.is_finite()
+        && vertical_accuracy_meters.is_finite()
+        && vertical_accuracy_meters > 0.0
+        && vertical_accuracy_meters <= MAX_GNSS_VERTICAL_ACCURACY_METERS
+        && sample.horizontal_accuracy_meters > 0.0
+        && sample.horizontal_accuracy_meters <= MAX_GNSS_ASCENT_HORIZONTAL_ACCURACY_METERS
+    {
+        Some(GnssAltitudeSample {
+            elapsed_realtime_nanos: sample.elapsed_realtime_nanos,
+            altitude_meters,
+            vertical_accuracy_meters,
+        })
+    } else {
+        None
+    }
+}
+
+#[derive(Clone, Copy)]
+struct BarometerAltitudeSample {
+    elapsed_realtime_nanos: i64,
+    altitude_meters: f64,
+}
+
+enum BarometerAscentDecision {
+    Accepted {
+        reason: &'static str,
+        sample_index: usize,
+    },
+    Rejected(&'static str),
+}
+
+#[derive(Clone, Copy)]
+struct GnssAltitudeSample {
+    elapsed_realtime_nanos: i64,
+    altitude_meters: f64,
+    vertical_accuracy_meters: f64,
+}
+
+#[derive(Default)]
+struct BarometerAscentEngine {
+    total_ascent_meters: f64,
+    filtered_altitude: Option<f64>,
+    base_altitude: Option<f64>,
+    peak_altitude: Option<f64>,
+    last_altitude: Option<f64>,
+    last_elapsed_realtime_nanos: Option<i64>,
+    sample_count: usize,
+    consecutive_physical_reject_count: usize,
+}
+
+impl BarometerAscentEngine {
+    fn on_sample(&mut self, sample: BarometerAltitudeSample) -> BarometerAscentDecision {
+        if self.last_elapsed_realtime_nanos.is_some_and(|last| {
+            sample.elapsed_realtime_nanos - last > MAX_BAROMETER_SAMPLE_GAP_NANOS
+        }) {
+            let sample_index = self.reset_altitude_anchor(sample);
+            return BarometerAscentDecision::Accepted {
+                reason: "barometer_gap_reset",
+                sample_index,
+            };
+        }
+        if !self.passes_physical_gate(sample) {
+            self.consecutive_physical_reject_count += 1;
+            if self.consecutive_physical_reject_count >= BAROMETER_PRESSURE_JUMP_RESET_REJECT_COUNT
+            {
+                let sample_index = self.reset_altitude_anchor(sample);
+                return BarometerAscentDecision::Accepted {
+                    reason: "barometer_pressure_jump_reset",
+                    sample_index,
+                };
+            }
+            return BarometerAscentDecision::Rejected("barometer_vertical_speed_too_high");
+        }
+
+        self.consecutive_physical_reject_count = 0;
+        self.sample_count += 1;
+        let altitude = self.filter(sample.altitude_meters);
+        self.update_trend(altitude, sample.elapsed_realtime_nanos);
+        BarometerAscentDecision::Accepted {
+            reason: "barometer_sample_accepted",
+            sample_index: self.sample_count,
+        }
+    }
+
+    fn finish(&self) -> Option<f64> {
+        if self.sample_count >= 2 {
+            Some(self.total_ascent_meters + self.accepted_pending_gain())
+        } else {
+            None
+        }
+    }
+
+    fn reset_altitude_anchor(&mut self, sample: BarometerAltitudeSample) -> usize {
+        self.total_ascent_meters += self.accepted_pending_gain();
+        self.filtered_altitude = None;
+        self.base_altitude = None;
+        self.peak_altitude = None;
+        self.last_altitude = None;
+        self.last_elapsed_realtime_nanos = None;
+        self.consecutive_physical_reject_count = 0;
+        self.sample_count += 1;
+        let altitude = self.filter(sample.altitude_meters);
+        self.base_altitude = Some(altitude);
+        self.peak_altitude = Some(altitude);
+        self.last_altitude = Some(altitude);
+        self.last_elapsed_realtime_nanos = Some(sample.elapsed_realtime_nanos);
+        self.sample_count
+    }
+
+    fn passes_physical_gate(&self, sample: BarometerAltitudeSample) -> bool {
+        let (Some(last_altitude), Some(last_elapsed)) =
+            (self.last_altitude, self.last_elapsed_realtime_nanos)
+        else {
+            return true;
+        };
+        if sample.elapsed_realtime_nanos <= last_elapsed {
+            return false;
+        }
+        let elapsed_seconds =
+            (sample.elapsed_realtime_nanos - last_elapsed) as f64 / 1_000_000_000.0;
+        if elapsed_seconds <= 0.0 {
+            return true;
+        }
+        let vertical_speed = (sample.altitude_meters - last_altitude).abs() / elapsed_seconds;
+        vertical_speed <= MAX_HIKING_VERTICAL_SPEED_METERS_PER_SECOND
+    }
+
+    fn filter(&mut self, altitude_meters: f64) -> f64 {
+        let filtered = self.filtered_altitude.map_or(altitude_meters, |previous| {
+            BAROMETER_ALPHA * altitude_meters + (1.0 - BAROMETER_ALPHA) * previous
+        });
+        self.filtered_altitude = Some(filtered);
+        filtered
+    }
+
+    fn update_trend(&mut self, altitude: f64, elapsed_realtime_nanos: i64) {
+        let (Some(base), Some(peak)) = (self.base_altitude, self.peak_altitude) else {
+            self.base_altitude = Some(altitude);
+            self.peak_altitude = Some(altitude);
+            self.last_altitude = Some(altitude);
+            self.last_elapsed_realtime_nanos = Some(elapsed_realtime_nanos);
+            return;
+        };
+
+        if altitude >= peak {
+            self.peak_altitude = Some(altitude);
+            self.last_altitude = Some(altitude);
+            self.last_elapsed_realtime_nanos = Some(elapsed_realtime_nanos);
+            return;
+        }
+
+        let drop = peak - altitude;
+        let pending_gain = peak - base;
+        if drop >= BAROMETER_DROP_THRESHOLD_METERS {
+            if pending_gain >= BAROMETER_CLIMB_THRESHOLD_METERS {
+                self.total_ascent_meters += pending_gain;
+            }
+            self.base_altitude = Some(altitude);
+            self.peak_altitude = Some(altitude);
+        }
+        self.last_altitude = Some(altitude);
+        self.last_elapsed_realtime_nanos = Some(elapsed_realtime_nanos);
+    }
+
+    fn accepted_pending_gain(&self) -> f64 {
+        let (Some(base), Some(peak)) = (self.base_altitude, self.peak_altitude) else {
+            return 0.0;
+        };
+        let pending_gain = peak - base;
+        if pending_gain >= BAROMETER_CLIMB_THRESHOLD_METERS {
+            pending_gain
+        } else {
+            0.0
+        }
+    }
+}
+
+#[derive(Default)]
+struct GnssAscentEngine {
+    total_ascent_meters: f64,
+    filtered_altitude: Option<f64>,
+    base_altitude: Option<f64>,
+    peak_altitude: Option<f64>,
+    last_altitude: Option<f64>,
+    last_elapsed_realtime_nanos: Option<i64>,
+    last_vertical_accuracy_meters: Option<f64>,
+    sample_count: usize,
+}
+
+impl GnssAscentEngine {
+    fn on_sample(&mut self, sample: GnssAltitudeSample) {
+        if !self.passes_physical_gate(sample) {
+            return;
+        }
+        self.sample_count += 1;
+        let altitude = self.filter(sample.altitude_meters);
+        self.update_trend(altitude, sample);
+    }
+
+    fn reset_altitude_anchor(&mut self, sample: GnssAltitudeSample) {
+        self.total_ascent_meters += self.accepted_pending_gain();
+        self.filtered_altitude = None;
+        self.base_altitude = None;
+        self.peak_altitude = None;
+        self.last_altitude = None;
+        self.last_elapsed_realtime_nanos = None;
+        self.last_vertical_accuracy_meters = None;
+        self.sample_count += 1;
+        let altitude = self.filter(sample.altitude_meters);
+        self.base_altitude = Some(altitude);
+        self.peak_altitude = Some(altitude);
+        self.last_altitude = Some(altitude);
+        self.last_elapsed_realtime_nanos = Some(sample.elapsed_realtime_nanos);
+        self.last_vertical_accuracy_meters = Some(sample.vertical_accuracy_meters);
+    }
+
+    fn finish(&self) -> Option<f64> {
+        if self.sample_count >= 2 {
+            Some(self.total_ascent_meters + self.accepted_pending_gain())
+        } else {
+            None
+        }
+    }
+
+    fn passes_physical_gate(&self, sample: GnssAltitudeSample) -> bool {
+        let (Some(last_altitude), Some(last_elapsed)) =
+            (self.last_altitude, self.last_elapsed_realtime_nanos)
+        else {
+            return true;
+        };
+        if sample.elapsed_realtime_nanos <= last_elapsed {
+            return false;
+        }
+        let elapsed_seconds =
+            (sample.elapsed_realtime_nanos - last_elapsed) as f64 / 1_000_000_000.0;
+        if elapsed_seconds <= 0.0 {
+            return true;
+        }
+        let vertical_speed = (sample.altitude_meters - last_altitude).abs() / elapsed_seconds;
+        vertical_speed <= MAX_HIKING_VERTICAL_SPEED_METERS_PER_SECOND
+    }
+
+    fn filter(&mut self, altitude_meters: f64) -> f64 {
+        let filtered = self.filtered_altitude.map_or(altitude_meters, |previous| {
+            GNSS_ALPHA * altitude_meters + (1.0 - GNSS_ALPHA) * previous
+        });
+        self.filtered_altitude = Some(filtered);
+        filtered
+    }
+
+    fn update_trend(&mut self, altitude: f64, sample: GnssAltitudeSample) {
+        let (Some(base), Some(peak)) = (self.base_altitude, self.peak_altitude) else {
+            self.base_altitude = Some(altitude);
+            self.peak_altitude = Some(altitude);
+            self.last_altitude = Some(altitude);
+            self.last_elapsed_realtime_nanos = Some(sample.elapsed_realtime_nanos);
+            self.last_vertical_accuracy_meters = Some(sample.vertical_accuracy_meters);
+            return;
+        };
+
+        if altitude >= peak {
+            self.peak_altitude = Some(altitude);
+            self.last_altitude = Some(altitude);
+            self.last_elapsed_realtime_nanos = Some(sample.elapsed_realtime_nanos);
+            self.last_vertical_accuracy_meters = Some(sample.vertical_accuracy_meters);
+            return;
+        }
+
+        let drop = peak - altitude;
+        let pending_gain = peak - base;
+        if drop >= gnss_drop_threshold(sample.vertical_accuracy_meters) {
+            if pending_gain >= gnss_climb_threshold(sample.vertical_accuracy_meters) {
+                self.total_ascent_meters += pending_gain;
+            }
+            self.base_altitude = Some(altitude);
+            self.peak_altitude = Some(altitude);
+        }
+        self.last_altitude = Some(altitude);
+        self.last_elapsed_realtime_nanos = Some(sample.elapsed_realtime_nanos);
+        self.last_vertical_accuracy_meters = Some(sample.vertical_accuracy_meters);
+    }
+
+    fn accepted_pending_gain(&self) -> f64 {
+        let (Some(base), Some(peak), Some(vertical_accuracy)) = (
+            self.base_altitude,
+            self.peak_altitude,
+            self.last_vertical_accuracy_meters,
+        ) else {
+            return 0.0;
+        };
+        let pending_gain = peak - base;
+        if pending_gain >= gnss_climb_threshold(vertical_accuracy) {
+            pending_gain
+        } else {
+            0.0
+        }
+    }
+}
+
+fn gnss_climb_threshold(vertical_accuracy_meters: f64) -> f64 {
+    5.0_f64.max(vertical_accuracy_meters * 0.8)
+}
+
+fn gnss_drop_threshold(vertical_accuracy_meters: f64) -> f64 {
+    3.0_f64.max(vertical_accuracy_meters * 0.4)
 }
 
 fn decide_location_samples<'a>(
@@ -173,7 +680,7 @@ fn decide_location_samples<'a>(
             match decide_first_fix(sample) {
                 FirstFixDecision::Track(reason) => {
                     decisions.push(RawPointDecision::accept(sample.raw_point_id, reason, 1));
-                    accepted.push(AcceptedTrackSample::normal(sample));
+                    accepted.push(AcceptedTrackSample::new(sample, reason));
                 }
                 FirstFixDecision::Weak(reason) => {
                     decisions.push(RawPointDecision::weak(sample.raw_point_id, reason));
@@ -195,6 +702,7 @@ fn decide_location_samples<'a>(
                 ));
                 accepted.push(AcceptedTrackSample {
                     sample,
+                    decision_reason: track_decision.reason,
                     distance_delta_meters: track_decision.distance_delta_meters,
                     moving_time_delta_seconds: track_decision.moving_time_delta_seconds,
                     starts_new_segment: track_decision.starts_new_segment,
@@ -215,15 +723,17 @@ fn decide_location_samples<'a>(
 #[derive(Clone, Copy)]
 struct AcceptedTrackSample<'a> {
     sample: &'a NormalizedLocationSample,
+    decision_reason: &'static str,
     distance_delta_meters: Option<f64>,
     moving_time_delta_seconds: Option<f64>,
     starts_new_segment: bool,
 }
 
 impl<'a> AcceptedTrackSample<'a> {
-    fn normal(sample: &'a NormalizedLocationSample) -> Self {
+    fn new(sample: &'a NormalizedLocationSample, decision_reason: &'static str) -> Self {
         Self {
             sample,
+            decision_reason,
             distance_delta_meters: None,
             moving_time_delta_seconds: None,
             starts_new_segment: false,
@@ -558,6 +1068,13 @@ fn elapsed_delta_seconds(
     } else {
         delta_nanos as f64 / 1_000_000_000.0
     }
+}
+
+fn is_anchor_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        "first_fix_good" | "first_fix_relaxed" | "gap_recovery" | "stationary_anchor"
+    )
 }
 
 #[cfg(test)]
@@ -973,6 +1490,156 @@ mod tests {
     }
 
     #[test]
+    fn barometer_windows_accumulate_thresholded_ascent() {
+        let input = OutdoorTrackInput {
+            session_context: SessionContext::new("session-ascent", "rust-poc"),
+            sampling_epochs: vec![],
+            location_samples: vec![],
+            motion_windows: vec![],
+            barometer_windows: vec![
+                barometer_window("barometer-1", 0, 1_000_000_000, 100.0),
+                barometer_window("barometer-2", 1_000_000_000, 11_000_000_000, 120.0),
+                barometer_window("barometer-3", 11_000_000_000, 21_000_000_000, 90.0),
+            ],
+            barometer_calibrations: vec![],
+        };
+
+        let result = process_debug(input, TrackConfig::default());
+
+        assert!(result.cleaned_track.track_points.is_empty());
+        assert!((result.cleaned_track.summary.ascent_meters - 7.0).abs() < 0.000001);
+        assert_eq!(result.cleaned_track.summary.ascent_source, "BAROMETER");
+        assert_eq!(
+            result.cleaned_track.summary.barometer_ascent_meters,
+            Some(7.0)
+        );
+        assert_eq!(result.cleaned_track.summary.gnss_ascent_meters, None);
+        assert_eq!(result.barometer_window_decisions.len(), 3);
+        assert_eq!(
+            result.barometer_window_decisions[0].window_id,
+            "barometer-1"
+        );
+        assert_eq!(
+            result.barometer_window_decisions[0].reason,
+            "barometer_sample_accepted"
+        );
+        assert_eq!(
+            result.barometer_window_decisions[0].ascent_sample_index,
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn barometer_calibration_is_debug_only() {
+        let input = OutdoorTrackInput {
+            session_context: SessionContext::new("session-calibration", "rust-poc"),
+            sampling_epochs: vec![],
+            location_samples: vec![],
+            motion_windows: vec![],
+            barometer_windows: vec![],
+            barometer_calibrations: vec![BarometerCalibration {
+                calibration_id: "calibration-1".to_string(),
+                source: "GNSS".to_string(),
+                raw_barometer_altitude_meters: 100.0,
+                reference_altitude_meters: 112.5,
+                calibration_offset_meters: 12.5,
+                pressure_sample_elapsed_realtime_nanos: 1_000_000_000,
+            }],
+        };
+
+        let result = process_debug(input, TrackConfig::default());
+
+        assert_eq!(result.cleaned_track.summary.ascent_source, "NONE");
+        assert_eq!(result.cleaned_track.summary.ascent_meters, 0.0);
+        assert_eq!(result.barometer_calibration_decisions.len(), 1);
+        assert_eq!(
+            result.barometer_calibration_decisions[0].reason,
+            "barometer_calibration_accepted"
+        );
+        assert_eq!(
+            result.barometer_calibration_decisions[0].displayed_barometer_altitude_meters,
+            Some(112.5)
+        );
+    }
+
+    #[test]
+    fn consecutive_barometer_pressure_jumps_reset_anchor() {
+        let input = OutdoorTrackInput {
+            session_context: SessionContext::new("session-pressure-jump", "rust-poc"),
+            sampling_epochs: vec![],
+            location_samples: vec![],
+            motion_windows: vec![],
+            barometer_windows: vec![
+                barometer_window("barometer-1", 0, 1_000_000_000, 100.0),
+                barometer_window("barometer-2", 1_000_000_000, 2_000_000_000, 150.0),
+                barometer_window("barometer-3", 2_000_000_000, 3_000_000_000, 155.0),
+                barometer_window("barometer-4", 3_000_000_000, 13_000_000_000, 165.0),
+            ],
+            barometer_calibrations: vec![],
+        };
+
+        let result = process_debug(input, TrackConfig::default());
+
+        assert_eq!(
+            result.barometer_window_decisions[1].reason,
+            "barometer_vertical_speed_too_high"
+        );
+        assert_eq!(
+            result.barometer_window_decisions[2].reason,
+            "barometer_pressure_jump_reset"
+        );
+        assert!((result.cleaned_track.summary.ascent_meters - 3.5).abs() < 0.000001);
+        assert_eq!(result.cleaned_track.summary.ascent_source, "BAROMETER");
+    }
+
+    #[test]
+    fn gnss_altitude_line_is_fallback_when_barometer_is_unavailable() {
+        let input = OutdoorTrackInput {
+            session_context: SessionContext::new("session-gnss-ascent", "rust-poc"),
+            sampling_epochs: vec![],
+            location_samples: vec![
+                sample_with_altitude(1, 30.0, 120.0, 100.0, 1_000_000_000),
+                sample_with_altitude(2, 30.0001, 120.0, 140.0, 31_000_000_000),
+            ],
+            motion_windows: vec![],
+            barometer_windows: vec![],
+            barometer_calibrations: vec![],
+        };
+
+        let result = process(input, TrackConfig::default());
+
+        assert!((result.summary.ascent_meters - 6.0).abs() < 0.000001);
+        assert_eq!(result.summary.ascent_source, "GNSS");
+        assert_eq!(result.summary.barometer_ascent_meters, None);
+        assert_eq!(result.summary.gnss_ascent_meters, Some(6.0));
+    }
+
+    #[test]
+    fn reliable_barometer_ascent_is_preferred_over_gnss_ascent() {
+        let input = OutdoorTrackInput {
+            session_context: SessionContext::new("session-selected-ascent", "rust-poc"),
+            sampling_epochs: vec![],
+            location_samples: vec![
+                sample_with_altitude(1, 30.0, 120.0, 100.0, 1_000_000_000),
+                sample_with_altitude(2, 30.0001, 120.0, 140.0, 31_000_000_000),
+            ],
+            motion_windows: vec![],
+            barometer_windows: vec![
+                barometer_window("barometer-1", 0, 1_000_000_000, 100.0),
+                barometer_window("barometer-2", 1_000_000_000, 11_000_000_000, 110.0),
+            ],
+            barometer_calibrations: vec![],
+        };
+
+        let result = process(input, TrackConfig::default());
+
+        assert!((result.summary.ascent_meters - 3.5).abs() < 0.000001);
+        assert_eq!(result.summary.ascent_source, "BAROMETER");
+        assert_eq!(result.summary.barometer_ascent_meters, Some(3.5));
+        assert_eq!(result.summary.gnss_ascent_meters, Some(6.0));
+    }
+
+    #[test]
     fn track_direction_uses_north_as_zero_degrees() {
         let cases = [
             ((30.0, 120.0), (30.0001, 120.0), 0.0),
@@ -1054,6 +1721,49 @@ mod tests {
             sampling_epoch_id: None,
             callback_received_elapsed_realtime_nanos: None,
             callback_delay_nanos: None,
+        }
+    }
+
+    fn sample_with_altitude(
+        raw_point_id: i64,
+        latitude: f64,
+        longitude: f64,
+        altitude_meters: f64,
+        elapsed_realtime_nanos: i64,
+    ) -> NormalizedLocationSample {
+        NormalizedLocationSample {
+            altitude_meters: Some(altitude_meters),
+            vertical_accuracy_meters: Some(5.0),
+            ..sample_with_accuracy_at(
+                raw_point_id,
+                latitude,
+                longitude,
+                8.0,
+                elapsed_realtime_nanos,
+            )
+        }
+    }
+
+    fn barometer_window(
+        window_id: &str,
+        start_elapsed_realtime_nanos: i64,
+        end_elapsed_realtime_nanos: i64,
+        avg_raw_barometer_altitude_meters: f64,
+    ) -> NormalizedBarometerWindow {
+        NormalizedBarometerWindow {
+            window_id: window_id.to_string(),
+            start_elapsed_realtime_nanos,
+            end_elapsed_realtime_nanos,
+            sample_count: 4,
+            min_pressure_hpa: 1_000.0,
+            max_pressure_hpa: 1_001.0,
+            avg_pressure_hpa: 1_000.5,
+            delta_pressure_hpa: 1.0,
+            min_raw_barometer_altitude_meters: avg_raw_barometer_altitude_meters - 0.5,
+            max_raw_barometer_altitude_meters: avg_raw_barometer_altitude_meters + 0.5,
+            avg_raw_barometer_altitude_meters,
+            delta_raw_barometer_altitude_meters: 1.0,
+            last_sensor_accuracy: Some(3),
         }
     }
 }

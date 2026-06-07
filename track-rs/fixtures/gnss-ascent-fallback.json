@@ -1,0 +1,63 @@
+{
+  "ruleId": "gnss_ascent_v0",
+  "ruleVersion": "0.1.0",
+  "source": "web_algorithm",
+  "request": {
+    "config": {
+      "strategyVersion": "rust-poc"
+    },
+    "input": {
+      "sessionContext": {
+        "sessionId": "gnss-ascent-fallback",
+        "strategyVersion": "rust-poc",
+        "createdElapsedRealtimeNanos": 0,
+        "createdWallTimeMillis": 0
+      },
+      "locationSamples": [
+        {
+          "rawPointId": 1,
+          "positioningSource": "gnss",
+          "latitude": 30.0,
+          "longitude": 120.0,
+          "horizontalAccuracyMeters": 8.0,
+          "altitudeMeters": 100.0,
+          "verticalAccuracyMeters": 5.0,
+          "wallTimeMillis": 1000,
+          "elapsedRealtimeNanos": 1000000000,
+          "isMock": false
+        },
+        {
+          "rawPointId": 2,
+          "positioningSource": "gnss",
+          "latitude": 30.0001,
+          "longitude": 120.0,
+          "horizontalAccuracyMeters": 8.0,
+          "altitudeMeters": 140.0,
+          "verticalAccuracyMeters": 5.0,
+          "wallTimeMillis": 31000,
+          "elapsedRealtimeNanos": 31000000000,
+          "isMock": false
+        }
+      ]
+    }
+  },
+  "expected": {
+    "trackPointCount": 2,
+    "gpxTrackPointCount": 2,
+    "segmentCount": 1,
+    "totalDistanceMeters": 11.11949266442996,
+    "totalDistanceMetersTolerance": 0.000001,
+    "movingTimeSeconds": 30.0,
+    "ascentMeters": 6.0,
+    "ascentMetersTolerance": 0.000001,
+    "ascentSource": "GNSS",
+    "gnssAscentMeters": 6.0,
+    "gnssAscentMetersTolerance": 0.000001,
+    "acceptedRawPointIds": [1, 2],
+    "rejectedRawPointIds": [],
+    "decisionReasons": {
+      "1": "first_fix_good",
+      "2": "moving_good_fix"
+    }
+  }
+}

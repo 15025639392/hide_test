@@ -32,6 +32,9 @@ CleanedTrackResult:
     movingTimeSeconds
     paceSecondsPerKm optional
     ascentMeters
+    ascentSource: BAROMETER | GNSS | NONE
+    barometerAscentMeters optional
+    gnssAscentMeters optional
 ```
 
 `trackDirectionDegrees` 输出在 `CleanedTrackPoint` 上，表示当前点相对前一个清洗轨迹点
@@ -55,6 +58,7 @@ CleanedTrackDebugResult:
   rawPointDecisions[]
   cleaningOperations[]
   barometerWindowDecisions[]
+  barometerCalibrationDecisions[]
   rejectedRawPoints[]
   debugFindings[]
 ```
@@ -65,12 +69,26 @@ CleanedTrackDebugResult:
 CleanedTrackDebugResult:
   cleanedTrack
   rawPointDecisions[]
+  barometerWindowDecisions[]
+  barometerCalibrationDecisions[]
 
 RawPointDecision:
   rawPointId
-  result: accept | reject
+  result: accept | weak | reject
   reason
   trackPointId optional
+
+BarometerWindowDecision:
+  windowId
+  result: accept | reject
+  reason
+  ascentSampleIndex optional
+
+BarometerCalibrationDecision:
+  calibrationId
+  result: accept | reject
+  reason
+  displayedBarometerAltitudeMeters optional
 ```
 
 `reason` 当前先对齐 Web intake 命名：
@@ -182,7 +200,10 @@ track-cli process-debug input.json
       "totalDistanceMeters": 0,
       "movingTimeSeconds": 0,
       "paceSecondsPerKm": null,
-      "ascentMeters": 0
+      "ascentMeters": 0,
+      "ascentSource": "NONE",
+      "barometerAscentMeters": null,
+      "gnssAscentMeters": null
     }
   }
 }

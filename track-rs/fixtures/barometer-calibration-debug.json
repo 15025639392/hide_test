@@ -1,0 +1,54 @@
+{
+  "ruleId": "barometer_calibration_debug_v0",
+  "ruleVersion": "0.1.0",
+  "source": "rust_infrastructure",
+  "request": {
+    "config": {
+      "strategyVersion": "rust-poc"
+    },
+    "input": {
+      "sessionContext": {
+        "sessionId": "barometer-calibration-debug",
+        "strategyVersion": "rust-poc",
+        "createdElapsedRealtimeNanos": 0,
+        "createdWallTimeMillis": 0
+      },
+      "locationSamples": [],
+      "barometerCalibrations": [
+        {
+          "calibrationId": "calibration-1",
+          "source": "GNSS",
+          "rawBarometerAltitudeMeters": 100.0,
+          "referenceAltitudeMeters": 112.5,
+          "calibrationOffsetMeters": 12.5,
+          "pressureSampleElapsedRealtimeNanos": 1000000000
+        },
+        {
+          "calibrationId": "calibration-missing-source",
+          "source": "",
+          "rawBarometerAltitudeMeters": 100.0,
+          "referenceAltitudeMeters": 112.5,
+          "calibrationOffsetMeters": 12.5,
+          "pressureSampleElapsedRealtimeNanos": 2000000000
+        }
+      ]
+    }
+  },
+  "expected": {
+    "trackPointCount": 0,
+    "gpxTrackPointCount": 0,
+    "segmentCount": 0,
+    "totalDistanceMeters": 0.0,
+    "movingTimeSeconds": 0.0,
+    "ascentMeters": 0.0,
+    "ascentMetersTolerance": 0.000001,
+    "ascentSource": "NONE",
+    "acceptedRawPointIds": [],
+    "rejectedRawPointIds": [],
+    "decisionReasons": {},
+    "barometerCalibrationReasons": {
+      "calibration-1": "barometer_calibration_accepted",
+      "calibration-missing-source": "barometer_calibration_missing_source"
+    }
+  }
+}

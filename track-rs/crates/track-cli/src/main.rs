@@ -166,9 +166,23 @@ fn verify_fixture(path: &Path) -> Result<(), String> {
         "movingTimeSeconds",
         result.summary.moving_time_seconds,
     )?;
+    assert_optional_expected_f64(expected, "ascentMeters", result.summary.ascent_meters)?;
+    assert_optional_expected_string(expected, "ascentSource", &result.summary.ascent_source)?;
+    assert_optional_expected_option_f64(
+        expected,
+        "barometerAscentMeters",
+        result.summary.barometer_ascent_meters,
+    )?;
+    assert_optional_expected_option_f64(
+        expected,
+        "gnssAscentMeters",
+        result.summary.gnss_ascent_meters,
+    )?;
     assert_optional_raw_point_ids(expected, "acceptedRawPointIds", &debug_result, "accept")?;
     assert_optional_raw_point_ids(expected, "rejectedRawPointIds", &debug_result, "reject")?;
     assert_optional_decision_reasons(expected, &debug_result)?;
+    assert_optional_barometer_decision_reasons(expected, &debug_result)?;
+    assert_optional_barometer_calibration_reasons(expected, &debug_result)?;
 
     Ok(())
 }
@@ -226,7 +240,14 @@ fn assert_expected_usize(
     }
 }
 
-fn assert_expected_f64(expected: &serde_json::Value, key: &str, actual: f64) -> Result<(), String> {
+fn assert_expected_f64(
+    expected: &serde_json::Value,
+    key: &str,
+    actual: impl Into<Option<f64>>,
+) -> Result<(), String> {
+    let actual = actual
+        .into()
+        .ok_or_else(|| format!("expected {key} value, got null"))?;
     let expected_value = expected
         .get(key)
         .and_then(serde_json::Value::as_f64)
@@ -236,6 +257,46 @@ fn assert_expected_f64(expected: &serde_json::Value, key: &str, actual: f64) -> 
         .and_then(serde_json::Value::as_f64)
         .unwrap_or(0.000001);
     if (actual - expected_value).abs() <= tolerance {
+        Ok(())
+    } else {
+        Err(format!("expected {key}={expected_value}, got {actual}"))
+    }
+}
+
+fn assert_optional_expected_f64(
+    expected: &serde_json::Value,
+    key: &str,
+    actual: f64,
+) -> Result<(), String> {
+    if expected.get(key).is_none() {
+        return Ok(());
+    }
+    assert_expected_f64(expected, key, Some(actual))
+}
+
+fn assert_optional_expected_option_f64(
+    expected: &serde_json::Value,
+    key: &str,
+    actual: Option<f64>,
+) -> Result<(), String> {
+    if expected.get(key).is_none() {
+        return Ok(());
+    }
+    assert_expected_f64(expected, key, actual)
+}
+
+fn assert_optional_expected_string(
+    expected: &serde_json::Value,
+    key: &str,
+    actual: &str,
+) -> Result<(), String> {
+    let Some(expected_value) = expected.get(key) else {
+        return Ok(());
+    };
+    let expected_value = expected_value
+        .as_str()
+        .ok_or_else(|| format!("expected.{key} must be a string"))?;
+    if expected_value == actual {
         Ok(())
     } else {
         Err(format!("expected {key}={expected_value}, got {actual}"))
@@ -294,6 +355,70 @@ fn assert_optional_decision_reasons(
         if expected_reason != actual_reason {
             return Err(format!(
                 "expected decisionReasons.{raw_point_id}={expected_reason}, got {actual_reason}"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn assert_optional_barometer_decision_reasons(
+    expected: &serde_json::Value,
+    debug_result: &CleanedTrackDebugResult,
+) -> Result<(), String> {
+    let Some(expected_reasons) = expected.get("barometerDecisionReasons") else {
+        return Ok(());
+    };
+    let expected_reasons = expected_reasons
+        .as_object()
+        .ok_or_else(|| "expected.barometerDecisionReasons must be an object".to_string())?;
+
+    for (window_id, expected_reason) in expected_reasons {
+        let expected_reason = expected_reason
+            .as_str()
+            .ok_or_else(|| format!("barometerDecisionReasons.{window_id} must be a string"))?;
+        let actual_reason = debug_result
+            .barometer_window_decisions
+            .iter()
+            .find(|decision| decision.window_id == *window_id)
+            .map(|decision| decision.reason.as_str())
+            .ok_or_else(|| format!("missing barometer decision for window {window_id}"))?;
+        if expected_reason != actual_reason {
+            return Err(format!(
+                "expected barometerDecisionReasons.{window_id}={expected_reason}, got {actual_reason}"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn assert_optional_barometer_calibration_reasons(
+    expected: &serde_json::Value,
+    debug_result: &CleanedTrackDebugResult,
+) -> Result<(), String> {
+    let Some(expected_reasons) = expected.get("barometerCalibrationReasons") else {
+        return Ok(());
+    };
+    let expected_reasons = expected_reasons
+        .as_object()
+        .ok_or_else(|| "expected.barometerCalibrationReasons must be an object".to_string())?;
+
+    for (calibration_id, expected_reason) in expected_reasons {
+        let expected_reason = expected_reason.as_str().ok_or_else(|| {
+            format!("barometerCalibrationReasons.{calibration_id} must be a string")
+        })?;
+        let actual_reason = debug_result
+            .barometer_calibration_decisions
+            .iter()
+            .find(|decision| decision.calibration_id == *calibration_id)
+            .map(|decision| decision.reason.as_str())
+            .ok_or_else(|| {
+                format!("missing barometer calibration decision for {calibration_id}")
+            })?;
+        if expected_reason != actual_reason {
+            return Err(format!(
+                "expected barometerCalibrationReasons.{calibration_id}={expected_reason}, got {actual_reason}"
             ));
         }
     }

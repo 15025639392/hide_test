@@ -57,6 +57,31 @@
           "type": "number",
           "minimum": 0
         },
+        "ascentMeters": {
+          "type": "number"
+        },
+        "ascentMetersTolerance": {
+          "type": "number",
+          "minimum": 0
+        },
+        "ascentSource": {
+          "type": "string",
+          "enum": ["BAROMETER", "GNSS", "NONE"]
+        },
+        "barometerAscentMeters": {
+          "type": "number"
+        },
+        "barometerAscentMetersTolerance": {
+          "type": "number",
+          "minimum": 0
+        },
+        "gnssAscentMeters": {
+          "type": "number"
+        },
+        "gnssAscentMetersTolerance": {
+          "type": "number",
+          "minimum": 0
+        },
         "acceptedRawPointIds": {
           "type": "array",
           "items": {
@@ -70,6 +95,18 @@
           }
         },
         "decisionReasons": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "barometerDecisionReasons": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "barometerCalibrationReasons": {
           "type": "object",
           "additionalProperties": {
             "type": "string"

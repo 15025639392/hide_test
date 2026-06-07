@@ -287,6 +287,9 @@ pub struct TrackSummary {
     pub moving_time_seconds: f64,
     pub pace_seconds_per_km: Option<f64>,
     pub ascent_meters: f64,
+    pub ascent_source: String,
+    pub barometer_ascent_meters: Option<f64>,
+    pub gnss_ascent_meters: Option<f64>,
 }
 
 impl TrackSummary {
@@ -301,6 +304,9 @@ impl TrackSummary {
             moving_time_seconds,
             pace_seconds_per_km: pace_seconds_per_km(total_distance_meters, moving_time_seconds),
             ascent_meters,
+            ascent_source: "NONE".to_string(),
+            barometer_ascent_meters: None,
+            gnss_ascent_meters: None,
         }
     }
 }
@@ -382,10 +388,84 @@ impl RawPointDecision {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct BarometerWindowDecision {
+    pub window_id: String,
+    pub result: String,
+    pub reason: String,
+    pub ascent_sample_index: Option<i64>,
+}
+
+impl BarometerWindowDecision {
+    #[must_use]
+    pub fn accept(
+        window_id: impl Into<String>,
+        reason: impl Into<String>,
+        ascent_sample_index: i64,
+    ) -> Self {
+        Self {
+            window_id: window_id.into(),
+            result: "accept".to_string(),
+            reason: reason.into(),
+            ascent_sample_index: Some(ascent_sample_index),
+        }
+    }
+
+    #[must_use]
+    pub fn reject(window_id: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            window_id: window_id.into(),
+            result: "reject".to_string(),
+            reason: reason.into(),
+            ascent_sample_index: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BarometerCalibrationDecision {
+    pub calibration_id: String,
+    pub result: String,
+    pub reason: String,
+    pub displayed_barometer_altitude_meters: Option<f64>,
+}
+
+impl BarometerCalibrationDecision {
+    #[must_use]
+    pub fn accept(
+        calibration_id: impl Into<String>,
+        reason: impl Into<String>,
+        displayed_barometer_altitude_meters: f64,
+    ) -> Self {
+        Self {
+            calibration_id: calibration_id.into(),
+            result: "accept".to_string(),
+            reason: reason.into(),
+            displayed_barometer_altitude_meters: Some(displayed_barometer_altitude_meters),
+        }
+    }
+
+    #[must_use]
+    pub fn reject(calibration_id: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            calibration_id: calibration_id.into(),
+            result: "reject".to_string(),
+            reason: reason.into(),
+            displayed_barometer_altitude_meters: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct CleanedTrackDebugResult {
     pub cleaned_track: CleanedTrackResult,
     #[serde(default)]
     pub raw_point_decisions: Vec<RawPointDecision>,
+    #[serde(default)]
+    pub barometer_window_decisions: Vec<BarometerWindowDecision>,
+    #[serde(default)]
+    pub barometer_calibration_decisions: Vec<BarometerCalibrationDecision>,
 }
 
 impl CleanedTrackDebugResult {
@@ -394,9 +474,21 @@ impl CleanedTrackDebugResult {
         cleaned_track: CleanedTrackResult,
         raw_point_decisions: Vec<RawPointDecision>,
     ) -> Self {
+        Self::from_parts(cleaned_track, raw_point_decisions, Vec::new(), Vec::new())
+    }
+
+    #[must_use]
+    pub fn from_parts(
+        cleaned_track: CleanedTrackResult,
+        raw_point_decisions: Vec<RawPointDecision>,
+        barometer_window_decisions: Vec<BarometerWindowDecision>,
+        barometer_calibration_decisions: Vec<BarometerCalibrationDecision>,
+    ) -> Self {
         Self {
             cleaned_track,
             raw_point_decisions,
+            barometer_window_decisions,
+            barometer_calibration_decisions,
         }
     }
 }

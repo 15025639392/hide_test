@@ -16,6 +16,11 @@ Rust Core 是 Web 端已验证清洗规则的三端执行层，不是策略研�
 - haversine 距离累计
 - 轨迹方向角 `trackDirectionDegrees`，正北为 `0` 度
 - elapsed realtime 运动时间累计
+- `barometerWindows[]` 气压计累计爬升 POC
+- 可信清洗轨迹点的 GNSS 累计爬升 fallback POC
+- `summary.ascentSource`、`barometerAscentMeters`、`gnssAscentMeters` selected ascent 诊断
+- `barometerCalibrationDecisions[]` 气压计校准 debug 解释
+- BAROMETER 压力突跳拒绝和连续突跳 reset POC
 - JSON FFI 入口
 - CLI `process` 命令
 - CLI `process-debug` 命令
@@ -27,7 +32,6 @@ Rust Core 是 Web 端已验证清洗规则的三端执行层，不是策略研�
 - TrackTrustEngine 完整语义
 - TrackCloudWindow 完整语义
 - weak / reject / anchor / accept 决策解释
-- 气压计爬升
 - 情景清洗 / settlement
 - replay fixture 对齐
 
@@ -67,11 +71,17 @@ RUSTUP_TOOLCHAIN=stable cargo run -p track-cli -- verify-fixtures fixtures
 - `web_algorithm`：从 Web 已确定轨迹生成算法翻译而来的样例。
 - `rust_infrastructure`：Rust Core 自己的基础设施样例，不代表新清洗策略。
 
-当前 fixtures 会校验 metadata、成品摘要，也可以校验 raw point 决策：
+当前 fixtures 会校验 metadata、成品摘要，也可以校验 raw point 和气压计窗口决策：
 
 - `acceptedRawPointIds`
 - `rejectedRawPointIds`
 - `decisionReasons`
+- `ascentMeters`
+- `ascentSource`
+- `barometerAscentMeters`
+- `gnssAscentMeters`
+- `barometerDecisionReasons`
+- `barometerCalibrationReasons`
 
 当前覆盖：
 
@@ -82,6 +92,12 @@ RUSTUP_TOOLCHAIN=stable cargo run -p track-cli -- verify-fixtures fixtures
 - `bad-accuracy`
 - `duplicate-elapsed-time`
 - `empty-after-filter`
+- `barometer-ascent-thresholded`
+- `barometer-invalid-window-debug`
+- `gnss-ascent-fallback`
+- `selected-ascent-prefers-barometer`
+- `barometer-calibration-debug`
+- `barometer-pressure-jump-reset`
 
 对应 schema：
 

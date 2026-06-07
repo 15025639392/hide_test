@@ -1,0 +1,68 @@
+{
+  "ruleId": "barometer_debug_v0",
+  "ruleVersion": "0.1.0",
+  "source": "rust_infrastructure",
+  "request": {
+    "config": {
+      "strategyVersion": "rust-poc"
+    },
+    "input": {
+      "sessionContext": {
+        "sessionId": "barometer-invalid-window-debug",
+        "strategyVersion": "rust-poc",
+        "createdElapsedRealtimeNanos": 0,
+        "createdWallTimeMillis": 0
+      },
+      "locationSamples": [],
+      "barometerWindows": [
+        {
+          "windowId": "barometer-empty",
+          "startElapsedRealtimeNanos": 0,
+          "endElapsedRealtimeNanos": 1000000000,
+          "sampleCount": 0,
+          "minPressureHpa": 1000.0,
+          "maxPressureHpa": 1001.0,
+          "avgPressureHpa": 1000.5,
+          "deltaPressureHpa": 1.0,
+          "minRawBarometerAltitudeMeters": 99.5,
+          "maxRawBarometerAltitudeMeters": 100.5,
+          "avgRawBarometerAltitudeMeters": 100.0,
+          "deltaRawBarometerAltitudeMeters": 1.0,
+          "lastSensorAccuracy": 3
+        },
+        {
+          "windowId": "barometer-invalid-pressure",
+          "startElapsedRealtimeNanos": 1000000000,
+          "endElapsedRealtimeNanos": 2000000000,
+          "sampleCount": 4,
+          "minPressureHpa": 0.0,
+          "maxPressureHpa": 0.0,
+          "avgPressureHpa": 0.0,
+          "deltaPressureHpa": 0.0,
+          "minRawBarometerAltitudeMeters": 99.5,
+          "maxRawBarometerAltitudeMeters": 100.5,
+          "avgRawBarometerAltitudeMeters": 100.0,
+          "deltaRawBarometerAltitudeMeters": 1.0,
+          "lastSensorAccuracy": 3
+        }
+      ]
+    }
+  },
+  "expected": {
+    "trackPointCount": 0,
+    "gpxTrackPointCount": 0,
+    "segmentCount": 0,
+    "totalDistanceMeters": 0.0,
+    "movingTimeSeconds": 0.0,
+    "ascentMeters": 0.0,
+    "ascentMetersTolerance": 0.000001,
+    "ascentSource": "NONE",
+    "acceptedRawPointIds": [],
+    "rejectedRawPointIds": [],
+    "decisionReasons": {},
+    "barometerDecisionReasons": {
+      "barometer-empty": "barometer_empty_window",
+      "barometer-invalid-pressure": "barometer_invalid_pressure"
+    }
+  }
+}
