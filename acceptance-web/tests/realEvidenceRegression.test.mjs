@@ -214,10 +214,15 @@ test('real evidence session 5cc composite round trip candidate stays local', (t)
   }
 
   const product = buildProductFromEvidence(SESSION_5CC_PATH);
+  const output = buildTargetOutput(buildModelFromEvidence(SESSION_5CC_PATH), product);
   const sameRoadScenario = scenarioByName(product, 'same_road_round_trip', 417, 900);
   const lineScenario = scenarioByName(product, 'round_trip_line', 417, 900);
   const compositeScenario = scenarioByName(product, 'composite_gap_local_settlement',
     417, 900);
+  const compositeContext = output.streamingDiagnosticContexts.contexts.find((context) =>
+    context.scenario === 'composite_gap_local_settlement'
+      && context.rawRange.startRawPointId === 417
+      && context.rawRange.endRawPointId === 900);
   const rejected = product.roundTripLineRejectedCandidates?.find((candidate) =>
     candidate.rawRange.startRawPointId === 417
       && candidate.rawRange.endRawPointId === 900);
@@ -249,6 +254,16 @@ test('real evidence session 5cc composite round trip candidate stays local', (t)
   assert.equal(rejected.sameRoadApproachPairDistanceMeters, 20.628);
   assert.ok(rejected.durationSeconds > 3000);
   assert.ok(rejected.maxSampleGapSeconds > 1000);
+  assert.ok(compositeContext);
+  assert.equal(compositeContext.metricOwner, false);
+  assert.deepEqual(compositeContext.affectedMetricGates, []);
+  assert.deepEqual(compositeContext.anchorRawPointIds, [643, 653]);
+  assert.equal(compositeContext.evidence.rejectionReason,
+    'missing_round_trip_intent_long_composite_span');
+  assert.equal(compositeContext.evidence.sameRoadCollapseReason,
+    'missing_round_trip_intent_long_span');
+  assert.equal(compositeContext.evidence.sameRoadBboxMeters, 54.966);
+  assert.equal(compositeContext.evidence.roundTripIntentSupported, false);
   assert.ok(coverage);
   assert.equal(coverage.primaryTrackPointCount, 0);
   assert.equal(coverage.contextTrackPointCount, points.length);
@@ -272,9 +287,14 @@ test('real evidence session 5cc mixed loop cluster keeps bounded distance', (t) 
   }
 
   const product = buildProductFromEvidence(SESSION_5CC_PATH);
+  const output = buildTargetOutput(buildModelFromEvidence(SESSION_5CC_PATH), product);
   const points = trackPointsTouchingRawRange(product, 3192, 3946);
   const settlement = scenarioByName(product, 'enclosed_loop_cluster_settlement',
     3192, 3946);
+  const loopContext = output.streamingDiagnosticContexts.contexts.find((context) =>
+    context.scenario === 'closed_loop_round_trip'
+      && context.rawRange.startRawPointId === 2883
+      && context.rawRange.endRawPointId === 3037);
 
   assert.equal(points.length, 19);
   assert.ok(distanceForPoints(points) <= 55);
@@ -285,6 +305,12 @@ test('real evidence session 5cc mixed loop cluster keeps bounded distance', (t) 
   });
   assert.equal(settlement.action, 'compress_enclosed_loop_low_speed_drift');
   assert.equal(settlement.evidence.settledDistanceMeters, 0);
+  assert.ok(loopContext);
+  assert.equal(loopContext.metricOwner, false);
+  assert.deepEqual(loopContext.affectedMetricGates, []);
+  assert.equal(loopContext.action, 'classify_loop_without_rewrite');
+  assert.equal(loopContext.localRebuild, 'round_trip_diagnostic');
+  assert.equal(loopContext.evidence.trackPointCount, 105);
 });
 
 test('real evidence session 0dd stationary range collapses to one drift anchor', (t) => {

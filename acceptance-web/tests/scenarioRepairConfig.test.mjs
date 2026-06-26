@@ -40,7 +40,7 @@ test('scenario repair config disables unchecked modules without changing thresho
   assert.equal(config.movingSpikeCleanupEnabled, false);
   assert.equal(config.positionSnapRecoveryEnabled, false);
   assert.equal(config.weakCloudAccuracyMeters, 30);
-  assert.equal(config.transportSpeedMetersPerSecond, 3.5);
+  assert.equal(config.transportSpeedMetersPerSecond, 4.5);
 });
 
 test('scenario repair config can enable same-road collapse without generic round-trip simplify', () => {

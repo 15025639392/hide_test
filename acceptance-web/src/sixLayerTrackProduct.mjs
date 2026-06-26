@@ -1,9 +1,27 @@
+import { coordinateScenarioProposals } from './scenarioWindowCoordinator.mjs';
+import { streamingSettlementSnapshot } from './streamingSettlementState.mjs';
 import { createRecentMotionSummaryIndex, recentMotionStats } from './timeWindowIndex.mjs';
 
 const EARTH_RADIUS_METERS = 6_371_000;
 const START_TOLERANCE_NANOS = 1_000_000_000;
 const MOTION_LOOKBACK_NANOS = 5_000_000_000;
 const NANOS_PER_SECOND = 1_000_000_000;
+
+function safeMin(values) {
+  let result = Infinity;
+  for (const v of values) {
+    if (v < result) result = v;
+  }
+  return result;
+}
+
+function safeMax(values) {
+  let result = -Infinity;
+  for (const v of values) {
+    if (v > result) result = v;
+  }
+  return result;
+}
 
 export const SIX_LAYER_TRACK_ALGORITHM_VERSION = 'six-layer-evidence-v17.9';
 
@@ -25,6 +43,22 @@ export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   stationarySessionMinSpeedSampleRatio: 0.8,
   stationarySessionMinZeroSpeedRatio: 0.95,
   stationarySessionMaxAverageReportedSpeedMetersPerSecond: 0.3,
+  zeroSpeedThresholdMetersPerSecond: 0.1,
+  stillMotionMaxAccelRms: 0.08,
+  stillMotionMaxGyroRms: 0.03,
+  stationaryDualClusterDriftEnabled: true,
+  stationaryDualClusterMinRawPoints: 30,
+  stationaryDualClusterMinDurationSeconds: 60,
+  stationaryDualClusterMinStillMotionRatio: 0.7,
+  stationaryDualClusterMinClusterShare: 0.2,
+  stationaryDualClusterMinCenterDistanceMeters: 30,
+  stationaryDualClusterMaxCenterDistanceMeters: 150,
+  stationaryDualClusterMaxBboxMeters: 160,
+  stationaryDualClusterMinTransitions: 6,
+  stationaryDualClusterMinFastTransitionRatio: 0.25,
+  stationaryDualClusterFastTransitionSpeedMetersPerSecond: 12,
+  stationaryDualClusterMaxMovingMotionRatio: 0.35,
+  stationaryDualClusterMaxAverageReportedSpeedMetersPerSecond: 0.8,
   dwellDriftCollapseEnabled: true,
   dwellDriftCoreAccuracyMeters: 30,
   dwellDriftMinCoreSamples: 10,
@@ -34,7 +68,8 @@ export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   dwellDriftMaxExtensionGapSeconds: 10,
   dwellDriftMaxExtensionPathMeters: 40,
   dwellDriftMaxReportedSpeedMetersPerSecond: 1.6,
-  dwellDriftMaxAverageSpeedMetersPerSecond: 1.5,
+  dwellDriftMaxAverageSpeedMetersPerSecond: 1.0,
+  dwellDriftMinCoreRatio: 0.25,
   dwellDriftMinZeroSpeedRatio: 0.3,
   dwellDriftMaxBboxMeters: 100,
   dwellDriftMaxNetDistanceMeters: 80,
@@ -92,6 +127,7 @@ export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   restPhotoMicroMoveMaxEndpointDistanceMeters: 12,
   restPhotoMicroMoveMinPathNetRatio: 4,
   restPhotoMicroMoveMaxDurationSeconds: 300,
+  restPhotoMicroMoveMinLowSpeedRatio: 0.8,
   restPhotoMicroMoveSimplifyEnabled: true,
   restPhotoMicroMoveSimplifyMinDurationSeconds: 60,
   restPhotoMicroMoveSimplifyToleranceMeters: 6,
@@ -121,7 +157,7 @@ export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   movingSpikeMinNeighborDistanceMeters: 5,
   movingSpikeMaxBridgeDistanceMeters: 15,
   positionSnapRecoveryEnabled: true,
-  positionSnapRecoveryMinWeakPoints: 1,
+  positionSnapRecoveryMinWeakPoints: 2,
   positionSnapRecoveryMinBridgeDistanceMeters: 20,
   positionSnapRecoveryMaxReportedSpeedMetersPerSecond: 2,
   denseAreaIntentEnabled: true,
@@ -158,7 +194,7 @@ export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   lowAccuracyRescueMinDistanceMeters: 2.5,
   continuityRescueMaxSpeedMetersPerSecond: 6,
   impossibleSpeedMetersPerSecond: 12,
-  transportSpeedMetersPerSecond: 3.5,
+  transportSpeedMetersPerSecond: 4.5,
   transportMinDistanceMeters: 20,
   locationAltitudeAscentMaxVerticalAccuracyMeters: 20,
   locationAltitudeAscentMinGainMeters: 1,
@@ -167,7 +203,6 @@ export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   barometerAscentMaxSampleGapNanos: 30_000_000_000,
   barometerAscentMaxVerticalSpeedMetersPerSecond: 2,
   barometerPressureJumpMeters: 20,
-  collapseStationarySession: false,
   barometerCleaningEnabled: false,
   cloudTemporalDecaySeconds: 20
 });
@@ -234,7 +269,7 @@ export function buildSixLayerTrackProduct(modelOrEvents, options = {}) {
   const sourceFilePath = Array.isArray(modelOrEvents)
     ? options.sourceFilePath || ''
     : modelOrEvents?.filePath || '';
-  const evidence = buildEvidence(events);
+  const evidence = buildEvidence(events, config);
   const product = emptyProduct(evidence.strategyVersion, sourceFilePath,
     evidence.recordStartElapsedRealtimeNanos, evidence.recordEndElapsedRealtimeNanos);
   product.config = config;
@@ -342,6 +377,10 @@ export function buildSixLayerTrackProduct(modelOrEvents, options = {}) {
     pipeline.denseAreaIntents);
   product.denseIntentConflicts = buildDenseIntentConflicts(product);
   applyForwardSpineArbitrationReview(product, pipeline.denseAreaIntents, config);
+  product.scenarioSettlementPlan = buildScenarioSettlementPlan(product);
+  product.streamingSettlementState = streamingSettlementSnapshot(
+    product.scenarioSettlementPlan.commitPlan
+  );
   attachExplanationModel(product);
   product.scenarioCoverage = buildScenarioCoverage(product);
   product.findings = buildFindings(product, evidence);
@@ -366,6 +405,8 @@ function runSixLayerSettlementPipeline(product, evidence, config) {
 
   // Each stage mutates product.track; later recognizers intentionally read that updated track.
   mark('moving_spike_cleanup', cleanMovingSpikePoints(product, config));
+  mark('stationary_dual_cluster_gnss_drift',
+    collapseStationaryDualClusterDrift(product, evidence, config));
   const denseAreaIntents = analyzeDenseAreaIntents(product, config);
   mark('dense_main_route_settlement',
     settleDenseMainRouteSpans(product, config, denseAreaIntents));
@@ -391,7 +432,7 @@ function runSixLayerSettlementPipeline(product, evidence, config) {
   };
 }
 
-function buildEvidence(events) {
+function buildEvidence(events, config) {
   const rawPoints = [];
   const samplingEpochs = [];
   const motionWindows = [];
@@ -401,13 +442,13 @@ function buildEvidence(events) {
   for (const event of events || []) {
     if (event?.event === 'session_metadata') {
       metadata = { ...metadata, ...event };
-    } else if (event?.event === 'raw_location') {
+    } else if (isLocationEvidenceEvent(event)) {
       const rawPoint = normalizeRawPoint(event);
       if (rawPoint) rawPoints.push(rawPoint);
     } else if (event?.event === 'sampling_policy') {
       samplingEpochs.push(normalizeSamplingEpoch(event));
-    } else if (event?.event === 'device_motion_window') {
-      motionWindows.push(normalizeMotionWindow(event));
+    } else if (isMotionWindowEvent(event)) {
+      motionWindows.push(normalizeMotionWindow(event, config));
     } else if (event?.event === 'barometer_window') {
       barometerWindows.push(normalizeBarometerWindow(event));
     }
@@ -441,26 +482,43 @@ function normalizeRawPoint(event) {
   if (lat === null || lng === null) return null;
   return {
     ...event,
-    rawPointId: numberField(event, 'rawPointId') ?? null,
+    rawPointId: numberField(event, 'rawPointId') ?? numberField(event, 'sampleId') ?? null,
     provider: event.provider ?? event.source ?? event.sourceKind ?? event.trustClass ?? '',
     lat,
     lng,
-    accuracy: numberField(event, 'accuracy'),
-    altitude: numberField(event, 'altitude'),
-    verticalAccuracy: numberField(event, 'verticalAccuracy'),
-    speed: numberField(event, 'speed'),
-    bearing: numberField(event, 'bearing'),
-    elapsedRealtimeNanos: numberField(event, 'elapsedRealtimeNanos'),
-    timeMillis: numberField(event, 'timeMillis'),
+    accuracy: numberField(event, 'accuracy')
+      ?? numberField(event, 'horizontalAccuracyMeters'),
+    altitude: numberField(event, 'altitude')
+      ?? numberField(event, 'altitudeMeters'),
+    verticalAccuracy: numberField(event, 'verticalAccuracy')
+      ?? numberField(event, 'verticalAccuracyMeters'),
+    speed: numberField(event, 'speed')
+      ?? numberField(event, 'speedMetersPerSecond'),
+    bearing: numberField(event, 'bearing')
+      ?? numberField(event, 'bearingDegrees'),
+    elapsedRealtimeNanos: numberField(event, 'elapsedRealtimeNanos')
+      ?? numberField(event, 'fixElapsedRealtimeNanos'),
+    timeMillis: numberField(event, 'timeMillis')
+      ?? numberField(event, 'wallTimeMillis'),
     samplingEpochId: numberField(event, 'samplingEpochId'),
-    callbackReceivedElapsedRealtimeNanos: numberField(event, 'callbackReceivedElapsedRealtimeNanos'),
+    callbackReceivedElapsedRealtimeNanos: numberField(event, 'callbackReceivedElapsedRealtimeNanos')
+      ?? numberField(event, 'receivedElapsedRealtimeNanos'),
     callbackDelayNanos: numberField(event, 'callbackDelayNanos'),
     isMock: event.isMock === true || event.mock === true || event.isFromMockProvider === true
   };
 }
 
+function isLocationEvidenceEvent(event) {
+  return event?.event === 'raw_location' || event?.event === 'location_sample';
+}
+
+function isMotionWindowEvent(event) {
+  return event?.event === 'device_motion_window' || event?.event === 'motion_window';
+}
+
 function normalizeSamplingEpoch(event) {
   const started = numberField(event, 'samplingEpochStartedElapsedRealtimeNanos')
+    ?? numberField(event, 'startedElapsedRealtimeNanos')
     ?? numberField(event, 'locationRequestRegisteredElapsedRealtimeNanos')
     ?? numberField(event, 'eventElapsedRealtimeNanos')
     ?? 0;
@@ -475,7 +533,7 @@ function normalizeSamplingEpoch(event) {
   };
 }
 
-function normalizeMotionWindow(event) {
+function normalizeMotionWindow(event, config) {
   const start = numberField(event, 'startElapsedRealtimeNanos')
     ?? numberField(event, 'firstElapsedRealtimeNanos');
   const end = numberField(event, 'endElapsedRealtimeNanos')
@@ -484,8 +542,8 @@ function normalizeMotionWindow(event) {
     ...event,
     firstElapsedRealtimeNanos: start,
     lastElapsedRealtimeNanos: end,
-    deviceStill: isStillMotionWindow(event),
-    isDeviceStill: isStillMotionWindow(event),
+    deviceStill: isStillMotionWindow(event, config),
+    isDeviceStill: isStillMotionWindow(event, config),
     dynamicAccelRmsMps2: numberField(event, 'linearAccelerationRmsMps2')
       ?? numberField(event, 'accelerometerDynamicRmsMps2')
       ?? numberField(event, 'dynamicAccelRmsMps2'),
@@ -498,7 +556,7 @@ function normalizeMotionWindow(event) {
 function normalizeBarometerWindow(event) {
   return {
     ...event,
-    windowId: numberField(event, 'barometerWindowId') ?? null,
+    windowId: numberField(event, 'barometerWindowId') ?? numberField(event, 'windowId') ?? null,
     startElapsedRealtimeNanos: numberField(event, 'startElapsedRealtimeNanos')
       ?? numberField(event, 'firstElapsedRealtimeNanos')
       ?? numberField(event, 'endElapsedRealtimeNanos')
@@ -508,9 +566,13 @@ function normalizeBarometerWindow(event) {
       ?? numberField(event, 'startElapsedRealtimeNanos')
       ?? numberField(event, 'firstElapsedRealtimeNanos'),
     avgPressureHpa: numberField(event, 'avgPressureHpa'),
-    avgRawBarometerAltitudeMeters: numberField(event, 'avgRawBarometerAltitudeMeters'),
+    avgRawBarometerAltitudeMeters: numberField(event, 'avgRawBarometerAltitudeMeters')
+      ?? numberField(event, 'avgBarometerAltitudeMeters'),
     deltaRawBarometerAltitudeMeters: numberField(event, 'deltaRawAltitudeMeters')
       ?? numberField(event, 'deltaRawBarometerAltitudeMeters')
+      ?? numberField(event, 'deltaBarometerAltitudeMeters'),
+    windowAscentMeters: numberField(event, 'windowAscentMeters'),
+    windowDescentMeters: numberField(event, 'windowDescentMeters')
   };
 }
 
@@ -543,14 +605,17 @@ function emptyProduct(strategyVersion, sourceFilePath, recordStart, recordEnd) {
       rejectedPointCount: 0,
       intakeRejectedPointCount: 0,
       barometerTotalAscentMeters: -1,
+      barometerTotalDescentMeters: -1,
       barometerAscentSampleCount: 0,
       barometerAscentRejectedSampleCount: 0,
       barometerAscentConfidence: 'none',
       locationAltitudeTotalAscentMeters: -1,
+      locationAltitudeTotalDescentMeters: -1,
       locationAltitudeAscentSampleCount: 0,
       locationAltitudeAscentRejectedSampleCount: 0,
       locationAltitudeAscentConfidence: 'none',
       selectedTotalAscentMeters: null,
+      selectedTotalDescentMeters: null,
       selectedAscentSource: 'NONE'
     },
     gnssAltitudeResult: null,
@@ -558,6 +623,8 @@ function emptyProduct(strategyVersion, sourceFilePath, recordStart, recordEnd) {
     selectedAscentResult: null,
     explanationModel: null,
     scenarios: [],
+    scenarioSettlementPlan: null,
+    streamingSettlementState: null,
     scenarioCoverage: [],
     findings: []
   };
@@ -590,9 +657,6 @@ function intakeRawPoint(rawPoint, epoch, evidence, state, config) {
   }
   if (!Number.isFinite(rawPoint.accuracy) || rawPoint.accuracy < 0) {
     return rejected('invalid_accuracy');
-  }
-  if (rawPoint.accuracy > config.maxIntakeAccuracyMeters) {
-    return rejected('accuracy_too_large');
   }
   if (state.legalFixKeys.has(fixKey(rawPoint))) return rejected('duplicate_fix');
   if (Number.isFinite(state.lastLegalElapsedRealtimeNanos)
@@ -732,7 +796,7 @@ function decideGapRecovery(rawPoint, previous, motion, state, distance, config) 
       cloudType: 'RECOVERY_CLOUD'
     });
   }
-  if (distance <= thresholdMeters && motion.state !== 'walking') {
+  if (!gapRecoveryContinuityCompatible(rawPoint, previous, motion, distance, config)) {
     return diagnosticDecision(rawPoint, 'weak', 'gap_recovery_pending', motion, {
       ...cloudFields,
       boundaryState: 'gap_recovery_pending',
@@ -755,6 +819,20 @@ function decideGapRecovery(rawPoint, previous, motion, state, distance, config) 
     boundaryState: 'gap_recovered',
     cloudType: 'RECOVERY_CLOUD'
   });
+}
+
+function gapRecoveryContinuityCompatible(rawPoint, previous, motion, distance, config) {
+  if (!previous || !hasValidLngLat(previous) || !hasValidLngLat(rawPoint)) return false;
+  const dtSeconds = elapsedSeconds(previous.elapsedRealtimeNanos, rawPoint.elapsedRealtimeNanos);
+  if (dtSeconds <= 0) return false;
+  const impliedSpeed = distance / dtSeconds;
+  const reportedSpeed = Number.isFinite(rawPoint.speed) ? rawPoint.speed : null;
+  if (motion.state === 'still' && distance > config.stationaryDistanceMeters * 2) return false;
+  if (distance < config.stationaryDistanceMeters
+      && motion.state !== 'walking'
+      && impliedSpeed > config.continuityRescueMaxSpeedMetersPerSecond) return false;
+  if (reportedSpeed !== null && reportedSpeed > config.impossibleSpeedMetersPerSecond) return false;
+  return true;
 }
 
 function isRecoveryTransportPoint(rawPoint, previousRawPoint, config) {
@@ -929,7 +1007,7 @@ function isStationarySession(rawPoints, config) {
   if (speeds.length / rawPoints.length < config.stationarySessionMinSpeedSampleRatio) {
     return false;
   }
-  const zeroSpeedRatio = speeds.filter((speed) => speed <= 0.1).length / speeds.length;
+  const zeroSpeedRatio = speeds.filter((speed) => speed <= config.zeroSpeedThresholdMetersPerSecond).length / speeds.length;
   if (zeroSpeedRatio < config.stationarySessionMinZeroSpeedRatio) return false;
   const averageSpeed = speeds.reduce((sum, speed) => sum + speed, 0) / speeds.length;
   return averageSpeed <= config.stationarySessionMaxAverageReportedSpeedMetersPerSecond;
@@ -993,6 +1071,270 @@ function stationarySessionAnchor(rawPoints, representative) {
     countsMovingTime: false,
     countsAscentWindow: false,
     entersTrustedGpx: true
+  };
+}
+
+function collapseStationaryDualClusterDrift(product, evidence, config) {
+  if (!config.stationaryDualClusterDriftEnabled) return false;
+  const candidate = stationaryDualClusterDriftCandidate(product, evidence, config);
+  if (!candidate) return false;
+
+  const rawPointIds = new Set(candidate.rawPoints.map((point) => point.rawPointId));
+  const trackIndexes = [];
+  for (let index = 0; index < product.track.length; index++) {
+    if (trackPointOverlapsRawIds(product.track[index], rawPointIds)) {
+      trackIndexes.push(index);
+    }
+  }
+  if (trackIndexes.length === 0) return false;
+
+  const insertIndex = trackIndexes[0];
+  const template = product.track[insertIndex];
+  const collapsedPoint = stationaryDualClusterDriftAnchor(candidate, template);
+  const removeIndexes = new Set(trackIndexes);
+  product.track = product.track.filter((point, index) => !removeIndexes.has(index));
+  product.track.splice(insertIndex, 0, collapsedPoint);
+  removeExcludedRawPoints(product, rawPointIds);
+  addScenario(product, stationaryDualClusterDriftScenario(candidate));
+  renumberTrackPoints(product);
+  rebuildRawPointDecisions(product);
+  product.stationaryDualClusterDriftCollapse = {
+    collapsedRawPointCount: candidate.rawPoints.length,
+    startRawPointId: candidate.rawPoints[0].rawPointId,
+    endRawPointId: candidate.rawPoints.at(-1).rawPointId,
+    representativeRawPointId: candidate.representative.rawPointId,
+    transitionCount: candidate.transitions.length
+  };
+  return true;
+}
+
+function stationaryDualClusterDriftCandidate(product, evidence, config) {
+  if (!product.track.length) return null;
+  const firstTrackRawPointId = safeMin(product.track
+    .flatMap((point) => pointRawPointIdsForPoint(point))
+    .filter(Number.isFinite));
+  const rawPoints = evidence.rawPoints
+    .filter((point) => point.rawPointId >= firstTrackRawPointId)
+    .filter((point) => Number.isFinite(point.lat)
+      && Number.isFinite(point.lng)
+      && Number.isFinite(point.elapsedRealtimeNanos));
+  if (rawPoints.length < config.stationaryDualClusterMinRawPoints) return null;
+  const durationSeconds = elapsedSeconds(rawPoints[0].elapsedRealtimeNanos,
+    rawPoints.at(-1).elapsedRealtimeNanos);
+  if (durationSeconds < config.stationaryDualClusterMinDurationSeconds) return null;
+  const bboxMeters = bboxDiagonalMeters(rawPoints);
+  if (bboxMeters > config.stationaryDualClusterMaxBboxMeters) return null;
+  const motion = dualClusterMotionStats(rawPoints, evidence.motionWindows);
+  if (motion.windowCount > 0) {
+    if (motion.stillRatio < config.stationaryDualClusterMinStillMotionRatio) return null;
+    if (motion.movingRatio > config.stationaryDualClusterMaxMovingMotionRatio) return null;
+  }
+  const speedStats = reportedSpeedStats(rawPoints, config);
+  if (speedStats.count > 0
+      && speedStats.average > config.stationaryDualClusterMaxAverageReportedSpeedMetersPerSecond) {
+    return null;
+  }
+  const clusters = twoClusterSplit(rawPoints);
+  if (!clusters) return null;
+  const shareA = clusters.left.points.length / rawPoints.length;
+  const shareB = clusters.right.points.length / rawPoints.length;
+  if (Math.min(shareA, shareB) < config.stationaryDualClusterMinClusterShare) return null;
+  const centerDistanceMeters = distanceMeters(clusters.left.center.lat, clusters.left.center.lng,
+    clusters.right.center.lat, clusters.right.center.lng);
+  if (centerDistanceMeters < config.stationaryDualClusterMinCenterDistanceMeters
+      || centerDistanceMeters > config.stationaryDualClusterMaxCenterDistanceMeters) {
+    return null;
+  }
+  const transitions = clusterTransitions(rawPoints, clusters);
+  if (transitions.length < config.stationaryDualClusterMinTransitions) return null;
+  const fastTransitions = transitions.filter((transition) =>
+    transition.speedMetersPerSecond >= config.stationaryDualClusterFastTransitionSpeedMetersPerSecond);
+  if (fastTransitions.length / transitions.length
+      < config.stationaryDualClusterMinFastTransitionRatio) {
+    return null;
+  }
+  const representative = bestClusterRepresentative(clusters.left.points.length >= clusters.right.points.length
+    ? clusters.left.points : clusters.right.points);
+  return {
+    rawPoints,
+    representative,
+    durationSeconds,
+    bboxMeters,
+    motion,
+    speedStats,
+    clusters,
+    centerDistanceMeters,
+    transitions,
+    fastTransitionCount: fastTransitions.length
+  };
+}
+
+function dualClusterMotionStats(rawPoints, motionWindows) {
+  const start = rawPoints[0].elapsedRealtimeNanos;
+  const end = rawPoints.at(-1).elapsedRealtimeNanos;
+  const windows = (motionWindows || []).filter((window) =>
+    Number.isFinite(window.firstElapsedRealtimeNanos)
+      && Number.isFinite(window.lastElapsedRealtimeNanos)
+      && window.lastElapsedRealtimeNanos >= start
+      && window.firstElapsedRealtimeNanos <= end);
+  const stillCount = windows.filter((window) => window.deviceStill === true).length;
+  const movingCount = windows.filter((window) => window.deviceStill === false).length;
+  return {
+    windowCount: windows.length,
+    stillCount,
+    movingCount,
+    stillRatio: windows.length > 0 ? stillCount / windows.length : 0,
+    movingRatio: windows.length > 0 ? movingCount / windows.length : 0
+  };
+}
+
+function reportedSpeedStats(rawPoints, config) {
+  const speeds = rawPoints.map((point) => point.speed).filter(Number.isFinite);
+  return {
+    count: speeds.length,
+    average: speeds.length
+      ? speeds.reduce((sum, speed) => sum + speed, 0) / speeds.length
+      : 0,
+    zeroRatio: speeds.length
+      ? speeds.filter((speed) => speed <= config.zeroSpeedThresholdMetersPerSecond).length / speeds.length
+      : 0
+  };
+}
+
+function twoClusterSplit(rawPoints) {
+  if (rawPoints.length < 2) return null;
+  let seedA = rawPoints[0];
+  let seedB = rawPoints[0];
+  let maxDistance = 0;
+  for (let left = 0; left < rawPoints.length; left++) {
+    for (let right = left + 1; right < rawPoints.length; right++) {
+      const distance = distanceMeters(rawPoints[left].lat, rawPoints[left].lng,
+        rawPoints[right].lat, rawPoints[right].lng);
+      if (distance > maxDistance) {
+        maxDistance = distance;
+        seedA = rawPoints[left];
+        seedB = rawPoints[right];
+      }
+    }
+  }
+  const left = [];
+  const right = [];
+  for (const point of rawPoints) {
+    const leftDistance = distanceMeters(point.lat, point.lng, seedA.lat, seedA.lng);
+    const rightDistance = distanceMeters(point.lat, point.lng, seedB.lat, seedB.lng);
+    if (leftDistance <= rightDistance) left.push(point);
+    else right.push(point);
+  }
+  if (left.length === 0 || right.length === 0) return null;
+  return {
+    left: { points: left, center: weightedRawCenter(left) },
+    right: { points: right, center: weightedRawCenter(right) }
+  };
+}
+
+function clusterTransitions(rawPoints, clusters) {
+  const clusterByRawPointId = new Map();
+  for (const point of clusters.left.points) clusterByRawPointId.set(point.rawPointId, 'left');
+  for (const point of clusters.right.points) clusterByRawPointId.set(point.rawPointId, 'right');
+  const transitions = [];
+  for (let index = 1; index < rawPoints.length; index++) {
+    const previous = rawPoints[index - 1];
+    const current = rawPoints[index];
+    const previousCluster = clusterByRawPointId.get(previous.rawPointId);
+    const currentCluster = clusterByRawPointId.get(current.rawPointId);
+    if (!previousCluster || !currentCluster || previousCluster === currentCluster) continue;
+    const dtSeconds = elapsedSeconds(previous.elapsedRealtimeNanos,
+      current.elapsedRealtimeNanos);
+    const distance = distanceMeters(previous.lat, previous.lng, current.lat, current.lng);
+    transitions.push({
+      fromRawPointId: previous.rawPointId,
+      toRawPointId: current.rawPointId,
+      dtSeconds,
+      distanceMeters: distance,
+      speedMetersPerSecond: dtSeconds > 0 ? distance / dtSeconds : Number.POSITIVE_INFINITY
+    });
+  }
+  return transitions;
+}
+
+function bestClusterRepresentative(rawPoints) {
+  return [...rawPoints].sort((a, b) =>
+    (a.accuracy ?? Number.POSITIVE_INFINITY) - (b.accuracy ?? Number.POSITIVE_INFINITY)
+    || a.rawPointId - b.rawPointId)[0];
+}
+
+function stationaryDualClusterDriftAnchor(candidate, template) {
+  const representative = candidate.representative;
+  return {
+    trackPointId: 0,
+    sourceRawPointId: representative.rawPointId,
+    recomputedDecisionId: template.recomputedDecisionId,
+    segmentId: template.segmentId,
+    lat: representative.lat,
+    lng: representative.lng,
+    elapsedRealtimeNanos: representative.elapsedRealtimeNanos,
+    timeMillis: representative.timeMillis,
+    result: 'anchor',
+    reason: 'stationary_dual_cluster_drift_anchor',
+    distanceDeltaMeters: 0,
+    movingTimeDeltaSeconds: 0,
+    startsNewSegment: false,
+    cloudType: 'STATIONARY_DUAL_CLUSTER_DRIFT',
+    cloudId: candidate.rawPoints[0].rawPointId,
+    cloudSampleCount: candidate.rawPoints.length,
+    cloudWeightSum: candidate.rawPoints.length,
+    cloudWeightedRadiusMeters: candidate.bboxMeters / 2,
+    representativeRawPointId: representative.rawPointId,
+    contributingRawPointIds: candidate.rawPoints.map((point) => point.rawPointId),
+    coordinateSource: 'raw_representative',
+    virtualCoordinate: false,
+    routeLineVertex: false,
+    routeLineStrategy: 'stationary_dual_cluster_collapse',
+    activityState: 'stationary_dual_cluster_drift',
+    boundaryState: 'stationary_dual_cluster_collapsed',
+    gnssAltitudeResult: 'reset',
+    gnssAltitudeReason: 'stationary_suspended',
+    countsDistance: false,
+    countsMovingTime: false,
+    countsAscentWindow: false,
+    entersTrustedGpx: true
+  };
+}
+
+function stationaryDualClusterDriftScenario(candidate) {
+  const first = candidate.rawPoints[0];
+  const last = candidate.rawPoints.at(-1);
+  return {
+    scenario: 'stationary_dual_cluster_gnss_drift',
+    confidence: scenarioNumber(clamp01(0.55
+      + Math.min(1, candidate.motion.stillRatio) * 0.15
+      + Math.min(1, candidate.fastTransitionCount / Math.max(candidate.transitions.length, 1)) * 0.15
+      + (1 - Math.min(1, candidate.bboxMeters / 160)) * 0.1
+      + Math.min(1, candidate.transitions.length / 30) * 0.05)),
+    rawRange: {
+      startRawPointId: first.rawPointId,
+      endRawPointId: last.rawPointId
+    },
+    anchorRawPointIds: [candidate.representative.rawPointId],
+    action: 'collapse_dual_cluster_drift_to_stationary_anchor',
+    localRebuild: 'stationary_dual_cluster_anchor',
+    evidence: {
+      rawPointCount: candidate.rawPoints.length,
+      representativeRawPointId: candidate.representative.rawPointId,
+      durationSeconds: scenarioNumber(candidate.durationSeconds),
+      bboxDiagonalMeters: scenarioNumber(candidate.bboxMeters),
+      motionWindowCount: candidate.motion.windowCount,
+      stillMotionRatio: scenarioNumber(candidate.motion.stillRatio),
+      movingMotionRatio: scenarioNumber(candidate.motion.movingRatio),
+      clusterSizes: [
+        candidate.clusters.left.points.length,
+        candidate.clusters.right.points.length
+      ],
+      clusterCenterDistanceMeters: scenarioNumber(candidate.centerDistanceMeters),
+      transitionCount: candidate.transitions.length,
+      fastTransitionCount: candidate.fastTransitionCount,
+      averageReportedSpeedMetersPerSecond: scenarioNumber(candidate.speedStats.average)
+    }
   };
 }
 
@@ -1329,9 +1671,8 @@ function forwardSpineOverlap(left, right) {
   const rawOverlap = rawRangeIntersection(left.rawRange, right.rawRange);
   const rawGap = rawRangeGap(left.rawRange, right.rawRange);
   if (!rawOverlap && rawGap > 8) return null;
-  const directionDeltaDegrees = angleDeltaDegrees(left.directionDegrees, right.directionDegrees);
   const relationship = rawOverlap
-    ? forwardSpineRawOverlapRelationship(left.rawRange, right.rawRange, directionDeltaDegrees)
+    ? forwardSpineRawOverlapRelationship(left.rawRange, right.rawRange)
     : 'endpoint_touch';
   return {
     leftCandidateId: left.candidateId,
@@ -1341,17 +1682,13 @@ function forwardSpineOverlap(left, right) {
     rawOverlapCount: rawOverlap
       ? rawOverlap.endRawPointId - rawOverlap.startRawPointId + 1
       : 0,
-    rawGap,
-    directionDeltaDegrees: scenarioNumber(directionDeltaDegrees)
+    rawGap
   };
 }
 
-function forwardSpineRawOverlapRelationship(left, right, directionDeltaDegrees) {
+function forwardSpineRawOverlapRelationship(left, right) {
   if (rawRangeContains(left, right) || rawRangeContains(right, left)) {
     return 'nested';
-  }
-  if (Number.isFinite(directionDeltaDegrees) && directionDeltaDegrees > 45) {
-    return 'crossing';
   }
   return 'overlap';
 }
@@ -1392,9 +1729,9 @@ function buildForwardSpineDecisions(candidates, overlaps, conflicts, config = {}
   const decisions = conflicts.map((conflict) => ({
     rawRange: conflict.rawRange,
     candidateIds: conflict.candidateIds || [],
-    decision: conflict.reviewOnly ? 'review_only' : forwardSpineDecisionForConflict(conflict),
+    decision: 'review_only',
     reason: conflict.conflict,
-    reviewOnly: conflict.reviewOnly !== false
+    reviewOnly: true
   }));
   const arbitratedCandidateIds = new Set();
   if (config.forwardSpineArbitrationEnabled !== false) {
@@ -1423,20 +1760,12 @@ function buildForwardSpineDecisions(candidates, overlaps, conflicts, config = {}
     || a.candidateIds.join(',').localeCompare(b.candidateIds.join(',')));
 }
 
-function forwardSpineDecisionForConflict(conflict) {
-  return 'review_only';
-}
-
 function forwardSpineArbitrationDecision(overlap, candidateById, config) {
   if (!['overlap', 'nested'].includes(overlap.relationship)) return null;
   const candidates = [candidateById.get(overlap.leftCandidateId),
     candidateById.get(overlap.rightCandidateId)].filter(Boolean);
   if (candidates.length !== 2) return null;
-  const samePlannedSettlement = candidates[0].plannedSettlement === candidates[1].plannedSettlement;
-  const directionCompatible = Number.isFinite(overlap.directionDeltaDegrees)
-    ? overlap.directionDeltaDegrees <= config.forwardSpineSameDirectionMaxDeltaDegrees
-    : overlap.relationship === 'nested' && samePlannedSettlement;
-  if (!directionCompatible) return null;
+  if (!forwardSpineContinuityCompatible(candidates, overlap, config)) return null;
   const winner = forwardSpineWinner(candidates);
   const losers = candidates.filter((candidate) => candidate.candidateId !== winner.candidateId);
   const decision = overlap.relationship === 'nested' ? 'select' : 'merge';
@@ -1447,17 +1776,31 @@ function forwardSpineArbitrationDecision(overlap, candidateById, config) {
     contextCandidateIds: losers.map((candidate) => candidate.candidateId),
     decision,
     reason: decision === 'merge'
-      ? 'same_direction_forward_spine_overlap'
+      ? 'continuity_forward_spine_overlap'
       : 'nested_forward_spine_candidate_selected',
     reviewOnly: false,
     evidence: {
       relationship: overlap.relationship,
-      directionDeltaDegrees: overlap.directionDeltaDegrees,
       selectedSource: winner.source,
       selectedRawCoverageCount: forwardSpineRawCoverageCount(winner),
-      selectedPathNetRatio: forwardSpinePathNetRatio(winner)
+      selectedPathNetRatio: forwardSpinePathNetRatio(winner),
+      continuityCompatible: true
     }
   };
+}
+
+function forwardSpineContinuityCompatible(candidates, overlap, config) {
+  if (!candidates.every((candidate) => candidate.plannedSettlement === candidates[0].plannedSettlement)) {
+    return false;
+  }
+  const scores = candidates.map((candidate) => forwardSpineContinuityScore(candidate));
+  if (!scores.every(Number.isFinite)) return false;
+  const strongest = safeMax(scores);
+  const weakest = safeMin(scores);
+  return strongest >= 0.45
+    && weakest >= 0.25
+    && (overlap.relationship === 'nested' || strongest - weakest <= 0.5
+      || config.forwardSpineArbitrationEnabled === true);
 }
 
 function forwardSpineWinner(candidates) {
@@ -1474,6 +1817,16 @@ function forwardSpineScore(candidate) {
   const confidence = Number.isFinite(candidate.confidence) ? candidate.confidence * 10 : 0;
   const ratioPenalty = Number.isFinite(pathNetRatio) ? Math.max(0, pathNetRatio - 1) * 5 : 0;
   return coverage + settlementBonus + confidence - ratioPenalty;
+}
+
+function forwardSpineContinuityScore(candidate) {
+  const coverage = Math.min(1, forwardSpineRawCoverageCount(candidate) / 20);
+  const pathNetRatio = forwardSpinePathNetRatio(candidate);
+  const continuityPenalty = Number.isFinite(pathNetRatio)
+    ? Math.min(1, Math.max(0, pathNetRatio - 1) / 4)
+    : 0.4;
+  const confidence = Number.isFinite(candidate.confidence) ? clamp01(candidate.confidence) : 0.4;
+  return clamp01(coverage * 0.35 + confidence * 0.45 + (1 - continuityPenalty) * 0.2);
 }
 
 function forwardSpineRawCoverageCount(candidate) {
@@ -1506,7 +1859,7 @@ function trackPointRangeForRawRange(product, rawRange) {
     .filter((point) => trackPointTouchesRawRange(point, rawRange))
     .map((point) => point.trackPointId);
   return ids.length > 0
-    ? { startTrackPointId: Math.min(...ids), endTrackPointId: Math.max(...ids) }
+    ? { startTrackPointId: safeMin(ids), endTrackPointId: safeMax(ids) }
     : { startTrackPointId: null, endTrackPointId: null };
 }
 
@@ -1542,6 +1895,17 @@ function angleDeltaDegrees(left, right) {
   if (!Number.isFinite(left) || !Number.isFinite(right)) return null;
   const delta = Math.abs(left - right) % 360;
   return delta > 180 ? 360 - delta : delta;
+}
+
+function angleDegrees(from, to) {
+  if (!hasValidLngLat(from) || !hasValidLngLat(to)) return null;
+  const lat1 = from.lat * Math.PI / 180;
+  const lat2 = to.lat * Math.PI / 180;
+  const deltaLng = (to.lng - from.lng) * Math.PI / 180;
+  const y = Math.sin(deltaLng) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2)
+    - Math.sin(lat1) * Math.cos(lat2) * Math.cos(deltaLng);
+  return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
 }
 
 function rawRangeIntersection(left, right) {
@@ -1918,7 +2282,7 @@ function weakRecoveryShapeCandidates(product, evidence, config) {
     const center = rawPointCloudCenter(rawPoints);
     const coreRadiusMeters = cloudRadiusMeters(coreRawPoints);
     if (coreRadiusMeters > config.weakRecoveryShapeMaxRadiusMeters) continue;
-    const bestAccuracy = Math.min(...coreRawPoints.map((point) => point.accuracy)
+    const bestAccuracy = safeMin(coreRawPoints.map((point) => point.accuracy)
       .filter(Number.isFinite));
     if (!Number.isFinite(bestAccuracy)
         || bestAccuracy > config.weakRecoveryShapeMaxBestAccuracyMeters) {
@@ -2615,13 +2979,15 @@ function sameRoadCenterlineSamples(beforePath, afterPath) {
     .map((fraction) => {
       const before = samplePathAtFraction(beforeMetrics, fraction);
       const after = samplePathAtFraction(afterMetrics, fraction);
+      if (!before || !after) return null;
       return {
         lat: (before.lat + after.lat) / 2,
         lng: (before.lng + after.lng) / 2,
         beforeIndex: before.index,
         afterIndex: after.index
       };
-    });
+    })
+    .filter(Boolean);
 }
 
 function pathMetrics(path) {
@@ -2646,7 +3012,7 @@ function pathFraction(distance, totalDistance) {
 
 function samplePathAtFraction(metrics, fraction) {
   const { path, cumulativeDistances, totalDistance } = metrics;
-  if (path.length === 0) return { lat: 0, lng: 0, index: 0 };
+  if (path.length === 0) return null;
   if (path.length === 1 || totalDistance <= 0 || fraction <= 0) {
     return pathSample(path[0], path[0].index);
   }
@@ -3034,7 +3400,7 @@ function movingSpikeCandidate(previous, point, next, afterNext, index, config) {
   const competingSpeed = point.reportedSpeedMetersPerSecond
     <= config.movingSpikeMaxCompetingReportedSpeedMetersPerSecond;
   const geometryOverride = !competingSpeed
-    && movingSpikeGeometryOverride(previous, point, next, afterNext, {
+    && movingSpikeContinuityOverride(previous, point, next, afterNext, {
       detour,
       lateral
     }, config);
@@ -3053,30 +3419,50 @@ function movingSpikeCandidate(previous, point, next, afterNext, index, config) {
     strictSpeed,
     geometryOverride,
     speedPolicy: movingSpikeSpeedPolicy(strictSpeed, competingSpeed, geometryOverride),
-    forwardAngleDeltaDegrees: movingSpikeForwardAngleDeltaDegrees(previous, next, afterNext),
+    continuityScore: movingSpikeContinuityScore(previous, point, next, afterNext, config),
     score: detour * 2 + lateral
       - point.reportedSpeedMetersPerSecond * 0.25
   };
 }
 
-function movingSpikeGeometryOverride(previous, point, next, afterNext, metrics, config) {
+function movingSpikeContinuityOverride(previous, point, next, afterNext, metrics, config) {
   return point.reportedSpeedMetersPerSecond
       <= config.movingSpikeGeometryOverrideMaxReportedSpeedMetersPerSecond
     && metrics.detour >= config.movingSpikeGeometryOverrideMinDetourMeters
     && metrics.lateral >= config.movingSpikeGeometryOverrideMinLateralMeters
-    && movingSpikeForwardAligned(previous, next, afterNext, config);
+    && movingSpikeContinuityAligned(previous, point, next, afterNext, config);
 }
 
-function movingSpikeForwardAligned(previous, next, afterNext, config) {
-  const delta = movingSpikeForwardAngleDeltaDegrees(previous, next, afterNext);
-  return Number.isFinite(delta)
-    && delta <= config.movingSpikeGeometryOverrideMaxForwardAngleDeltaDegrees;
+function movingSpikeContinuityAligned(previous, point, next, afterNext, config) {
+  const score = movingSpikeContinuityScore(previous, point, next, afterNext, config);
+  return score >= 0.33;
 }
 
-function movingSpikeForwardAngleDeltaDegrees(previous, next, afterNext) {
-  if (!afterNext?.entersTrustedGpx || !hasValidLngLat(afterNext)) return null;
-  return angleDeltaDegrees(directionDegreesForPoints([previous, next]),
-    directionDegreesForPoints([next, afterNext]));
+function movingSpikeContinuityScore(previous, point, next, afterNext, config) {
+  if (!hasValidLngLat(previous) || !hasValidLngLat(point) || !hasValidLngLat(next)) return 0;
+  const previousDistance = distanceMeters(previous.lat, previous.lng, point.lat, point.lng);
+  const nextDistance = distanceMeters(point.lat, point.lng, next.lat, next.lng);
+  const bridgeDistance = distanceMeters(previous.lat, previous.lng, next.lat, next.lng);
+  const detour = Math.max(0, previousDistance + nextDistance - bridgeDistance);
+  const lateral = distanceToSegmentMeters(point, previous, next);
+  const distanceScore = 1 - Math.min(1, detour / Math.max(config.movingSpikeMinDetourMeters * 4, 1));
+  const lateralScore = 1 - Math.min(1, lateral / Math.max(config.movingSpikeMinLateralMeters * 4, 1));
+  const bridgeScore = 1 - Math.min(1, bridgeDistance / Math.max(config.movingSpikeMaxBridgeDistanceMeters, 1));
+  const bridgeContinuationScore = hasValidLngLat(afterNext)
+    ? 1 - Math.min(1, angleDeltaDegrees(
+      angleDegrees(previous, next),
+      angleDegrees(next, afterNext)
+    ) / 60)
+    : 0.5;
+  const afterNextScore = hasValidLngLat(afterNext)
+    ? 1 - Math.min(1, distanceMeters(next.lat, next.lng, afterNext.lat, afterNext.lng)
+      / Math.max(config.movingSpikeMaxBridgeDistanceMeters, 1))
+    : 0.5;
+  return clamp01(distanceScore * 0.2
+    + lateralScore * 0.2
+    + bridgeScore * 0.15
+    + bridgeContinuationScore * 0.35
+    + afterNextScore * 0.1);
 }
 
 function movingSpikeSpeedPolicy(strictSpeed, competingSpeed, geometryOverride) {
@@ -3234,7 +3620,7 @@ function enclosedLoopClusterKeepIndexes(span, previousOutside, nextOutside, conf
   if (keep.size === 0) {
     keep.add(enclosedLoopClusterRepresentativeIndex(span, corridorStart, corridorEnd));
   }
-  const lastKeptIndex = Math.max(...keep);
+  const lastKeptIndex = safeMax(keep);
   if (lastKeptIndex < span.length - 1) {
     keep.add(span.length - 1);
   }
@@ -3983,13 +4369,13 @@ function isDwellDriftInterval(rawPoints, coreRawPoints, config) {
   if (averageSpeed > config.dwellDriftMaxAverageSpeedMetersPerSecond) return false;
   const zeroSpeedRatio = finiteSpeeds.length === 0
     ? 0
-    : finiteSpeeds.filter((speed) => speed <= 0.1).length / finiteSpeeds.length;
+    : finiteSpeeds.filter((speed) => speed <= config.zeroSpeedThresholdMetersPerSecond).length / finiteSpeeds.length;
   if (zeroSpeedRatio < config.dwellDriftMinZeroSpeedRatio) return false;
   if (bboxDiagonalMeters(rawPoints) > config.dwellDriftMaxBboxMeters) return false;
   const netDistance = distanceMeters(rawPoints[0].lat, rawPoints[0].lng,
     rawPoints.at(-1).lat, rawPoints.at(-1).lng);
   if (netDistance > config.dwellDriftMaxNetDistanceMeters) return false;
-  return coreRawPoints.length / rawPoints.length >= 0.25;
+  return coreRawPoints.length / rawPoints.length >= config.dwellDriftMinCoreRatio;
 }
 
 function dwellDriftAnchor(interval, template) {
@@ -4156,6 +4542,7 @@ function rebuildRawPointDecisions(product) {
 
 function recomputeLocationAltitudeAscent(product, evidence, config) {
   product.stats.locationAltitudeTotalAscentMeters = -1;
+  product.stats.locationAltitudeTotalDescentMeters = -1;
   product.stats.locationAltitudeAscentSampleCount = 0;
   product.stats.locationAltitudeAscentRejectedSampleCount = 0;
   const rawPointById = new Map(evidence.rawPoints.map((point) => [point.rawPointId, point]));
@@ -4335,6 +4722,11 @@ function applyGnssAltitude(rawPoint, decision, state, product, config) {
       product.stats.locationAltitudeTotalAscentMeters = 0;
     }
     product.stats.locationAltitudeTotalAscentMeters += delta;
+  } else if (-delta >= config.locationAltitudeAscentMinGainMeters) {
+    if (product.stats.locationAltitudeTotalDescentMeters < 0) {
+      product.stats.locationAltitudeTotalDescentMeters = 0;
+    }
+    product.stats.locationAltitudeTotalDescentMeters += -delta;
   }
   state.gnssAltitudeAnchorMeters = rawPoint.altitude;
   return { result: 'accepted', reason: 'gnss_altitude_accepted' };
@@ -4358,21 +4750,35 @@ function applyBarometerAscent(product, evidence, config) {
   let accepted = 0;
   let rejectedCount = 0;
   let total = 0;
+  let totalDescent = 0;
+  let hasDescentEvidence = false;
 
   for (const window of sorted) {
     const altitude = window.avgRawBarometerAltitudeMeters;
     const time = window.endElapsedRealtimeNanos;
+    const windowAscent = nonNegativeNumber(window.windowAscentMeters);
+    const windowDescent = nonNegativeNumber(window.windowDescentMeters);
+    const hasWindowGainLoss = windowAscent !== null || windowDescent !== null;
     let result = 'accumulating';
     let reason = 'barometer_accumulating';
     let delta = 0;
+    let descentDelta = 0;
 
     if (!Number.isFinite(altitude) || window.avgPressureHpa !== null && window.avgPressureHpa <= 0) {
       result = 'rejected';
       reason = 'barometer_unavailable';
       rejectedCount++;
     } else if (!Number.isFinite(anchorAltitude)) {
-      result = 'reset';
-      reason = 'boundary_reset';
+      if (hasWindowGainLoss) {
+        delta = windowAscent ?? 0;
+        descentDelta = windowDescent ?? 0;
+        total += delta;
+        totalDescent += descentDelta;
+        hasDescentEvidence ||= descentDelta > 0 || windowDescent !== null;
+      } else {
+        result = 'reset';
+        reason = 'boundary_reset';
+      }
       anchorAltitude = altitude;
       anchorTime = time;
       accepted++;
@@ -4394,9 +4800,19 @@ function applyBarometerAscent(product, evidence, config) {
         anchorAltitude = altitude;
         anchorTime = time;
       } else {
-        if (rawDelta >= config.barometerAscentMinGainMeters) {
+        if (hasWindowGainLoss) {
+          delta = windowAscent ?? 0;
+          descentDelta = windowDescent ?? 0;
+          total += delta;
+          totalDescent += descentDelta;
+          hasDescentEvidence ||= descentDelta > 0 || windowDescent !== null;
+        } else if (rawDelta >= config.barometerAscentMinGainMeters) {
           delta = rawDelta;
           total += delta;
+        } else if (-rawDelta >= config.barometerAscentMinGainMeters) {
+          descentDelta = -rawDelta;
+          totalDescent += descentDelta;
+          hasDescentEvidence = true;
         }
         anchorAltitude = altitude;
         anchorTime = time;
@@ -4409,6 +4825,7 @@ function applyBarometerAscent(product, evidence, config) {
       result,
       reason,
       ascentDeltaMeters: delta,
+      descentDeltaMeters: descentDelta,
       activityGate: 'independent',
       boundaryGate: result === 'reset' ? 'reset' : 'open',
       confidence: result === 'rejected' ? 'low' : 'medium'
@@ -4418,6 +4835,9 @@ function applyBarometerAscent(product, evidence, config) {
   product.stats.barometerAscentSampleCount = accepted;
   product.stats.barometerAscentRejectedSampleCount = rejectedCount;
   product.stats.barometerTotalAscentMeters = accepted >= 2 ? total : -1;
+  product.stats.barometerTotalDescentMeters = accepted >= 2
+    ? hasDescentEvidence ? totalDescent : 0
+    : -1;
   product.stats.barometerAscentConfidence = accepted >= 2 && rejectedCount === 0
     ? 'high'
     : accepted >= 2
@@ -4466,6 +4886,10 @@ function finalizeStats(product) {
       && product.stats.locationAltitudeTotalAscentMeters < 0) {
     product.stats.locationAltitudeTotalAscentMeters = 0;
   }
+  if (product.stats.locationAltitudeAscentSampleCount >= 2
+      && product.stats.locationAltitudeTotalDescentMeters < 0) {
+    product.stats.locationAltitudeTotalDescentMeters = 0;
+  }
   product.stats.locationAltitudeAscentConfidence =
     product.stats.locationAltitudeAscentSampleCount >= 2
       ? product.stats.locationAltitudeAscentRejectedSampleCount === 0 ? 'high' : 'medium'
@@ -4473,14 +4897,17 @@ function finalizeStats(product) {
   const selected = chooseSelectedAscent(product.stats);
   product.stats.selectedAscentSource = selected.source;
   product.stats.selectedTotalAscentMeters = selected.totalAscentMeters;
+  product.stats.selectedTotalDescentMeters = selected.totalDescentMeters;
   product.gnssAltitudeResult = {
     totalAscentMeters: product.stats.locationAltitudeTotalAscentMeters,
+    totalDescentMeters: product.stats.locationAltitudeTotalDescentMeters,
     sampleCount: product.stats.locationAltitudeAscentSampleCount,
     rejectedSampleCount: product.stats.locationAltitudeAscentRejectedSampleCount,
     confidence: product.stats.locationAltitudeAscentConfidence
   };
   product.barometerAscentResult = {
     totalAscentMeters: product.stats.barometerTotalAscentMeters,
+    totalDescentMeters: product.stats.barometerTotalDescentMeters,
     sampleCount: product.stats.barometerAscentSampleCount,
     rejectedSampleCount: product.stats.barometerAscentRejectedSampleCount,
     confidence: product.stats.barometerAscentConfidence
@@ -4488,6 +4915,7 @@ function finalizeStats(product) {
   product.selectedAscentResult = {
     source: selected.source,
     totalAscentMeters: selected.totalAscentMeters,
+    totalDescentMeters: selected.totalDescentMeters,
     confidence: selected.confidence,
     reason: selected.reason
   };
@@ -4499,6 +4927,148 @@ function addPostSettlementScenarios(product) {
   addClosedLoopRoundTripScenarios(product, product.config);
   addEnclosedGapClusterScenarios(product, product.config);
   addRestPhotoMicroMoveScenarios(product, product.config);
+}
+
+function buildScenarioSettlementPlan(product) {
+  const proposals = product.scenarios
+    .map((scenario) => scenarioSettlementProposal(scenario))
+    .filter(Boolean);
+  const plan = coordinateScenarioProposals(proposals, {
+    firstRawPointId: minRawPointId(product),
+    currentRawPointId: maxRawPointId(product),
+    lookaheadRawPoints: 0
+  });
+  return {
+    proposalCount: proposals.length,
+    activeCount: plan.activeProposals.length,
+    contextCount: plan.contextProposals.length,
+    rejectedCount: plan.rejectedProposals.length,
+    conflictCount: plan.conflicts.length,
+    commitWatermark: plan.commitWatermark,
+    commitPlan: plan.commitPlan,
+    proposals,
+    activeProposals: plan.activeProposals,
+    contextProposals: plan.contextProposals,
+    rejectedProposals: plan.rejectedProposals,
+    conflicts: plan.conflicts,
+    ownership: plan.ownership
+  };
+}
+
+function scenarioSettlementProposal(scenario) {
+  if (!Number.isFinite(scenario?.rawRange?.startRawPointId)
+      || !Number.isFinite(scenario?.rawRange?.endRawPointId)) {
+    return null;
+  }
+  const metricOwner = scenarioMetricOwner(scenario.scenario);
+  return {
+    id: `scenario:${scenario.scenarioId}`,
+    sourceScenarioId: scenario.scenarioId,
+    scenario: scenario.scenario,
+    rawRange: scenario.rawRange,
+    influenceRange: scenario.rawRange,
+    metricRange: scenario.rawRange,
+    hardBoundary: scenarioHardBoundary(scenario.scenario),
+    metricOwner,
+    confidence: scenario.confidence,
+    action: scenario.action,
+    localRebuild: scenario.localRebuild,
+    affectedMetricGates: scenarioAffectedMetricGates(scenario.scenario),
+    compatibilityTags: scenarioCompatibilityTags(scenario),
+    conservativeFallback: scenarioConservativeFallback(scenario.scenario),
+    evidence: {
+      anchorRawPointIds: scenario.anchorRawPointIds || [],
+      sourceScenario: scenario.scenario,
+      sourceScenarioId: scenario.scenarioId
+    }
+  };
+}
+
+function scenarioMetricOwner(scenario) {
+  return !diagnosticOnlyScenarioNames().has(scenario);
+}
+
+function scenarioHardBoundary(scenario) {
+  return new Set([
+    'gap_recovery_boundary',
+    'transport_contamination',
+    'position_snap_recovery'
+  ]).has(scenario);
+}
+
+function scenarioAffectedMetricGates(scenario) {
+  switch (scenario) {
+    case 'gap_recovery_boundary':
+    case 'transport_contamination':
+    case 'position_snap_recovery':
+      return ['route', 'distance', 'moving_time', 'elevation'];
+    case 'moving_spike_cleanup':
+    case 'stationary_session_collapse':
+    case 'stationary_drift_collapse':
+    case 'rest_photo_micro_move':
+    case 'enclosed_loop_cluster_settlement':
+      return ['route', 'distance', 'moving_time'];
+    case 'weak_recovery_endpoint':
+    case 'dense_main_route_settlement':
+    case 'same_road_round_trip':
+    case 'round_trip_line':
+      return ['route'];
+    default:
+      return [];
+  }
+}
+
+function scenarioCompatibilityTags(scenario) {
+  const tags = [];
+  if (!scenarioMetricOwner(scenario.scenario)) tags.push('diagnostic_context');
+  if (scenarioHardBoundary(scenario.scenario)) tags.push('hard_boundary');
+  if (scenario.scenario === 'moving_spike_cleanup'
+      || scenario.scenario === 'position_snap_recovery') {
+    tags.push('point_cleanup');
+  }
+  if (scenario.scenario === 'dense_area_intent') tags.push('scheduler_context');
+  return tags;
+}
+
+function scenarioConservativeFallback(scenario) {
+  switch (scenario) {
+    case 'transport_contamination':
+      return 'exclude_from_hiking_truth';
+    case 'gap_recovery_boundary':
+    case 'position_snap_recovery':
+      return 'zero_delta_boundary';
+    case 'moving_spike_cleanup':
+      return 'keep_base_decision_if_conflicted';
+    case 'same_road_round_trip':
+    case 'round_trip_line':
+    case 'dense_main_route_settlement':
+      return 'keep_base_route_with_context';
+    default:
+      return 'context_only';
+  }
+}
+
+function diagnosticOnlyScenarioNames() {
+  return new Set([
+    'dense_area_intent',
+    'closed_loop_round_trip',
+    'enclosed_gap_cluster',
+    'composite_gap_local_settlement'
+  ]);
+}
+
+function maxRawPointId(product) {
+  const ids = product.rawPointDecisions
+    .map((decision) => decision.rawPointId)
+    .filter(Number.isFinite);
+  return ids.length > 0 ? safeMax(ids) : null;
+}
+
+function minRawPointId(product) {
+  const ids = product.rawPointDecisions
+    .map((decision) => decision.rawPointId)
+    .filter(Number.isFinite);
+  return ids.length > 0 ? safeMin(ids) : null;
 }
 
 function addGapRecoveryScenario(product) {
@@ -4792,7 +5362,7 @@ function restPhotoMicroMoveCandidates(product, config) {
         point.reason === 'motion_supported_low_speed'
         || point.reason === 'moving_good_fix'
         || point.reason === 'stationary_anchor').length;
-      if (lowSpeedCount / span.length < 0.8) continue;
+      if (lowSpeedCount / span.length < config.restPhotoMicroMoveMinLowSpeedRatio) continue;
       const candidate = {
         scenario: 'rest_photo_micro_move',
         startIndex,
@@ -4941,8 +5511,8 @@ function rawPointRange(rawPointIds) {
     return { startRawPointId: null, endRawPointId: null };
   }
   return {
-    startRawPointId: Math.min(...finite),
-    endRawPointId: Math.max(...finite)
+    startRawPointId: safeMin(finite),
+    endRawPointId: safeMax(finite)
   };
 }
 
@@ -5045,6 +5615,7 @@ function scenarioRawPointIds(scenario) {
 
 function scenarioUsesContinuousRawRange(name) {
   return name === 'stationary_session_collapse'
+    || name === 'stationary_dual_cluster_gnss_drift'
     || name === 'stationary_drift_collapse'
     || name === 'weak_recovery_endpoint'
     || name === 'same_road_round_trip'
@@ -5209,8 +5780,8 @@ function scenarioCoverageRangeHit(coverage, startTrackPointId, endTrackPointId) 
   }
   const matchedTrackPointRange = matchedTrackPointIds.length > 0
     ? {
-      startTrackPointId: Math.min(...matchedTrackPointIds),
-      endTrackPointId: Math.max(...matchedTrackPointIds)
+      startTrackPointId: safeMin(matchedTrackPointIds),
+      endTrackPointId: safeMax(matchedTrackPointIds)
     }
     : {
       startTrackPointId: Math.max(rangeStart, startTrackPointId),
@@ -5245,6 +5816,7 @@ function nullLast(left, right) {
 function scenarioPriority(name) {
   switch (name) {
     case 'stationary_session_collapse': return 10;
+    case 'stationary_dual_cluster_gnss_drift': return 12;
     case 'stationary_drift_collapse': return 20;
     case 'dense_main_route_settlement': return 22;
     case 'rest_photo_micro_move': return 24;
@@ -5277,6 +5849,7 @@ function scenarioChineseLabel(name) {
     case 'dense_main_route_settlement': return '密集区主路线骨架';
     case 'position_snap_recovery': return '定位跳变恢复';
     case 'stationary_session_collapse': return '整段静止压缩';
+    case 'stationary_dual_cluster_gnss_drift': return '静止多簇 GNSS 漂移';
     case 'stationary_drift_collapse': return '停留漂移压缩';
     case 'rest_photo_micro_move': return '拍照/休息微移动';
     case 'moving_spike_cleanup': return '移动单点尖刺清理';
@@ -5299,6 +5872,7 @@ function scenarioActionChineseLabel(action) {
     case 'preserve_dense_main_route_skeleton': return '保留密集区主路线骨架';
     case 'reset_position_snap_recovery_delta': return '定位跳变恢复点置零';
     case 'collapse_stationary_session': return '整段压成代表点';
+    case 'collapse_dual_cluster_drift_to_stationary_anchor': return '静止多簇漂移压成代表点';
     case 'collapse_drift_cloud': return '漂移云压成停留锚点';
     case 'classify_micro_move_without_rewrite': return '只标注小范围微移动';
     case 'filter_weak_micro_move_shape': return '过滤弱微移动停留点';
@@ -5324,6 +5898,7 @@ function localRebuildChineseLabel(localRebuild) {
     case 'dense_main_route_skeleton': return '密集区前进骨架';
     case 'position_snap_recovery_anchor': return '定位跳变恢复锚点';
     case 'stationary_session_anchor': return '整段静止代表点';
+    case 'stationary_dual_cluster_anchor': return '静止多簇漂移代表点';
     case 'stationary_drift_anchor': return '停留漂移代表点';
     case 'rest_photo_micro_move_diagnostic': return '微移动诊断标注';
     case 'rest_photo_micro_move_shape_filter': return '弱微移动形状过滤';
@@ -5339,6 +5914,9 @@ function localRebuildChineseLabel(localRebuild) {
 function scenarioForReason(reason, scenarioByName) {
   if (reason === 'stationary_session_anchor') {
     return scenarioByName.get('stationary_session_collapse') ?? null;
+  }
+  if (reason === 'stationary_dual_cluster_drift_anchor') {
+    return scenarioByName.get('stationary_dual_cluster_gnss_drift') ?? null;
   }
   if (reason === 'stationary_drift_anchor') {
     return scenarioByName.get('stationary_drift_collapse') ?? null;
@@ -5477,6 +6055,8 @@ function reasonPrimitiveFacts(reason) {
       return ['stationary_cloud'];
     case 'stationary_session_anchor':
       return ['stationary_session'];
+    case 'stationary_dual_cluster_drift_anchor':
+      return ['stationary_dual_cluster_drift'];
     case 'stationary_drift_anchor':
       return ['stationary_drift'];
     case 'weak_recovery_shape_anchor':
@@ -5519,6 +6099,8 @@ function scenarioExplanationSummary(scenario) {
       return '定位短时跳变后恢复到稳定位置，恢复锚点重置 delta，避免从跳变前位置硬桥接。';
     case 'stationary_session_collapse':
       return '整段 session 近似静止，压缩为一个代表锚点。';
+    case 'stationary_dual_cluster_gnss_drift':
+      return '设备运动证据近似静止，但 GNSS 在多个固定簇之间反复高速跳变，压缩为不计距代表锚点。';
     case 'stationary_drift_collapse':
       return '停留漂移云被压缩为一个不计距锚点。';
     case 'rest_photo_micro_move':
@@ -5556,6 +6138,9 @@ function chooseSelectedAscent(stats) {
     return {
       source: 'BAROMETER',
       totalAscentMeters: stats.barometerTotalAscentMeters,
+      totalDescentMeters: stats.barometerTotalDescentMeters >= 0
+        ? stats.barometerTotalDescentMeters
+        : null,
       confidence: stats.barometerAscentConfidence,
       reason: 'barometer_primary'
     };
@@ -5565,6 +6150,9 @@ function chooseSelectedAscent(stats) {
     return {
       source: 'GNSS',
       totalAscentMeters: stats.locationAltitudeTotalAscentMeters,
+      totalDescentMeters: stats.locationAltitudeTotalDescentMeters >= 0
+        ? stats.locationAltitudeTotalDescentMeters
+        : null,
       confidence: stats.locationAltitudeAscentConfidence,
       reason: 'gnss_altitude_fallback'
     };
@@ -5572,6 +6160,7 @@ function chooseSelectedAscent(stats) {
   return {
     source: 'NONE',
     totalAscentMeters: null,
+    totalDescentMeters: null,
     confidence: 'none',
     reason: 'ascent_evidence_unavailable'
   };
@@ -5657,7 +6246,7 @@ function buildFindings(product, evidence) {
     const ranges = forwardSpineConflicts.slice(0, 5)
       .map((conflict) =>
         `Raw#${conflict.rawRange.startRawPointId}-${conflict.rawRange.endRawPointId}`);
-    findings.push(`forward spine arbitration review ${forwardSpineConflicts.length} 段：多个保方向候选需要仲裁（${ranges.join(', ')}）`);
+    findings.push(`continuity arbitration review ${forwardSpineConflicts.length} 段：多个连续性候选需要仲裁（${ranges.join(', ')}）`);
   }
   if (product.scenarios.length > 0) {
     const scenarioNames = [...new Set(product.scenarios.map((scenario) => scenario.scenario))];
@@ -5687,7 +6276,7 @@ function findSamplingEpoch(rawPoint, samplingEpochs) {
   return active;
 }
 
-function isStillMotionWindow(event) {
+function isStillMotionWindow(event, config) {
   const accel = numberField(event, 'linearAccelerationRmsMps2')
     ?? numberField(event, 'accelerometerDynamicRmsMps2')
     ?? numberField(event, 'dynamicAccelRmsMps2')
@@ -5695,7 +6284,7 @@ function isStillMotionWindow(event) {
   const gyro = numberField(event, 'gyroscopeRmsRadps') ?? 0;
   const steps = (numberField(event, 'stepCounterDelta') ?? numberField(event, 'stepDelta') ?? 0)
     + (numberField(event, 'stepDetectorCount') ?? 0);
-  return accel <= 0.08 && gyro <= 0.03 && steps === 0;
+  return accel <= config.stillMotionMaxAccelRms && gyro <= config.stillMotionMaxGyroRms && steps === 0;
 }
 
 function fixKey(rawPoint) {
@@ -5751,10 +6340,13 @@ function cloudRadiusMeters(rawPoints) {
 
 function bboxDiagonalMeters(rawPoints) {
   if (!Array.isArray(rawPoints) || rawPoints.length === 0) return 0;
-  const minLat = Math.min(...rawPoints.map((point) => point.lat));
-  const maxLat = Math.max(...rawPoints.map((point) => point.lat));
-  const minLng = Math.min(...rawPoints.map((point) => point.lng));
-  const maxLng = Math.max(...rawPoints.map((point) => point.lng));
+  let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+  for (const point of rawPoints) {
+    if (point.lat < minLat) minLat = point.lat;
+    if (point.lat > maxLat) maxLat = point.lat;
+    if (point.lng < minLng) minLng = point.lng;
+    if (point.lng > maxLng) maxLng = point.lng;
+  }
   return distanceMeters(minLat, minLng, maxLat, maxLng);
 }
 
@@ -5781,6 +6373,12 @@ function numberField(object, field) {
   if (!object || object[field] === null || object[field] === undefined) return null;
   const value = Number(object[field]);
   return Number.isFinite(value) ? value : null;
+}
+
+function nonNegativeNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
 function firstFinite(values) {
