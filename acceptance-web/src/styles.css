@@ -690,6 +690,42 @@ button:disabled {
   line-height: 1.45;
 }
 
+.review-queue-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.review-filter-buttons {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+button.review-filter-button,
+button.review-export-button {
+  height: 28px;
+  border-radius: 999px;
+  padding: 0 9px;
+  background: rgba(15, 23, 42, 0.34);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+button.review-filter-button.selected {
+  border-color: rgba(45, 212, 191, 0.58);
+  background: rgba(45, 212, 191, 0.14);
+  color: #cffcf6;
+}
+
+button.review-export-button {
+  border-color: rgba(147, 197, 253, 0.34);
+  background: rgba(147, 197, 253, 0.11);
+  color: #bfdbfe;
+}
+
 .review-task {
   position: relative;
   display: grid;
@@ -752,6 +788,31 @@ button:disabled {
   font-size: 10px;
   font-weight: 900;
   white-space: nowrap;
+}
+
+.review-task[data-review-kind="conflict"] > .review-badge {
+  border-color: rgba(249, 115, 22, 0.42);
+  background: rgba(249, 115, 22, 0.14);
+  color: #fed7aa;
+}
+
+.review-task[data-review-kind="rewrite"] > .review-badge {
+  border-color: rgba(250, 204, 21, 0.38);
+  background: rgba(250, 204, 21, 0.12);
+  color: #fde68a;
+}
+
+.review-task[data-review-kind="hybrid"] > .review-badge,
+.review-task[data-review-kind="risk"] > .review-badge {
+  border-color: rgba(244, 114, 182, 0.34);
+  background: rgba(244, 114, 182, 0.12);
+  color: #fbcfe8;
+}
+
+.review-task[data-review-kind="diagnostic"] > .review-badge {
+  border-color: rgba(147, 197, 253, 0.34);
+  background: rgba(147, 197, 253, 0.11);
+  color: #bfdbfe;
 }
 
 .review-task-meta,

@@ -5,6 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "node server.mjs",
+    "export-review-queue": "node scripts/export-review-queue.mjs",
+    "report-review-queue": "node scripts/report-review-queue.mjs",
+    "package-review-queue": "node scripts/package-review-queue.mjs",
+    "validate-review-queue-package": "node scripts/validate-review-queue-package.mjs",
     "test": "node --test tests/*.test.mjs"
   }
 }

@@ -1,4 +1,6 @@
 import { createNearestWindowLookup } from './timeWindowIndex.mjs';
+import { buildStreamingDiagnosticContextReport } from './streamingDiagnosticContextReport.mjs';
+import { exportStreamingSettlementStateContract } from './streamingSettlementState.mjs';
 
 const TRUSTED_RESULTS = new Set(['anchor', 'accept']);
 const WEAK_RESULTS = new Set(['weak']);
@@ -228,6 +230,10 @@ export function buildTargetOutput(model, targetProduct = null) {
   if (paceSecondsPerKm === null) {
     findings.push('配速不可计算');
   }
+  const streamingDiagnosticContexts = buildStreamingDiagnosticContextReport(targetProduct);
+  if (streamingDiagnosticContexts.totalCount > 0) {
+    findings.push(...streamingDiagnosticContexts.findings);
+  }
 
   return {
     trackPointCount: trustedTrack.length,
@@ -237,6 +243,7 @@ export function buildTargetOutput(model, targetProduct = null) {
     movingTimeSeconds,
     paceSecondsPerKm,
     selectedTotalAscentMeters: ascent.selectedTotalAscentMeters,
+    selectedTotalDescentMeters: ascent.selectedTotalDescentMeters,
     selectedAscentSource: ascent.selectedAscentSource,
     summaries: {
       raw: rawSummary(model.points, targetProduct),
@@ -244,6 +251,12 @@ export function buildTargetOutput(model, targetProduct = null) {
       pressure: pressureSummary(model, ascent),
       motion: motionSummary(model)
     },
+    scenarioSettlementPlan: targetProduct?.scenarioSettlementPlan || null,
+    streamingSettlementState: targetProduct?.streamingSettlementState || null,
+    streamingSettlementStateContract: targetProduct?.streamingSettlementState
+      ? exportStreamingSettlementStateContract(targetProduct.streamingSettlementState)
+      : null,
+    streamingDiagnosticContexts,
     denseAreaSettlementPlan: targetProduct?.denseAreaSettlementPlan || [],
     denseIntentConflicts: targetProduct?.denseIntentConflicts || [],
     forwardSpineCandidates: targetProduct?.forwardSpineCandidates || [],
@@ -278,11 +291,12 @@ function buildDiagnosticModel(events, parseErrors, filePath) {
   const samplingPolicies = [];
 
   for (const event of events) {
-    if (event.event === 'raw_location' && isFiniteNumber(event.lat) && isFiniteNumber(event.lng)) {
-      rawById.set(Number(event.rawPointId), normalizeRawPoint(event));
+    if (isLocationEvidenceEvent(event) && isFiniteNumber(event.lat) && isFiniteNumber(event.lng)) {
+      const point = normalizeRawPoint(event);
+      if (point) rawById.set(point.rawPointId, point);
     } else if (event.event === 'barometer_window') {
       barometerWindows.push(event);
-    } else if (event.event === 'device_motion_window') {
+    } else if (isMotionWindowEvent(event)) {
       deviceMotionWindows.push(event);
     } else if (event.event === 'session_event') {
       sessionEvents.push(event);
@@ -352,22 +366,41 @@ function buildDiagnosticModel(events, parseErrors, filePath) {
 }
 
 function normalizeRawPoint(event) {
+  const rawPointId = nullableNumber(event.rawPointId) ?? nullableNumber(event.sampleId);
+  if (rawPointId === null) return null;
   return {
     ...event,
-    rawPointId: Number(event.rawPointId),
+    rawPointId,
     lat: Number(event.lat),
     lng: Number(event.lng),
-    accuracy: nullableNumber(event.accuracy),
-    altitude: nullableNumber(event.altitude),
-    verticalAccuracy: nullableNumber(event.verticalAccuracy),
-    speed: nullableNumber(event.speed),
-    bearing: nullableNumber(event.bearing),
-    elapsedRealtimeNanos: nullableNumber(event.elapsedRealtimeNanos),
-    timeMillis: nullableNumber(event.timeMillis),
-    callbackReceivedElapsedRealtimeNanos: nullableNumber(event.callbackReceivedElapsedRealtimeNanos),
+    provider: event.provider ?? event.source ?? event.sourceKind ?? event.trustClass ?? '',
+    accuracy: nullableNumber(event.accuracy)
+      ?? nullableNumber(event.horizontalAccuracyMeters),
+    altitude: nullableNumber(event.altitude)
+      ?? nullableNumber(event.altitudeMeters),
+    verticalAccuracy: nullableNumber(event.verticalAccuracy)
+      ?? nullableNumber(event.verticalAccuracyMeters),
+    speed: nullableNumber(event.speed)
+      ?? nullableNumber(event.speedMetersPerSecond),
+    bearing: nullableNumber(event.bearing)
+      ?? nullableNumber(event.bearingDegrees),
+    elapsedRealtimeNanos: nullableNumber(event.elapsedRealtimeNanos)
+      ?? nullableNumber(event.fixElapsedRealtimeNanos),
+    timeMillis: nullableNumber(event.timeMillis)
+      ?? nullableNumber(event.wallTimeMillis),
+    callbackReceivedElapsedRealtimeNanos: nullableNumber(event.callbackReceivedElapsedRealtimeNanos)
+      ?? nullableNumber(event.receivedElapsedRealtimeNanos),
     callbackDelayNanos: nullableNumber(event.callbackDelayNanos),
     kind: 'raw'
   };
+}
+
+function isLocationEvidenceEvent(event) {
+  return event?.event === 'raw_location' || event?.event === 'location_sample';
+}
+
+function isMotionWindowEvent(event) {
+  return event?.event === 'device_motion_window' || event?.event === 'motion_window';
 }
 
 function classifyDecision(result) {
@@ -853,14 +886,18 @@ function pressureSummary(model, ascent) {
   return {
     barometerWindowCount: barometerWindows.length,
     selectedTotalAscentMeters: ascent.selectedTotalAscentMeters,
+    selectedTotalDescentMeters: ascent.selectedTotalDescentMeters,
     selectedAscentSource: ascent.selectedAscentSource,
     barometerTotalAscentMeters: ascent.barometerTotalAscentMeters,
+    barometerTotalDescentMeters: ascent.barometerTotalDescentMeters,
     locationAltitudeTotalAscentMeters: ascent.locationAltitudeTotalAscentMeters
+      ?? null,
+    locationAltitudeTotalDescentMeters: ascent.locationAltitudeTotalDescentMeters
   };
 }
 
 function motionSummary(model) {
-  const deviceMotionWindows = model.events.filter((event) => event.event === 'device_motion_window');
+  const deviceMotionWindows = model.events.filter((event) => isMotionWindowEvent(event));
   const stationaryEvidenceCount = model.points.filter((point) =>
     String(point.decision?.reason || '').startsWith('stationary_')
       || String(point.decision?.reason || '').includes('recovery')
@@ -873,29 +910,47 @@ function motionSummary(model) {
 
 function ascentEvidence(events) {
   let selectedTotalAscentMeters = null;
+  let selectedTotalDescentMeters = null;
   let selectedAscentSource = '';
   let barometerTotalAscentMeters = null;
+  let barometerTotalDescentMeters = null;
   let locationAltitudeTotalAscentMeters = null;
+  let locationAltitudeTotalDescentMeters = null;
   for (const event of events) {
     const selected = numericField(event, 'selectedTotalAscentMeters');
     if (selected !== null && selected >= 0) {
       selectedTotalAscentMeters = selected;
       selectedAscentSource = String(event.selectedAscentSource || selectedAscentSource || '');
     }
+    const selectedDescent = numericField(event, 'selectedTotalDescentMeters');
+    if (selectedDescent !== null && selectedDescent >= 0) {
+      selectedTotalDescentMeters = selectedDescent;
+    }
     const barometer = numericField(event, 'barometerTotalAscentMeters');
     if (barometer !== null && barometer >= 0) {
       barometerTotalAscentMeters = barometer;
+    }
+    const barometerDescent = numericField(event, 'barometerTotalDescentMeters');
+    if (barometerDescent !== null && barometerDescent >= 0) {
+      barometerTotalDescentMeters = barometerDescent;
     }
     const locationAltitude = numericField(event, 'locationAltitudeTotalAscentMeters');
     if (locationAltitude !== null && locationAltitude >= 0) {
       locationAltitudeTotalAscentMeters = locationAltitude;
     }
+    const locationAltitudeDescent = numericField(event, 'locationAltitudeTotalDescentMeters');
+    if (locationAltitudeDescent !== null && locationAltitudeDescent >= 0) {
+      locationAltitudeTotalDescentMeters = locationAltitudeDescent;
+    }
   }
   return {
     selectedTotalAscentMeters,
+    selectedTotalDescentMeters,
     selectedAscentSource,
     barometerTotalAscentMeters,
-    locationAltitudeTotalAscentMeters
+    barometerTotalDescentMeters,
+    locationAltitudeTotalAscentMeters,
+    locationAltitudeTotalDescentMeters
   };
 }
 
@@ -906,27 +961,46 @@ function mergedAscentEvidence(events, targetProduct) {
   return {
     selectedTotalAscentMeters: recorded.selectedTotalAscentMeters
       ?? recomputed.selectedTotalAscentMeters,
+    selectedTotalDescentMeters: recorded.selectedTotalDescentMeters
+      ?? recomputed.selectedTotalDescentMeters,
     selectedAscentSource: recorded.selectedTotalAscentMeters !== null
       ? recorded.selectedAscentSource
       : recomputed.selectedAscentSource,
     barometerTotalAscentMeters: recorded.barometerTotalAscentMeters
       ?? recomputed.barometerTotalAscentMeters,
+    barometerTotalDescentMeters: recorded.barometerTotalDescentMeters
+      ?? recomputed.barometerTotalDescentMeters,
     locationAltitudeTotalAscentMeters: recorded.locationAltitudeTotalAscentMeters
-      ?? recomputed.locationAltitudeTotalAscentMeters
+      ?? recomputed.locationAltitudeTotalAscentMeters,
+    locationAltitudeTotalDescentMeters: recorded.locationAltitudeTotalDescentMeters
+      ?? recomputed.locationAltitudeTotalDescentMeters
   };
 }
 
 function ascentEvidenceFromTargetProduct(targetProduct) {
   const stats = targetProduct?.stats || {};
   const selected = numericField(stats, 'selectedTotalAscentMeters');
+  const selectedDescent = numericField(stats, 'selectedTotalDescentMeters');
   const barometer = numericField(stats, 'barometerTotalAscentMeters');
+  const barometerDescent = numericField(stats, 'barometerTotalDescentMeters');
   const locationAltitude = numericField(stats, 'locationAltitudeTotalAscentMeters');
+  const locationAltitudeDescent = numericField(stats, 'locationAltitudeTotalDescentMeters');
   return {
     selectedTotalAscentMeters: selected !== null && selected >= 0 ? selected : null,
+    selectedTotalDescentMeters: selectedDescent !== null && selectedDescent >= 0
+      ? selectedDescent
+      : null,
     selectedAscentSource: String(stats.selectedAscentSource || ''),
     barometerTotalAscentMeters: barometer !== null && barometer >= 0 ? barometer : null,
+    barometerTotalDescentMeters: barometerDescent !== null && barometerDescent >= 0
+      ? barometerDescent
+      : null,
     locationAltitudeTotalAscentMeters: locationAltitude !== null && locationAltitude >= 0
       ? locationAltitude
+      : null,
+    locationAltitudeTotalDescentMeters: locationAltitudeDescent !== null
+      && locationAltitudeDescent >= 0
+      ? locationAltitudeDescent
       : null
   };
 }
@@ -1049,6 +1123,7 @@ function sumNumeric(events, field) {
 }
 
 function nullableNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }

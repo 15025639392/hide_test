@@ -46,10 +46,18 @@ function sameCleaningConfig(left, right) {
 function compactTargetOutput(output) {
   return {
     selectedTotalAscentMeters: output?.selectedTotalAscentMeters ?? null,
+    selectedTotalDescentMeters: output?.selectedTotalDescentMeters ?? null,
     selectedAscentSource: output?.selectedAscentSource || 'NONE',
     barometerTotalAscentMeters: output?.summaries?.pressure?.barometerTotalAscentMeters ?? null,
+    barometerTotalDescentMeters:
+      output?.summaries?.pressure?.barometerTotalDescentMeters ?? null,
     locationAltitudeTotalAscentMeters:
       output?.summaries?.pressure?.locationAltitudeTotalAscentMeters ?? null,
+    locationAltitudeTotalDescentMeters:
+      output?.summaries?.pressure?.locationAltitudeTotalDescentMeters ?? null,
+    scenarioSettlementPlan: output?.scenarioSettlementPlan || null,
+    streamingSettlementState: output?.streamingSettlementState || null,
+    streamingDiagnosticContexts: output?.streamingDiagnosticContexts || null,
     denseAreaSettlementPlan: output?.denseAreaSettlementPlan || [],
     denseIntentConflicts: output?.denseIntentConflicts || [],
     forwardSpineCandidates: output?.forwardSpineCandidates || [],

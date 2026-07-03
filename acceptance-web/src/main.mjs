@@ -15,8 +15,18 @@ import {
 import {
   DEFAULT_SCENARIO_REPAIR_IDS,
   fullScenarioRepairConfig,
-  scenarioRepairOption,
 } from './scenarioRepairConfig.mjs';
+import {
+  REVIEW_QUEUE_FILTERS,
+  buildReviewQueueExport,
+  buildReviewTasks,
+  filterReviewTasks,
+  reviewQueueStats,
+  reviewerVisibleScenario,
+  scenarioNameLabel,
+  scenarioReviewLevel,
+  sortScenarioCoverageForReview
+} from './reviewQueue.mjs';
 
 const COLORS = ['#2dd4bf', '#fb7185', '#facc15', '#60a5fa', '#c084fc', '#34d399', '#f97316', '#e879f9'];
 const MAP_LINE_POINT_LIMIT = 6000;
@@ -33,10 +43,6 @@ const REVIEW_STATUS_LABELS = {
   question: '存疑',
   skipped: '跳过'
 };
-const SETTLED_REVIEW_SCENARIOS = new Set([
-  'rest_photo_micro_move',
-  'moving_spike_cleanup'
-]);
 const TERRAIN_EXAGGERATION = 1.15;
 const TERRAIN_TILEJSON_URL = 'https://tiles.mapterhorn.com/tilejson.json';
 const TERRAIN_TILE_TEMPLATE = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
@@ -62,6 +68,8 @@ const state = {
   selectedDatasetId: null,
   selectedPoint: null,
   scenarioReviewRangeText: '',
+  rawReviewContext: null,
+  reviewQueueFilter: 'all',
   reviewTaskStatusByDataset: {},
   reviewFocusMode: false,
   focusedMapRange: null,
@@ -167,6 +175,8 @@ async function importFiles(files, fromDirectory) {
     state.datasets = datasets;
     state.selectedDatasetId = datasets[0]?.id || null;
     state.selectedPoint = null;
+    state.rawReviewContext = null;
+    state.reviewQueueFilter = 'all';
     state.reviewTaskStatusByDataset = {};
     setImportText(errors.length
       ? `找到 ${evidenceFiles.length} 个 evidence 文件，已导入 ${datasets.length} 个，失败 ${errors.length} 个：${errors[0]}`
@@ -254,10 +264,18 @@ function finalizeDataset(result, index) {
 function compactTargetOutput(output) {
   return {
     selectedTotalAscentMeters: output?.selectedTotalAscentMeters ?? null,
+    selectedTotalDescentMeters: output?.selectedTotalDescentMeters ?? null,
     selectedAscentSource: output?.selectedAscentSource || 'NONE',
     barometerTotalAscentMeters: output?.summaries?.pressure?.barometerTotalAscentMeters ?? null,
+    barometerTotalDescentMeters:
+      output?.summaries?.pressure?.barometerTotalDescentMeters ?? null,
     locationAltitudeTotalAscentMeters:
       output?.summaries?.pressure?.locationAltitudeTotalAscentMeters ?? null,
+    locationAltitudeTotalDescentMeters:
+      output?.summaries?.pressure?.locationAltitudeTotalDescentMeters ?? null,
+    scenarioSettlementPlan: output?.scenarioSettlementPlan || null,
+    streamingSettlementState: output?.streamingSettlementState || null,
+    streamingDiagnosticContexts: output?.streamingDiagnosticContexts || null,
     denseAreaSettlementPlan: output?.denseAreaSettlementPlan || [],
     denseIntentConflicts: output?.denseIntentConflicts || [],
     forwardSpineCandidates: output?.forwardSpineCandidates || [],
@@ -388,6 +406,8 @@ function clearAll() {
   state.selectedDatasetId = null;
   state.selectedPoint = null;
   state.scenarioReviewRangeText = '';
+  state.rawReviewContext = null;
+  state.reviewQueueFilter = 'all';
   state.reviewTaskStatusByDataset = {};
   state.reviewFocusMode = false;
   state.focusedMapRange = null;
@@ -402,6 +422,7 @@ function clearAll() {
 
 function applyScenarioRangeReview() {
   state.scenarioReviewRangeText = elements.scenarioRangeInput.value.trim();
+  state.rawReviewContext = null;
   const parsed = parseScenarioRangeText(state.scenarioReviewRangeText);
   state.reviewFocusMode = Boolean(parsed);
   state.focusedMapRange = parsed
@@ -486,7 +507,9 @@ function datasetSummaryMarkup(dataset) {
 }
 
 function reviewQueueSummaryMarkup(dataset) {
-  const stats = reviewQueueStats(dataset);
+  const stats = reviewQueueStats(dataset, {
+    statusForTask: (task) => reviewTaskStatus(dataset, task.reviewKey)
+  });
   return `
     <section class="summary-block review-queue-summary">
       <h3>审核队列</h3>
@@ -495,8 +518,8 @@ function reviewQueueSummaryMarkup(dataset) {
         ${metricCellMarkup('待看', formatPlainNumber(stats.pending))}
         ${metricCellMarkup('已处理', formatPlainNumber(stats.done))}
         ${metricCellMarkup('高风险', formatPlainNumber(stats.highRisk))}
-        ${metricCellMarkup('中断边界', formatPlainNumber(stats.gap))}
-        ${metricCellMarkup('交通混入', formatPlainNumber(stats.transport))}
+        ${metricCellMarkup('诊断上下文', formatPlainNumber(stats.diagnosticContext))}
+        ${metricCellMarkup('指标任务', formatPlainNumber(stats.metricOwner))}
       </div>
       <span>${escapeHtml(reviewQueueHint(stats))}</span>
     </section>
@@ -564,6 +587,7 @@ function handleReviewDatasetClick(event) {
   state.selectedDatasetId = dataset.id;
   state.selectedPoint = null;
   state.scenarioReviewRangeText = '';
+  state.rawReviewContext = null;
   state.reviewFocusMode = false;
   state.focusedMapRange = null;
   elements.scenarioRangeInput.value = '';
@@ -575,11 +599,18 @@ function handleReviewDatasetClick(event) {
 function renderScenarioRangeReview() {
   const dataset = selectedDataset();
   const rangeText = state.scenarioReviewRangeText;
-  elements.workspace.classList.toggle('problem-active', Boolean(rangeText));
-  elements.scenarioRangeState.textContent = rangeText || '-';
+  const rawContext = state.rawReviewContext;
+  elements.workspace.classList.toggle('problem-active', Boolean(rangeText || rawContext));
+  elements.scenarioRangeState.textContent = rawContext
+    ? formatScenarioRawRange(rawContext.rawRange)
+    : rangeText || '-';
   if (!dataset) {
     elements.scenarioRangeReview.innerHTML =
       '<p class="empty-note">等待 evidence.jsonl</p>';
+    return;
+  }
+  if (rawContext) {
+    elements.scenarioRangeReview.innerHTML = diagnosticContextReviewMarkup(rawContext);
     return;
   }
   if (!rangeText) {
@@ -640,6 +671,54 @@ function scenarioRangeReviewMarkup(review, dataset = null) {
     </section>`,
     summaryBlock('范围', rangeRows)
   ].join('');
+}
+
+function diagnosticContextReviewMarkup(context) {
+  const gateText = (context.affectedMetricGates || []).join('、') || '无';
+  const anchorText = (context.anchorRawPointIds || []).length
+    ? `Raw ${formatIdPreview(context.anchorRawPointIds)}`
+    : '-';
+  const confidence = Number.isFinite(context.confidence)
+    ? formatPercent(context.confidence)
+    : '-';
+  const rows = [
+    `情景 ${context.scenarioLabel || scenarioNameLabel(context.scenario)}`,
+    formatScenarioRawRange(context.rawRange),
+    `metricOwner ${context.metricOwner === false ? 'false' : valueOrDash(context.metricOwner)}`,
+    `affectedMetricGates ${gateText}`,
+    `锚点 ${anchorText}`,
+    `coordinatorState ${context.coordinatorState || '-'}`,
+    `confidence ${confidence}`
+  ];
+  const evidenceRows = diagnosticContextEvidenceRows(context.evidence);
+  return [
+    summaryBlock('诊断上下文', rows),
+    evidenceRows.length > 0 ? summaryBlock('compact evidence', evidenceRows) : '',
+    summaryBlock('处理口径', [
+      `action ${context.action || '-'}`,
+      `localRebuild ${context.localRebuild || '-'}`,
+      '只进入审核和跨端对齐，不拥有 route / distance / moving_time / elevation 指标'
+    ])
+  ].join('');
+}
+
+function diagnosticContextEvidenceRows(evidence = {}) {
+  return Object.entries(evidence || {})
+    .filter(([, value]) => value !== null && value !== undefined && value !== '')
+    .map(([key, value]) => `${key} ${formatDiagnosticEvidenceValue(value)}`);
+}
+
+function formatDiagnosticEvidenceValue(value) {
+  if (Array.isArray(value)) {
+    return value.map(formatDiagnosticEvidenceValue).join('、') || '-';
+  }
+  if (value && typeof value === 'object') {
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? String(value) : formatOneDecimal(value);
+  }
+  return String(value);
 }
 
 function denseIntentConflictsForRawRange(dataset, rawRange) {
@@ -817,6 +896,16 @@ function handleScenarioRangeReviewClick(event) {
       statusButton.dataset.reviewTaskStatus);
     return;
   }
+  const filterButton = event.target.closest('[data-review-filter]');
+  if (filterButton) {
+    updateReviewQueueFilter(filterButton.dataset.reviewFilter);
+    return;
+  }
+  const exportButton = event.target.closest('[data-review-export]');
+  if (exportButton) {
+    exportReviewQueue();
+    return;
+  }
   const scenarioButton = event.target.closest('[data-scenario-start-track][data-scenario-end-track]');
   if (scenarioButton) {
     const startTrackPointId = Number(scenarioButton.dataset.scenarioStartTrack);
@@ -825,6 +914,15 @@ function handleScenarioRangeReviewClick(event) {
     const endRawPointId = Number(scenarioButton.dataset.scenarioEndRaw);
     focusScenarioCoverage(startTrackPointId, endTrackPointId, startRawPointId,
       endRawPointId);
+    return;
+  }
+  const diagnosticButton = event.target.closest(
+    '[data-diagnostic-context-start-raw][data-diagnostic-context-end-raw]');
+  if (diagnosticButton) {
+    const startRawPointId = Number(diagnosticButton.dataset.diagnosticContextStartRaw);
+    const endRawPointId = Number(diagnosticButton.dataset.diagnosticContextEndRaw);
+    focusDiagnosticContext(startRawPointId, endRawPointId,
+      diagnosticButton.dataset.diagnosticContextKey);
     return;
   }
   const button = event.target.closest('[data-conflict-start-raw][data-conflict-end-raw]');
@@ -846,6 +944,48 @@ function updateReviewTaskStatus(taskKey, nextStatus) {
   }
   renderReviewDatasetOverview();
   renderCleaningAlgorithm();
+}
+
+function updateReviewQueueFilter(nextFilter) {
+  if (!REVIEW_QUEUE_FILTERS.some((filter) => filter.key === nextFilter)) return;
+  state.reviewQueueFilter = nextFilter;
+  renderCleaningAlgorithm();
+}
+
+function exportReviewQueue() {
+  const dataset = selectedDataset();
+  if (!dataset) return;
+  const payload = {
+    ...buildReviewQueueExport(dataset, {
+      filter: state.reviewQueueFilter,
+      statusForTask: (task) => reviewTaskStatus(dataset, task.reviewKey)
+    }),
+    exportedAt: new Date().toISOString()
+  };
+  downloadJson(reviewQueueExportFileName(dataset, state.reviewQueueFilter), payload);
+}
+
+function reviewQueueExportFileName(dataset, filter) {
+  const baseName = String(dataset?.fileName || 'review-queue')
+    .replace(/\.[^.]+$/, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    || 'review-queue';
+  return `${baseName}-${filter || 'all'}-review-queue.json`;
+}
+
+function downloadJson(fileName, payload) {
+  const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], {
+    type: 'application/json'
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function reviewStatusIsValid(status) {
@@ -873,6 +1013,7 @@ function focusScenarioCoverage(startTrackPointId, endTrackPointId, startRawPoint
   const trackStart = Math.min(startTrackPointId, endTrackPointId);
   const trackEnd = Math.max(startTrackPointId, endTrackPointId);
   state.scenarioReviewRangeText = `${trackStart}-${trackEnd}`;
+  state.rawReviewContext = null;
   state.reviewFocusMode = true;
   state.focusedMapRange = focusedMapRangeFromRanges(dataset, trackStart, trackEnd,
     startRawPointId, endRawPointId);
@@ -899,6 +1040,7 @@ function focusDenseIntentConflict(startRawPointId, endRawPointId, datasetId = nu
     return;
   }
   state.selectedDatasetId = dataset.id;
+  state.rawReviewContext = null;
   const rawRange = {
     startRawPointId: Math.min(startRawPointId, endRawPointId),
     endRawPointId: Math.max(startRawPointId, endRawPointId)
@@ -916,6 +1058,39 @@ function focusDenseIntentConflict(startRawPointId, endRawPointId, datasetId = nu
     elements.scenarioRangeInput.value = state.scenarioReviewRangeText;
     renderScenarioRangeReview();
   }
+  renderReviewFocusMode();
+  const bounds = rawRangeBounds(dataset, rawRange);
+  if (bounds) fitBounds(bounds);
+}
+
+function focusDiagnosticContext(startRawPointId, endRawPointId, reviewKey = null) {
+  const dataset = selectedDataset();
+  if (!dataset || !Number.isFinite(startRawPointId) || !Number.isFinite(endRawPointId)) {
+    return;
+  }
+  const rawRange = {
+    startRawPointId: Math.min(startRawPointId, endRawPointId),
+    endRawPointId: Math.max(startRawPointId, endRawPointId)
+  };
+  const task = buildReviewTasks(dataset).find((item) =>
+    item.diagnosticContext
+    && item.reviewKey === reviewKey);
+  const trackRange = trackPointRangeTouchingRawRange(dataset, rawRange);
+  state.rawReviewContext = task?.item || {
+    rawRange,
+    scenario: 'diagnostic_context',
+    metricOwner: false,
+    affectedMetricGates: []
+  };
+  state.scenarioReviewRangeText = '';
+  state.reviewFocusMode = true;
+  state.focusedMapRange = {
+    datasetId: dataset.id,
+    trackRange,
+    rawRange
+  };
+  elements.scenarioRangeInput.value = '';
+  renderScenarioRangeReview();
   renderReviewFocusMode();
   const bounds = rawRangeBounds(dataset, rawRange);
   if (bounds) fitBounds(bounds);
@@ -1339,64 +1514,6 @@ function degreesToRadians(degrees) {
   return degrees * Math.PI / 180;
 }
 
-function scenarioReviewLevel(item, dataset = null) {
-  if (scenarioCoverageHasConflict(item, dataset)) {
-    return { rank: 0, kind: 'conflict', label: '先看冲突' };
-  }
-  const optionKind = scenarioRepairOption(item?.scenario)?.kind || '';
-  if (optionKind === 'rewrite') {
-    return { rank: 1, kind: 'rewrite', label: '会改线' };
-  }
-  if (optionKind === 'hybrid') {
-    return { rank: 2, kind: 'hybrid', label: '标注/改线' };
-  }
-  if (isBoundaryOrRiskScenario(item?.scenario)) {
-    return { rank: 2, kind: 'risk', label: '风险边界' };
-  }
-  if (optionKind === 'diagnostic') {
-    return { rank: 3, kind: 'diagnostic', label: '解释标注' };
-  }
-  return { rank: 4, kind: 'context', label: '复合上下文' };
-}
-
-function scenarioCoverageHasConflict(item, dataset = null) {
-  const rawRange = item?.rawRange;
-  if (!dataset || !Number.isFinite(rawRange?.startRawPointId)
-      || !Number.isFinite(rawRange?.endRawPointId)) {
-    return false;
-  }
-  return [
-    ...(dataset.targetOutput?.forwardSpineConflicts || [])
-  ].some((conflict) => rawRangesOverlap(conflict.rawRange, rawRange));
-}
-
-function isBoundaryOrRiskScenario(scenario) {
-  return scenario === 'transport_contamination'
-    || scenario === 'gap_recovery_boundary'
-    || scenario === 'position_snap_recovery'
-    || scenario === 'moving_spike_cleanup'
-    || scenario === 'composite_gap_local_settlement';
-}
-
-function sortScenarioCoverageForReview(coverage, dataset) {
-  return (coverage || [])
-    .filter((item) => reviewerVisibleScenario(item?.scenario))
-    .filter((item) => !SETTLED_REVIEW_SCENARIOS.has(item?.scenario))
-    .map((item, index) => ({ item, index, level: scenarioReviewLevel(item, dataset) }))
-    .sort((left, right) =>
-      (left.item.rawRange?.startRawPointId ?? Infinity)
-        - (right.item.rawRange?.startRawPointId ?? Infinity)
-      || (left.item.trackPointRange?.startTrackPointId
-        ?? left.item.matchedTrackPointRange?.startTrackPointId
-        ?? Infinity)
-        - (right.item.trackPointRange?.startTrackPointId
-          ?? right.item.matchedTrackPointRange?.startTrackPointId
-          ?? Infinity)
-      || left.level.rank - right.level.rank
-      || left.index - right.index)
-    .map((entry) => entry.item);
-}
-
 function scenarioCoverageActionAttributes(item, useMatchedRange) {
   const trackRange = useMatchedRange && item?.matchedTrackPointRange
     ? item.matchedTrackPointRange
@@ -1427,33 +1544,6 @@ function formatReviewerScenarioNames(names) {
 
 function reviewerVisibleScenarioCoverage(coverage) {
   return (coverage || []).filter((item) => reviewerVisibleScenario(item?.scenario));
-}
-
-function reviewerVisibleScenario(scenario) {
-  return scenario !== 'dense_area_intent'
-    && scenario !== 'dense_main_route_settlement';
-}
-
-function scenarioNameLabel(name) {
-  const labels = {
-    dense_area_intent: '密集区意图',
-    dense_main_route_settlement: '密集区主路线',
-    weak_recovery_endpoint: '弱信号恢复点',
-    same_road_round_trip: '同路来回',
-    closed_loop_round_trip: '闭合来回标记',
-    round_trip_line: '来回路线太密',
-    composite_gap_local_settlement: '长 GAP 复合段',
-    enclosed_gap_cluster: '遮挡聚集标记',
-    enclosed_loop_cluster_settlement: '遮挡后绕线',
-    position_snap_recovery: '定位跳远后接回',
-    moving_spike_cleanup: '单点跳远',
-    stationary_session_collapse: '整段基本没动',
-    stationary_drift_collapse: '原地漂移',
-    rest_photo_micro_move: '休息/拍照小移动',
-    gap_recovery_boundary: '中断后恢复',
-    transport_contamination: '交通工具混入'
-  };
-  return labels[name] || name || '-';
 }
 
 function formatMatchedScenarioTrackCoverage(item) {
@@ -1489,15 +1579,19 @@ function renderCleaningAlgorithm() {
 
 function algorithmBlock() {
   const dataset = selectedDataset();
-  const taskCount = reviewTaskCount(dataset);
+  const totalTaskCount = reviewTaskCount(dataset);
+  const filteredTaskCount = filteredReviewTasks(dataset).length;
   if (elements.cleaningConfigState) {
     elements.cleaningConfigState.textContent = dataset
-      ? `${formatPlainNumber(taskCount)} 个问题`
+      ? state.reviewQueueFilter === 'all'
+        ? `${formatPlainNumber(totalTaskCount)} 个问题`
+        : `${formatPlainNumber(filteredTaskCount)}/${formatPlainNumber(totalTaskCount)} 个问题`
       : '等待导入';
   }
   return `
     <h3>问题清单</h3>
     ${currentReviewSummaryMarkup(dataset)}
+    ${reviewQueueToolbarMarkup(dataset)}
     ${reviewTaskListMarkup(dataset)}
   `;
 }
@@ -1506,39 +1600,57 @@ function reviewTaskCount(dataset) {
   return buildReviewTasks(dataset).length;
 }
 
-function reviewQueueStats(dataset) {
-  const tasks = buildReviewTasks(dataset);
-  const stats = {
-    total: tasks.length,
-    pending: 0,
-    approved: 0,
-    question: 0,
-    skipped: 0,
-    done: 0,
-    highRisk: 0,
-    gap: 0,
-    transport: 0
-  };
-  for (const task of tasks) {
-    const status = reviewTaskStatus(dataset, task.reviewKey);
-    stats[status] = (stats[status] || 0) + 1;
-    if (status !== 'pending') stats.done++;
-    if (reviewTaskIsHighRisk(task, dataset)) stats.highRisk++;
-    if (task.item?.scenario === 'gap_recovery_boundary') stats.gap++;
-    if (task.item?.scenario === 'transport_contamination') stats.transport++;
-  }
-  return stats;
-}
-
 function reviewTaskListMarkup(dataset) {
-  const tasks = buildReviewTasks(dataset);
+  const tasks = filteredReviewTasks(dataset);
   if (!dataset) {
     return '<span>导入 evidence.jsonl 后按 Raw 时间序列显示问题清单</span>';
   }
   if (tasks.length === 0) {
-    return '<span>当前样本没有需要优先复核的问题</span>';
+    return state.reviewQueueFilter === 'all'
+      ? '<span>当前样本没有需要优先复核的问题</span>'
+      : '<span>当前筛选没有复核任务</span>';
   }
   return tasks.map((task, index) => reviewTaskMarkup(task, dataset, index)).join('');
+}
+
+function filteredReviewTasks(dataset) {
+  return filterReviewTasks(buildReviewTasks(dataset), state.reviewQueueFilter, {
+    dataset,
+    statusForTask: (task) => reviewTaskStatus(dataset, task.reviewKey)
+  });
+}
+
+function reviewQueueToolbarMarkup(dataset) {
+  if (!dataset) return '';
+  const counts = reviewQueueFilterCounts(dataset);
+  return `
+    <div class="review-queue-toolbar" aria-label="复核任务筛选">
+      <div class="review-filter-buttons">
+        ${REVIEW_QUEUE_FILTERS.map((filter) => `
+          <button
+            class="review-filter-button ${state.reviewQueueFilter === filter.key ? 'selected' : ''}"
+            type="button"
+            aria-pressed="${state.reviewQueueFilter === filter.key ? 'true' : 'false'}"
+            data-review-filter="${escapeHtml(filter.key)}"
+          >${escapeHtml(filter.label)} ${escapeHtml(formatPlainNumber(counts[filter.key] || 0))}</button>
+        `).join('')}
+      </div>
+      <button class="review-export-button" type="button" data-review-export="queue">导出</button>
+    </div>
+  `;
+}
+
+function reviewQueueFilterCounts(dataset) {
+  const stats = reviewQueueStats(dataset, {
+    statusForTask: (task) => reviewTaskStatus(dataset, task.reviewKey)
+  });
+  return {
+    all: stats.total,
+    metric: stats.metricOwner,
+    diagnostic: stats.diagnosticContext,
+    highRisk: stats.highRisk,
+    pending: stats.pending
+  };
 }
 
 function currentReviewSummaryMarkup(dataset) {
@@ -1566,170 +1678,6 @@ function currentReviewSummaryMarkup(dataset) {
       <p>${escapeHtml(treatment.review)}</p>
     </section>
   `;
-}
-
-function buildReviewTasks(dataset) {
-  if (!dataset) return [];
-  const coverage = sortScenarioCoverageForReview(
-    dataset.scenarioProduct?.scenarioCoverage || [], dataset);
-  const tasks = coverage.map((item, index) => {
-    const task = reviewTaskForScenario(item.scenario);
-    return {
-      ...task,
-      key: `${task.key}-${index}`,
-      reviewKey: reviewTaskKeyForScenarioItem(item, index),
-      item,
-      items: [item],
-      startRawPointId: item.rawRange?.startRawPointId ?? Infinity,
-      endRawPointId: item.rawRange?.endRawPointId ?? item.rawRange?.startRawPointId ?? Infinity,
-      startTrackPointId: item.trackPointRange?.startTrackPointId
-        ?? item.matchedTrackPointRange?.startTrackPointId
-        ?? Infinity
-    };
-  });
-  const conflictItems = [
-    ...(dataset.targetOutput?.forwardSpineConflicts || [])
-  ];
-  conflictItems.forEach((item, index) => {
-    tasks.push({
-      key: 'local_conflict',
-      title: '候选冲突',
-      note: '地图上有多种可能路线，需要人工优先看',
-      rank: 0,
-      item,
-      items: [item],
-      startRawPointId: item.rawRange?.startRawPointId ?? Infinity,
-      endRawPointId: item.rawRange?.endRawPointId ?? item.rawRange?.startRawPointId ?? Infinity,
-      startTrackPointId: Infinity,
-      conflict: true,
-      reviewKey: reviewTaskKeyForConflict(item, index)
-    });
-  });
-  return tasks.sort((left, right) =>
-    left.startRawPointId - right.startRawPointId
-    || left.startTrackPointId - right.startTrackPointId
-    || left.rank - right.rank
-    || left.title.localeCompare(right.title, 'zh-Hans-CN'));
-}
-
-function reviewTaskKeyForScenarioItem(item, index) {
-  const rawRange = item?.rawRange || {};
-  const trackRange = item?.trackPointRange || item?.matchedTrackPointRange || {};
-  return [
-    'scenario',
-    item?.scenario || 'unknown',
-    rawRange.startRawPointId ?? 'raw',
-    rawRange.endRawPointId ?? 'raw',
-    trackRange.startTrackPointId ?? 'track',
-    trackRange.endTrackPointId ?? 'track',
-    item?.scenarioId ?? index
-  ].join(':');
-}
-
-function reviewTaskKeyForConflict(item, index) {
-  const rawRange = item?.rawRange || {};
-  return [
-    'conflict',
-    item?.conflict || item?.resolution || 'local',
-    rawRange.startRawPointId ?? 'raw',
-    rawRange.endRawPointId ?? 'raw',
-    (item?.candidateIds || []).join(',') || index
-  ].join(':');
-}
-
-function reviewTaskForScenario(scenario) {
-  const tasks = {
-    stationary_session_collapse: {
-      key: 'stationary',
-      title: '整段基本没动',
-      note: '线会压成代表位置，检查是否压在原始点云中心',
-      rank: 10
-    },
-    stationary_drift_collapse: {
-      key: 'dwell_drift',
-      title: '原地漂移',
-      note: '线会压回停留点附近，检查是否没有沿漂移绕路',
-      rank: 11
-    },
-    enclosed_loop_cluster_settlement: {
-      key: 'occlusion_loop',
-      title: '遮挡绕线压缩',
-      note: '线会压成锚点或短连接，检查入口/出口是否接对',
-      rank: 21
-    },
-    enclosed_gap_cluster: {
-      key: 'occlusion_loop',
-      title: '遮挡绕线压缩',
-      note: '线会压成锚点或短连接，检查入口/出口是否接对',
-      rank: 21
-    },
-    position_snap_recovery: {
-      key: 'snap_recovery',
-      title: '定位跳远后接回',
-      note: '线会跳过远点并从恢复点接回，检查接回位置',
-      rank: 30
-    },
-    moving_spike_cleanup: {
-      key: 'moving_spike',
-      title: '单点跳远',
-      note: '线会删除尖刺并用前后点短接，检查是否顺路',
-      rank: 31
-    },
-    weak_recovery_endpoint: {
-      key: 'weak_endpoint',
-      title: '弱信号恢复点',
-      note: '线会保留恢复端点，检查是否从稳定位置接回',
-      rank: 32
-    },
-    same_road_round_trip: {
-      key: 'same_road_round_trip',
-      title: '同路来回',
-      note: '线会收成中心线，检查是否仍贴着真实道路',
-      rank: 40
-    },
-    round_trip_line: {
-      key: 'round_trip_line',
-      title: '来回路线太密',
-      note: '线会简化重复折返，检查是否保留真实转折',
-      rank: 41
-    },
-    composite_gap_local_settlement: {
-      key: 'composite_gap',
-      title: '长 GAP 复合段',
-      note: '没有跨整段做往返改线，检查局部接线是否更像真实路线',
-      rank: 43
-    },
-    closed_loop_round_trip: {
-      key: 'closed_loop',
-      title: '闭合来回标记',
-      note: '线主要保留为标记，检查它是否解释了闭合绕行',
-      rank: 42
-    },
-    rest_photo_micro_move: {
-      key: 'rest_photo',
-      title: '休息/拍照小移动',
-      note: '线会标注或压缩小移动，检查是否不该算作行进',
-      rank: 50
-    },
-    gap_recovery_boundary: {
-      key: 'gap_boundary',
-      title: '中断后恢复',
-      note: '线会在中断边界重新接，检查是否被拉成长直线',
-      rank: 60
-    },
-    transport_contamination: {
-      key: 'transport',
-      title: '疑似交通混入',
-      note: '线会排除非徒步移动，检查是否确实不该算徒步',
-      rank: 70
-    }
-  };
-  return tasks[scenario] || {
-    key: scenario || 'other',
-    title: scenarioNameLabel(scenario),
-    note: '查看这段原始线被处理成什么清洗线',
-    rank: 90
-  };
 }
 
 function reviewTaskMarkup(task, dataset, index = null) {
@@ -1766,6 +1714,13 @@ function reviewTaskActionAttributes(task) {
       `data-conflict-end-raw="${escapeHtml(String(task.item?.rawRange?.endRawPointId ?? ''))}"`
     ].join(' ');
   }
+  if (task.diagnosticContext) {
+    return [
+      `data-diagnostic-context-key="${escapeHtml(task.reviewKey || '')}"`,
+      `data-diagnostic-context-start-raw="${escapeHtml(String(task.item?.rawRange?.startRawPointId ?? ''))}"`,
+      `data-diagnostic-context-end-raw="${escapeHtml(String(task.item?.rawRange?.endRawPointId ?? ''))}"`
+    ].join(' ');
+  }
   const item = task.item || {};
   const trackRange = item.trackPointRange;
   const rawRange = item.rawRange;
@@ -1798,6 +1753,9 @@ function reviewTaskActionText(task) {
   if (task.conflict) return '点击定位地图；处理结果：先复盘，不改变当前清洗轨迹。';
   const action = task.item?.actionLabel || task.item?.action || '-';
   const rebuild = task.item?.localRebuildLabel || task.item?.localRebuild || '-';
+  if (task.diagnosticContext) {
+    return `点击定位 Raw 区间；只作复盘上下文，不拥有指标；${action}；${rebuild}`;
+  }
   return `点击查看区间；${action}；${rebuild}`;
 }
 
@@ -1814,15 +1772,6 @@ function reviewTaskStatusControlsMarkup(task, status) {
       >${escapeHtml(option.label)}</button>
     `).join('')}
   `;
-}
-
-function reviewTaskIsHighRisk(task, dataset) {
-  if (task.conflict) return true;
-  const level = scenarioReviewLevel(task.item, dataset);
-  return level.kind === 'conflict'
-    || level.kind === 'risk'
-    || task.item?.scenario === 'transport_contamination'
-    || task.item?.scenario === 'gap_recovery_boundary';
 }
 
 function reviewTaskRawRangeLabel(task) {
@@ -1848,6 +1797,10 @@ function reviewTaskTrackRangeLabel(task) {
 
 function reviewTaskPointCountLabel(task) {
   if (task?.conflict) return '';
+  if (task?.diagnosticContext) {
+    const anchorCount = task?.item?.anchorRawPointIds?.length || 0;
+    return anchorCount ? `锚点 ${formatPlainNumber(anchorCount)}` : '';
+  }
   const primary = task?.item?.primaryTrackPointCount || 0;
   const context = task?.item?.contextTrackPointCount || 0;
   if (!primary && !context) return '';
@@ -3255,6 +3208,7 @@ function selectCleanedLineSegment(feature, lngLat) {
     const trackStart = Math.min(startTrackPointId, endTrackPointId);
     const trackEnd = Math.max(startTrackPointId, endTrackPointId);
     state.scenarioReviewRangeText = `${trackStart}-${trackEnd}`;
+    state.rawReviewContext = null;
     state.reviewFocusMode = true;
     state.focusedMapRange = focusedMapRangeFromTrackRange(dataset, trackStart, trackEnd);
     elements.scenarioRangeInput.value = state.scenarioReviewRangeText;
