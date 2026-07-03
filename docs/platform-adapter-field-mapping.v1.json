@@ -1,0 +1,430 @@
+{
+  "schemaVersion": "platform-adapter-field-mapping-v1",
+  "evidenceSchemaVersion": "outdoor-track-evidence-v1",
+  "purpose": "Define how platform adapters map native tracking samples into platform-neutral evidence JSONL.",
+  "principles": [
+    "Raw evidence is the only engine input.",
+    "New platform adapters, including watchOS, emit outdoor-track-evidence-v1 directly as their durable evidence output.",
+    "Platform-specific names are allowed only inside adapters.",
+    "fixElapsedRealtimeNanos is the only location continuity clock.",
+    "eventElapsedRealtimeNanos is event write time and must not replace fixElapsedRealtimeNanos.",
+    "callbackDelayNanos and receivedElapsedRealtimeNanos are diagnostic fields only.",
+    "Barometer ascent and descent are first-class evidence fields.",
+    "GNSS quality snapshots remain diagnostic extensions unless a strategy version explicitly promotes them."
+  ],
+  "platforms": [
+    {
+      "platform": "android_legacy_v3",
+      "status": "legacy_adapter",
+      "nativeSources": [
+        "LocationManager.GPS_PROVIDER Location",
+        "SamplingEpoch",
+        "device_motion_window",
+        "barometer window",
+        "optional GNSS diagnostics"
+      ],
+      "mappings": [
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "provider",
+          "sourceField": "raw_location.provider",
+          "transform": "gps -> gnss",
+          "required": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "sampleId",
+          "sourceField": "rawPointId",
+          "transform": "copy",
+          "required": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "lat",
+          "sourceField": "latitude",
+          "transform": "copy_finite_wgs84_latitude",
+          "required": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "lng",
+          "sourceField": "longitude",
+          "transform": "copy_finite_wgs84_longitude",
+          "required": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "horizontalAccuracyMeters",
+          "sourceField": "accuracy",
+          "transform": "copy_non_negative_meters",
+          "required": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "altitudeMeters",
+          "sourceField": "altitude",
+          "transform": "copy_or_null",
+          "required": false
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "verticalAccuracyMeters",
+          "sourceField": "verticalAccuracy",
+          "transform": "copy_non_negative_meters_or_null",
+          "required": false
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "speedMetersPerSecond",
+          "sourceField": "speed",
+          "transform": "copy_non_negative_mps_or_null",
+          "required": false
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "bearingDegrees",
+          "sourceField": "bearing",
+          "transform": "normalize_0_to_360_or_null",
+          "required": false
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "wallTimeMillis",
+          "sourceField": "timeMillis",
+          "transform": "copy",
+          "required": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "fixElapsedRealtimeNanos",
+          "sourceField": "elapsedRealtimeNanos",
+          "transform": "copy",
+          "required": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "receivedElapsedRealtimeNanos",
+          "sourceField": "callbackReceivedElapsedRealtimeNanos",
+          "transform": "copy_or_null",
+          "required": false,
+          "diagnosticOnly": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "callbackDelayNanos",
+          "sourceField": "callbackReceivedElapsedRealtimeNanos - elapsedRealtimeNanos",
+          "transform": "derive_non_negative_or_null",
+          "required": false,
+          "diagnosticOnly": true
+        },
+        {
+          "neutralEvent": "motion_window",
+          "neutralField": "windowId",
+          "sourceField": "deviceMotionWindowId",
+          "transform": "copy",
+          "required": true
+        },
+        {
+          "neutralEvent": "barometer_window",
+          "neutralField": "windowAscentMeters",
+          "sourceField": "barometer samples or legacy ascent aggregate",
+          "transform": "sum_positive_adjacent_altitude_deltas",
+          "required": true
+        },
+        {
+          "neutralEvent": "barometer_window",
+          "neutralField": "windowDescentMeters",
+          "sourceField": "barometer samples or legacy descent aggregate",
+          "transform": "sum_abs_negative_adjacent_altitude_deltas",
+          "required": true
+        }
+      ],
+      "diagnosticExtensions": [
+        "satelliteCount",
+        "usedInFixCount",
+        "cn0DbHz",
+        "constellationStats",
+        "gnssSnapshotAgeMillis"
+      ]
+    },
+    {
+      "platform": "watchos_ios",
+      "status": "new_adapter",
+      "durableOutputSchema": "outdoor-track-evidence-v1",
+      "nativeSchemaAllowedOutsideAdapter": false,
+      "nativeSources": [
+        "CoreLocation location update",
+        "CoreMotion summary",
+        "CMAltimeter pressure/relative altitude window",
+        "adapter sampling policy"
+      ],
+      "mappings": [
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "provider",
+          "sourceField": "adapter location source",
+          "transform": "system_location -> gnss_or_platform_location; prefer gnss when available",
+          "required": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "wallTimeMillis",
+          "sourceField": "CLLocation.timestamp",
+          "transform": "date_to_epoch_millis",
+          "required": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "fixElapsedRealtimeNanos",
+          "sourceField": "estimatedFixElapsedRealtimeNanos",
+          "transform": "derive_from_session_monotonic_and_wall_clock_anchor",
+          "required": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "eventElapsedRealtimeNanos",
+          "sourceField": "adapter write monotonic time",
+          "transform": "copy_current_monotonic_nanos",
+          "required": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "receivedElapsedRealtimeNanos",
+          "sourceField": "adapter callback monotonic time",
+          "transform": "copy_or_null",
+          "required": false,
+          "diagnosticOnly": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "callbackDelayNanos",
+          "sourceField": "receivedElapsedRealtimeNanos - fixElapsedRealtimeNanos",
+          "transform": "derive_non_negative_or_null",
+          "required": false,
+          "diagnosticOnly": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "horizontalAccuracyMeters",
+          "sourceField": "CLLocation.horizontalAccuracy",
+          "transform": "copy_non_negative_meters",
+          "required": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "altitudeMeters",
+          "sourceField": "CLLocation.altitude",
+          "transform": "copy_or_null",
+          "required": false
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "verticalAccuracyMeters",
+          "sourceField": "CLLocation.verticalAccuracy",
+          "transform": "copy_non_negative_meters_or_null",
+          "required": false
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "speedMetersPerSecond",
+          "sourceField": "CLLocation.speed",
+          "transform": "negative_to_null",
+          "required": false
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "bearingDegrees",
+          "sourceField": "CLLocation.course",
+          "transform": "negative_to_null_then_normalize_0_to_360",
+          "required": false
+        },
+        {
+          "neutralEvent": "barometer_window",
+          "neutralField": "altitudeReference",
+          "sourceField": "CMAltimeter.relativeAltitude",
+          "transform": "constant_relative_session",
+          "required": true
+        },
+        {
+          "neutralEvent": "barometer_window",
+          "neutralField": "windowAscentMeters",
+          "sourceField": "CMAltimeter relativeAltitude samples",
+          "transform": "sum_positive_adjacent_altitude_deltas",
+          "required": true
+        },
+        {
+          "neutralEvent": "barometer_window",
+          "neutralField": "windowDescentMeters",
+          "sourceField": "CMAltimeter relativeAltitude samples",
+          "transform": "sum_abs_negative_adjacent_altitude_deltas",
+          "required": true
+        },
+        {
+          "neutralEvent": "barometer_window",
+          "neutralField": "avgPressureHpa",
+          "sourceField": "CMAltimeter.pressure",
+          "transform": "kilopascal_to_hectopascal",
+          "required": false
+        }
+      ],
+      "diagnosticExtensions": [
+        "authorizationStatus",
+        "accuracyAuthorization",
+        "deferredLocationUpdates",
+        "motionActivityConfidence"
+      ]
+    },
+    {
+      "platform": "harmony",
+      "status": "new_adapter",
+      "nativeSources": [
+        "platform location update",
+        "platform motion summary",
+        "platform barometer or pressure sensor window",
+        "adapter sampling policy"
+      ],
+      "mappings": [
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "provider",
+          "sourceField": "adapter provider/source type",
+          "transform": "gnss_capable_source -> gnss; otherwise platform_location",
+          "required": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "wallTimeMillis",
+          "sourceField": "platform location wall time",
+          "transform": "copy_epoch_millis_or_derive_from_adapter_clock",
+          "required": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "fixElapsedRealtimeNanos",
+          "sourceField": "platform monotonic fix time or estimatedFixElapsedRealtimeNanos",
+          "transform": "copy_if_native_monotonic_else_derive_from_session_monotonic_and_wall_clock_anchor",
+          "required": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "eventElapsedRealtimeNanos",
+          "sourceField": "adapter write monotonic time",
+          "transform": "copy_current_monotonic_nanos",
+          "required": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "receivedElapsedRealtimeNanos",
+          "sourceField": "adapter callback monotonic time",
+          "transform": "copy_or_null",
+          "required": false,
+          "diagnosticOnly": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "callbackDelayNanos",
+          "sourceField": "receivedElapsedRealtimeNanos - fixElapsedRealtimeNanos",
+          "transform": "derive_non_negative_or_null",
+          "required": false,
+          "diagnosticOnly": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "horizontalAccuracyMeters",
+          "sourceField": "platform horizontal accuracy",
+          "transform": "copy_non_negative_meters",
+          "required": true
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "altitudeMeters",
+          "sourceField": "platform altitude",
+          "transform": "copy_or_null",
+          "required": false
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "verticalAccuracyMeters",
+          "sourceField": "platform vertical accuracy",
+          "transform": "copy_non_negative_meters_or_null",
+          "required": false
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "speedMetersPerSecond",
+          "sourceField": "platform reported speed",
+          "transform": "negative_or_invalid_to_null",
+          "required": false
+        },
+        {
+          "neutralEvent": "location_sample",
+          "neutralField": "bearingDegrees",
+          "sourceField": "platform bearing/course",
+          "transform": "invalid_to_null_then_normalize_0_to_360",
+          "required": false
+        },
+        {
+          "neutralEvent": "barometer_window",
+          "neutralField": "altitudeReference",
+          "sourceField": "adapter barometer reference model",
+          "transform": "relative_session_or_standard_atmosphere",
+          "required": true
+        },
+        {
+          "neutralEvent": "barometer_window",
+          "neutralField": "windowAscentMeters",
+          "sourceField": "barometer altitude samples",
+          "transform": "sum_positive_adjacent_altitude_deltas",
+          "required": true
+        },
+        {
+          "neutralEvent": "barometer_window",
+          "neutralField": "windowDescentMeters",
+          "sourceField": "barometer altitude samples",
+          "transform": "sum_abs_negative_adjacent_altitude_deltas",
+          "required": true
+        }
+      ],
+      "diagnosticExtensions": [
+        "providerStatus",
+        "permissionState",
+        "sensorAvailability",
+        "adapterClockQuality"
+      ]
+    }
+  ],
+  "criticalInvariants": [
+    {
+      "id": "fix-time-primary",
+      "text": "GAP, speed, segment, moving time, GNSS elevation continuity, and scenario window ordering must use fixElapsedRealtimeNanos."
+    },
+    {
+      "id": "watchos-neutral-output",
+      "text": "watchOS durable tracking logs must be outdoor-track-evidence-v1; CLLocation, CoreMotion, and CMAltimeter names may appear only inside the adapter or diagnostic extensions."
+    },
+    {
+      "id": "event-time-not-continuity",
+      "text": "eventElapsedRealtimeNanos is event write time and must not be used as the location continuity clock."
+    },
+    {
+      "id": "estimated-fix-equivalence",
+      "text": "estimatedFixElapsedRealtimeNanos is an adapter-side replacement for a missing native monotonic fix timestamp; after mapping it has the same neutral semantics as Android elapsedRealtimeNanos because both become fixElapsedRealtimeNanos."
+    },
+    {
+      "id": "callback-delay-diagnostic-only",
+      "text": "receivedElapsedRealtimeNanos and callbackDelayNanos may explain delivery latency but must not hard-reject points or advance metric time."
+    },
+    {
+      "id": "gain-loss-first-class",
+      "text": "windowAscentMeters and windowDescentMeters must be emitted separately; net delta is not enough."
+    },
+    {
+      "id": "diagnostic-quality-not-truth",
+      "text": "Satellite, C/N0, authorization, provider status, and adapter clock diagnostics are evidence for review, not direct route truth."
+    },
+    {
+      "id": "privacy",
+      "text": "Adapters must not emit platform serial numbers, account ids, phone numbers, advertising ids, Android ids, Apple ids, or non-resettable hardware identifiers."
+    }
+  ]
+}

@@ -1,0 +1,499 @@
+{
+  "schemaVersion": "track-sdk-public-api-v1",
+  "evidenceSchemaVersion": "outdoor-track-evidence-v1",
+  "adapterMappingSchemaVersion": "platform-adapter-field-mapping-v1",
+  "purpose": "Freeze the platform-neutral SDK API and replay fixture contract that adapters, Rust Core, CLI, FFI, Web review, and target-platform runners must align on.",
+  "publicApis": [
+    {
+      "name": "process",
+      "kind": "batch",
+      "input": "TrackProcessRequest",
+      "output": "TrackProcessResponse",
+      "stability": "target_v1",
+      "notes": "Consumes a complete platform-neutral session and returns the product result."
+    },
+    {
+      "name": "process_debug",
+      "kind": "batch_debug",
+      "input": "TrackProcessRequest",
+      "output": "TrackProcessDebugResponse",
+      "stability": "target_v1",
+      "notes": "Adds raw decisions, cleaning operations, metric ownership ranges, and replay diagnostics."
+    },
+    {
+      "name": "verify_fixtures",
+      "kind": "replay",
+      "input": "TrackReplayFixture[]",
+      "output": "TrackReplayReport",
+      "currentRustCliCommand": "track-cli verify-fixtures-json <fixtures-dir>",
+      "stability": "target_v1",
+      "notes": "Runs deterministic replay and produces a comparable report for Android, Web, Rust, iOS, and Harmony."
+    }
+  ],
+  "models": {
+    "TrackProcessRequest": {
+      "schemaPath": "track-rs/schemas/process-request.schema.json",
+      "required": ["schemaVersion", "config", "input"],
+      "fields": {
+        "schemaVersion": "track-sdk-process-request-v1",
+        "config": "TrackConfig",
+        "input": "OutdoorTrackInput"
+      }
+    },
+    "TrackProcessResponse": {
+      "schemaPath": "track-rs/schemas/process-response.schema.json",
+      "required": ["ok"],
+      "result": "CleanedTrackResult",
+      "error": "TrackError"
+    },
+    "TrackProcessDebugResponse": {
+      "schemaPath": "track-rs/schemas/process-debug-response.schema.json",
+      "required": ["ok"],
+      "result": "TrackProcessDebugResult",
+      "error": "TrackError"
+    },
+    "OutdoorTrackInput": {
+      "source": "outdoor-track-evidence-v1",
+      "required": ["sessionContext", "samplingEpochs", "locationSamples"],
+      "collections": [
+        "samplingEpochs",
+        "locationSamples",
+        "motionWindows",
+        "barometerWindows",
+        "barometerCalibrations",
+        "sessionEvents"
+      ],
+      "notes": [
+        "Input models are derived from platform-neutral evidence, not from platform native objects.",
+        "Review queue exports are not valid engine input."
+      ]
+    },
+    "LocationSample": {
+      "required": [
+        "sampleId",
+        "provider",
+        "lat",
+        "lng",
+        "horizontalAccuracyMeters",
+        "wallTimeMillis",
+        "fixElapsedRealtimeNanos",
+        "isMock"
+      ],
+      "continuityClock": "fixElapsedRealtimeNanos",
+      "diagnosticOnlyFields": [
+        "receivedElapsedRealtimeNanos",
+        "callbackDelayNanos",
+        "platformDiagnosticExtension"
+      ]
+    },
+    "BarometerWindow": {
+      "required": [
+        "windowId",
+        "startElapsedRealtimeNanos",
+        "endElapsedRealtimeNanos",
+        "altitudeReference",
+        "windowAscentMeters",
+        "windowDescentMeters"
+      ],
+      "notes": [
+        "windowAscentMeters and windowDescentMeters are independent evidence fields.",
+        "deltaBarometerAltitudeMeters is not a replacement for gain/loss."
+      ]
+    },
+    "TrackSummary": {
+      "required": [
+        "totalDistanceMeters",
+        "movingTimeSeconds",
+        "paceSecondsPerKm",
+        "totalAscentMeters",
+        "totalDescentMeters",
+        "selectedElevationSource"
+      ],
+      "notes": [
+        "Products may hide descent in UI, but SDK output must preserve totalDescentMeters.",
+        "paceSecondsPerKm is derived from totalDistanceMeters and movingTimeSeconds."
+      ]
+    },
+    "CleanedTrackPoint": {
+      "required": [
+        "trackPointId",
+        "sourceSampleId",
+        "lat",
+        "lng",
+        "fixElapsedRealtimeNanos",
+        "wallTimeMillis",
+        "horizontalAccuracyMeters",
+        "distanceDeltaMeters",
+        "movingTimeDeltaSeconds",
+        "segmentId"
+      ],
+      "notes": [
+        "sourceSampleId references LocationSample.sampleId.",
+        "Track point continuity uses fixElapsedRealtimeNanos."
+      ]
+    },
+    "RawPointDecision": {
+      "required": [
+        "sampleId",
+        "result",
+        "reason",
+        "metricOwner",
+        "affectedMetricGates"
+      ],
+      "resultValues": ["accept", "weak", "reject", "intake_rejected"],
+      "notes": [
+        "Rejected and weak samples must remain in debug output.",
+        "diagnostic_context decisions must not own route, distance, moving_time, or elevation."
+      ]
+    },
+    "CleaningOperation": {
+      "required": [
+        "operationId",
+        "kind",
+        "inputSampleRange",
+        "distancePolicy",
+        "movingTimePolicy",
+        "elevationPolicy"
+      ],
+      "kindValues": [
+        "CollapseToAnchor",
+        "RemoveSpike",
+        "BridgeGap",
+        "SimplifyPolyline",
+        "ExcludeTransport",
+        "PreserveEndpoint",
+        "ResetBoundary",
+        "DiagnosticContext"
+      ],
+      "legacyAliases": [
+        {
+          "legacyField": "inputRawRange",
+          "replacementField": "inputSampleRange",
+          "status": "resolved_in_rust_output_kept_as_deserialization_alias"
+        }
+      ]
+    },
+    "MetricOwnershipRange": {
+      "required": [
+        "ownerId",
+        "sampleRange",
+        "affectedMetricGates",
+        "hardBoundary"
+      ],
+      "rangeField": "sampleRange",
+      "legacyAliases": [
+        {
+          "legacyField": "rawRange",
+          "replacementField": "sampleRange",
+          "status": "resolved_in_rust_output_kept_as_deserialization_alias"
+        }
+      ],
+      "notes": [
+        "ownerId values produced by base kernel decisions use sample-decision:<sampleId>.",
+        "Metric ownership ranges must not overlap for the same metric gate.",
+        "Diagnostic-only context ranges may overlap but cannot block safe commit."
+      ]
+    },
+    "StreamingSettlementState": {
+      "schemaPath": "track-rs/schemas/streaming-settlement-state.schema.json",
+      "required": [
+        "schemaVersion",
+        "committedCursorSampleId",
+        "commitSequence",
+        "committedRanges",
+        "committedMetricOwnershipRanges",
+        "hardBoundaryCheckpoints",
+        "blockingRanges",
+        "lastCommitPlanStatus",
+        "lastCommitWatermark"
+      ],
+      "rangeField": "sampleRange",
+      "notes": [
+        "Streaming state is the portable low-memory settlement checkpoint, not a product result.",
+        "lastCommitWatermark and blockingRanges explain why a realtime engine can or cannot safely commit the current prefix.",
+        "Internal prototypes may still use raw point names, but public streaming state must use sample ids and sampleRange."
+      ]
+    },
+    "ReviewQueueExport": {
+      "schemaPath": "track-rs/schemas/review-queue.schema.json",
+      "required": [
+        "schemaVersion",
+        "dataset",
+        "filter",
+        "stats",
+        "taskCount",
+        "tasks",
+        "streamingSettlementState",
+        "streamingDiagnosticContexts"
+      ],
+      "schemaVersionValue": "review-queue-v1",
+      "notes": [
+        "Review queue exports are AI/human alignment artifacts, not engine input.",
+        "streamingSettlementState must use the platform-neutral streaming settlement state schema."
+      ]
+    },
+    "ReviewQueueBatchExport": {
+      "schemaPath": "track-rs/schemas/review-queue-batch.schema.json",
+      "required": [
+        "schemaVersion",
+        "sourcePath",
+        "filter",
+        "exportedAt",
+        "fileCount",
+        "successCount",
+        "errorCount",
+        "exports",
+        "errors"
+      ],
+      "schemaVersionValue": "review-queue-batch-v1",
+      "notes": [
+        "Each exports[] item must satisfy ReviewQueueExport.",
+        "Batch exports are for replay fixture sets or real session collections."
+      ]
+    },
+    "ReviewQueueAiPackageManifest": {
+      "schemaPath": "track-rs/schemas/review-queue-ai-package.schema.json",
+      "required": [
+        "schemaVersion",
+        "generatedAt",
+        "inputPath",
+        "filter",
+        "baseName",
+        "safeToSend",
+        "issueCount",
+        "files",
+        "contracts",
+        "notes"
+      ],
+      "schemaVersionValue": "review-queue-ai-package-v1",
+      "packageFiles": [
+        "reviewQueueJson",
+        "reviewQueueReport",
+        "aiPrompt",
+        "packageManifest"
+      ],
+      "notes": [
+        "The manifest describes the review queue AI package, not engine input.",
+        "safeToSend must equal issueCount === 0.",
+        "files values must be local file names in the package directory."
+      ]
+    },
+    "ReviewQueueAiAlignmentResult": {
+      "schemaPath": "track-rs/schemas/review-queue-ai-alignment-result.schema.json",
+      "required": [
+        "schemaVersion",
+        "packageSchemaVersion",
+        "sourceSchemaVersion",
+        "alignable",
+        "hasP0",
+        "hasP1",
+        "datasets",
+        "metricTaskResults",
+        "diagnosticTaskResults",
+        "differences",
+        "noStrategyChangeItems",
+        "replayFixtureRequests",
+        "nextActions"
+      ],
+      "schemaVersionValue": "review-queue-ai-alignment-result-v1",
+      "notes": [
+        "AI alignment results are review outputs, not engine input.",
+        "Every difference must cite reviewKey and rawRange.",
+        "P0/P1/P2 severity is for cross-platform alignment triage."
+      ]
+    },
+    "TrackReplayFixture": {
+      "schemaPath": "track-rs/schemas/fixture.schema.json",
+      "required": [
+        "schemaVersion",
+        "ruleId",
+        "ruleVersion",
+        "source",
+        "request",
+        "expected"
+      ],
+      "sourceValues": ["web_algorithm", "rust_infrastructure", "android_replay", "real_session_slice"],
+      "expectedRequired": [
+        "trackPointCount",
+        "gpxTrackPointCount",
+        "segmentCount",
+        "totalDistanceMeters",
+        "movingTimeSeconds",
+        "totalAscentMeters",
+        "totalDescentMeters"
+      ],
+      "expectedOptional": [
+        "acceptedSampleIds",
+        "weakSampleIds",
+        "rejectedSampleIds",
+        "decisionReasons"
+      ],
+      "decisionReasonsKeyField": "sampleId",
+      "decisionReasonsKeyEncoding": "json_object_property_name",
+      "legacyAliases": [
+        {
+          "legacyField": "expected.acceptedRawPointIds",
+          "replacementField": "expected.acceptedSampleIds",
+          "status": "temporary_alias_until_sdk_v1_freeze"
+        },
+        {
+          "legacyField": "expected.weakRawPointIds",
+          "replacementField": "expected.weakSampleIds",
+          "status": "temporary_alias_until_sdk_v1_freeze"
+        },
+        {
+          "legacyField": "expected.rejectedRawPointIds",
+          "replacementField": "expected.rejectedSampleIds",
+          "status": "temporary_alias_until_sdk_v1_freeze"
+        }
+      ]
+    },
+    "TrackReplayReport": {
+      "schemaPath": "track-rs/schemas/replay-report.schema.json",
+      "required": [
+        "schemaVersion",
+        "strategyVersion",
+        "fixtureCount",
+        "passedCount",
+        "failedCount",
+        "failures"
+      ],
+      "schemaVersionValue": "track-sdk-replay-report-v1",
+      "failureLocatorContract": {
+        "primaryRangeField": "sampleRange",
+        "primaryPointField": "sampleId",
+        "metadataLocatorField": "fixturePath",
+        "legacyRangeAliases": [
+          {
+            "legacyField": "rawRange",
+            "replacementField": "sampleRange",
+            "status": "temporary_alias_until_sdk_v1_freeze"
+          }
+        ],
+        "rules": [
+          "Range-level algorithm or expected-value failures must emit sampleRange.",
+          "Point-level decision failures must emit sampleId.",
+          "Fixture parse/read failures may emit fixturePath without sampleRange.",
+          "rawRange may be emitted only as a legacy mirror of sampleRange during the transition."
+        ]
+      }
+    }
+  },
+  "transitionalAliases": [
+    {
+      "legacyField": "locationSamples[].rawPointId",
+      "targetField": "locationSamples[].sampleId",
+      "status": "resolved_in_rust_output_kept_as_deserialization_alias"
+    },
+    {
+      "legacyField": "locationSamples[].positioningSource",
+      "targetField": "locationSamples[].provider",
+      "status": "resolved_in_rust_output_kept_as_deserialization_alias"
+    },
+    {
+      "legacyField": "locationSamples[].latitude",
+      "targetField": "locationSamples[].lat",
+      "status": "resolved_in_rust_output_kept_as_deserialization_alias"
+    },
+    {
+      "legacyField": "locationSamples[].longitude",
+      "targetField": "locationSamples[].lng",
+      "status": "resolved_in_rust_output_kept_as_deserialization_alias"
+    },
+    {
+      "legacyField": "locationSamples[].elapsedRealtimeNanos",
+      "targetField": "locationSamples[].fixElapsedRealtimeNanos",
+      "status": "resolved_in_rust_output_kept_as_deserialization_alias"
+    },
+    {
+      "legacyField": "rawPointDecisions[].rawPointId",
+      "targetField": "rawPointDecisions[].sampleId",
+      "status": "resolved_in_rust_output_kept_as_deserialization_alias"
+    },
+    {
+      "legacyField": "trackPoints[].sourceRawPointId",
+      "targetField": "trackPoints[].sourceSampleId",
+      "status": "resolved_in_rust_output_kept_as_deserialization_alias"
+    },
+    {
+      "legacyField": "trackPoints[].latitude",
+      "targetField": "trackPoints[].lat",
+      "status": "resolved_in_rust_output_kept_as_deserialization_alias"
+    },
+    {
+      "legacyField": "trackPoints[].longitude",
+      "targetField": "trackPoints[].lng",
+      "status": "resolved_in_rust_output_kept_as_deserialization_alias"
+    },
+    {
+      "legacyField": "trackPoints[].elapsedRealtimeNanos",
+      "targetField": "trackPoints[].fixElapsedRealtimeNanos",
+      "status": "resolved_in_rust_output_kept_as_deserialization_alias"
+    },
+    {
+      "legacyField": "summary.ascentMeters",
+      "targetField": "summary.totalAscentMeters",
+      "status": "resolved_in_rust_output_kept_as_deserialization_alias"
+    },
+    {
+      "legacyField": "cleaningOperations[].inputRawRange",
+      "targetField": "cleaningOperations[].inputSampleRange",
+      "status": "resolved_in_rust_output_kept_as_deserialization_alias"
+    },
+    {
+      "legacyField": "metricOwnershipRanges[].rawRange",
+      "targetField": "metricOwnershipRanges[].sampleRange",
+      "status": "resolved_in_rust_output_kept_as_deserialization_alias"
+    },
+    {
+      "legacyField": "failures[].rawRange",
+      "targetField": "failures[].sampleRange",
+      "status": "temporary_alias_until_sdk_v1_freeze"
+    },
+    {
+      "legacyField": "expected.acceptedRawPointIds",
+      "targetField": "expected.acceptedSampleIds",
+      "status": "temporary_alias_until_sdk_v1_freeze"
+    },
+    {
+      "legacyField": "expected.weakRawPointIds",
+      "targetField": "expected.weakSampleIds",
+      "status": "temporary_alias_until_sdk_v1_freeze"
+    },
+    {
+      "legacyField": "expected.rejectedRawPointIds",
+      "targetField": "expected.rejectedSampleIds",
+      "status": "temporary_alias_until_sdk_v1_freeze"
+    }
+  ],
+  "invariants": [
+    {
+      "id": "raw-evidence-only",
+      "text": "The SDK consumes platform-neutral evidence-derived input; review queue exports, UI state, and target-platform private fields are not engine input."
+    },
+    {
+      "id": "fix-time-continuity",
+      "text": "GAP, speed, segment, moving time, elevation continuity, and scenario ordering use fixElapsedRealtimeNanos."
+    },
+    {
+      "id": "diagnostic-delay-only",
+      "text": "receivedElapsedRealtimeNanos and callbackDelayNanos are diagnostic-only and must not become hard gates."
+    },
+    {
+      "id": "descent-preserved",
+      "text": "SDK summaries and replay fixtures preserve totalDescentMeters even if the product UI only displays ascent."
+    },
+    {
+      "id": "debug-keeps-rejected",
+      "text": "Rejected, weak, mock, and intake-rejected samples remain in debug/replay output."
+    },
+    {
+      "id": "metric-owner-non-overlap",
+      "text": "Metric-owning sampleRange values cannot overlap for the same affected metric gate; diagnostic contexts may overlap but cannot own metrics."
+    },
+    {
+      "id": "deterministic-replay",
+      "text": "Given the same fixture request and strategy version, every SDK target must produce the same replay report."
+    }
+  ]
+}

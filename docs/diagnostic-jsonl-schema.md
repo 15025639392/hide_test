@@ -4,6 +4,12 @@ This document records the diagnostic events that are treated as stable enough
 for tools and AI agents to inspect. New fields must remain backward compatible:
 readers should tolerate missing optional fields from older sessions.
 
+This is the Android v3 diagnostic schema. Platform-neutral evidence that should
+be shared by Android, watchOS, iOS, Harmony, Web replay, and SDK tooling is
+defined in `docs/platform-neutral-evidence-jsonl-contract.md`. New
+cross-platform collectors should prefer that schema instead of adding
+platform-specific field aliases here.
+
 ## Common Fields
 
 Every event written through `DiagnosticLogger` includes:

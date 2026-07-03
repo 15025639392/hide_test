@@ -65,6 +65,10 @@ SDK Core 不直接负责：
   -> Track SDK Core
 ```
 
+Adapter 字段映射必须按 `docs/platform-adapter-field-mapping.md` 和
+`docs/platform-adapter-field-mapping.v1.json` 执行。SDK Core 只能消费平台中立字段；
+Android、watchOS / iOS、鸿蒙的原生字段名不应穿透到 Core。
+
 ## 情景的角色
 
 情景不是普通 App 的主输出。它是内部清洗算子或 settlement 依据。
@@ -108,13 +112,15 @@ CleanedTrackResult:
     totalDistanceMeters
     movingTimeSeconds
     paceSecondsPerKm optional
-    ascentMeters
+    totalAscentMeters
+    totalDescentMeters
+    selectedElevationSource
 
 CleanedTrackPoint:
   trackPointId
-  sourceRawPointId
-  latitude
-  longitude
+  sourceSampleId
+  lat
+  lng
   trackDirectionDegrees optional
   distanceDeltaMeters
   movingTimeDeltaSeconds
@@ -124,6 +130,7 @@ CleanedTrackDebugResult:
   cleanedTrack
   rawPointDecisions[]
   cleaningOperations[]
+  metricOwnershipRanges[]
   rejectedRawPoints[]
   scenarioCoverage[] optional
   replayDiagnostics
@@ -131,3 +138,5 @@ CleanedTrackDebugResult:
 
 `scenarioCoverage` 可以保留在 debug 层，用于复核和 replay 对齐，但不应成为普通 App
 理解轨迹结果的前置概念。
+`cleaningOperations[].inputSampleRange` 和 `metricOwnershipRanges[].sampleRange` 是稳定
+区间字段；旧 `inputRawRange` / `rawRange` 只作为过渡 alias，不能作为新输出口径。

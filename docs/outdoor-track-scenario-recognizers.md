@@ -5,6 +5,10 @@
 `acceptance-web/src/sixLayerTrackProduct.mjs`，不改变 Android Java 策略、
 `evidence.jsonl` schema 或 replay fixture 期望。
 
+实时流式场景窗口、窗口重叠和唯一指标 owner 的结算协议见
+`docs/streaming-scenario-window-settlement-plan.md`。本文描述已有 Web 场景语义；
+实时链路接入时应先把场景输出为 proposal，再交给 `SettlementCoordinator` 统一仲裁。
+
 ## 边界
 
 - 场景识别器只读取标准证据：`raw_location`、`sampling_policy`、

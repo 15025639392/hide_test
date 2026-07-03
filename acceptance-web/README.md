@@ -90,6 +90,82 @@ https://tiles.mapterhorn.com/tilejson.json
 - 疑似交通工具标记为 `transport_risk` 诊断证据，不计入徒步距离、运动时间或爬升真值。
 - `Location.altitude` 和气压计高度是两条独立高度线，最终只在 selected ascent 选择层汇合。
 
+## 导出 AI 对齐包
+
+审核队列可以导出为 `review-queue-v1` JSON，用于发给 AI 或端侧实现方对齐产品行为。
+它不是算法输入，不会反向影响 Web 判点或指标。
+机器契约在 `track-rs/schemas/review-queue.schema.json` 和
+`track-rs/schemas/review-queue-batch.schema.json`；导出包内的
+`streamingSettlementState` 必须符合 `track-rs/schemas/streaming-settlement-state.schema.json`。
+一键包 manifest 必须符合 `track-rs/schemas/review-queue-ai-package.schema.json`。
+
+在 UI 中，导入 evidence 后可在“复核任务”面板选择 `全部 / 指标 / 诊断 / 高风险 / 待看`
+筛选，再点击“导出”。
+
+无浏览器环境可以直接运行：
+
+```bash
+npm run export-review-queue -- ../path/to/evidence.jsonl --filter diagnostic --out /tmp/review-queue.json
+```
+
+推荐发给 AI 前使用一键打包命令，它会同时生成 JSON 审核包、Markdown 报告、固定 AI 提示词
+和 manifest，并在发现 report issue 时返回非零退出码：
+
+```bash
+npm run package-review-queue -- ../path/to/evidence.jsonl --filter all --out-dir /tmp/track-review
+```
+
+默认输出形如 `*-review-queue.json`、`*-review-queue.md`、`*-review-queue-prompt.md`
+和 `*-review-queue-manifest.json`；带 `--basename ai-review` 时会输出
+`ai-review.json`、`ai-review.md`、`ai-review-prompt.md` 和 `ai-review-manifest.json`。
+发给 AI 或端侧实现方时，四个文件应作为同一个包发送；manifest 的 `files` 会列出这四个
+文件，`contracts` 会列出本包依赖的机器契约。
+
+发包前也可以直接校验 manifest、四个包文件是否完整，以及 JSON / 报告 / 提示词内容类型是否匹配：
+
+```bash
+npm run validate-review-queue-package -- /tmp/track-review/evidence-review-queue-manifest.json
+```
+
+导出后可生成一份 Markdown 对齐报告，直接贴给 AI 或端侧实现方：
+
+```bash
+npm run report-review-queue -- /tmp/review-queue.json --out /tmp/review-queue-report.md
+```
+
+报告会把缺失 `streamingSettlementState`、公共状态泄露内部 `rawPointId` / `range`、
+或 `blockingRanges[]` 缺少 `affectedMetricGates[]` 标为 P0，需先修正再发包。
+发包前可加失败门：
+
+```bash
+npm run report-review-queue -- /tmp/review-queue.json --fail-on-issues
+```
+
+也可以传入目录，递归导出目录下所有 `.jsonl` 为一个 `review-queue-batch-v1` 批量包：
+
+```bash
+npm run export-review-queue -- ../app/src/test/resources/replay-fixtures --filter highRisk --out /tmp/replay-review-queues.json
+```
+
+批量包也可以生成同样格式的对齐报告：
+
+```bash
+npm run report-review-queue -- /tmp/replay-review-queues.json --out /tmp/replay-review-queues.md
+```
+
+常用筛选：
+
+```text
+all         全部审核任务
+metric      会拥有或影响指标的任务
+diagnostic  只用于复盘和跨端对齐的 diagnostic_context
+highRisk    高风险边界和冲突
+pending     尚未标记状态的任务
+```
+
+`type=diagnostic_context` 的任务必须保持 `metricOwner=false`，不能在任何端转换成
+route、distance、moving_time 或 elevation ownership。
+
 ## 测试
 
 ```bash

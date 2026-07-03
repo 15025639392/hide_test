@@ -1,9 +1,11 @@
 # Replay Fixture Six-Layer Matrix
 
 本文定义六层因果模型下的 replay fixture 规划。目标是把真实户外问题变成可复测样本，
-验证水平轨迹、运动时间、距离、GNSS 海拔线、气压计高度线和最终爬升选择。
+验证清洗轨迹、总里程、累计爬升、累计下降、GNSS 海拔线、气压计高度线和最终高度源选择。
 
-本文是测试设计文档，不改变当前 fixtures 或 replay 期望。
+本文是测试设计文档，不改变当前 fixtures 或 replay 期望。Rust core 当前迁移范围只要求
+轨迹清洗、累计爬升、累计下降和总里程；运动时间可以作为既有字段参与回归校验，但不是
+本轮产品指标迁移目标。
 
 ## 输入范围
 
@@ -49,9 +51,6 @@ horizontal decision:
 
 distance:
   distanceDeltaMeters / totalDistanceMeters
-
-moving time:
-  movingTimeDeltaSeconds / movingTimeSeconds
 
 GNSS altitude:
   accepted / rejected / reset / suspended / unavailable
@@ -121,6 +120,79 @@ gnss_altitude_noisy_baro_clean
 不能把真实慢走吞成静止漂移。
 不能把 Location altitude 和 barometer altitude 混成一条高度线。
 ```
+
+## 当前真实样本覆盖
+
+Web regression 已把本机可用的真实 session 纳入六层验收：
+
+| Session | 测试文件 | 覆盖问题 | 已固化期望 |
+| --- | --- | --- | --- |
+| `5ccf3a9f-1d85-4c2b-8b24-61839d459845` | `acceptance-web/tests/realEvidenceRegression.test.mjs` | dense rest、小移动、moving spike、composite round-trip guard、closed-loop diagnostic、mixed loop cluster | `rest_photo_micro_move` 休息段不计距；`moving_spike_cleanup` 删除尖刺；`composite_gap_local_settlement` 只进入 context report 且保留 rejection reason / same-road evidence；`closed_loop_round_trip` 只作为 diagnostic context；mixed loop cluster 距离有界 |
+| `0ddf2d35-02e2-454c-9057-667265fe8a71` | `acceptance-web/tests/realEvidenceRegression.test.mjs` | stationary drift cloud | 本机存在该 session 时，验证局部漂移云压成单个 `stationary_drift_anchor` |
+
+## 当前 Rust Core Fixture 覆盖
+
+`track-rs/fixtures/` 是 Rust core 的最小回归样例，当前已覆盖：
+
+| Fixture | 覆盖问题 | 当前校验重点 |
+| --- | --- | --- |
+| `normal-3-points.json` | 正常 GNSS 徒步 | 可信点、总里程、segment |
+| `invalid-positioning-source.json` | 非法 provider | intake reject，不进可信轨迹 |
+| `mock-point.json` | mock 样本 | intake reject |
+| `invalid-lat-lon.json` | 非法经纬度 | intake reject |
+| `bad-accuracy.json` | accuracy 过差 | reject / weak 解释 |
+| `duplicate-elapsed-time.json` | 时间不连续 | reject |
+| `empty-after-filter.json` | 全部被过滤 | 空轨迹稳定返回 |
+| `gap-recovery-fast-path.json` | GAP 后稳定恢复 | 新段锚点归零，不跨 GAP 计距 |
+| `gap-recovery-pending-low-accuracy.json` | GAP 后低精度恢复等待 | weak pending，不计距 |
+| `gap-recovery-stable-cloud.json` | GAP 恢复点云稳定 | 恢复锚点 |
+| `transport-risk-reported-speed.json` | 交通工具风险 | reject，不进入徒步总里程 |
+| `moving-spike-line-bridge.json` | 移动单点尖刺 | 桥接清洗，总里程按桥接线计算 |
+| `position-snap-recovery-anchor.json` | 定位跳变恢复 | 恢复点归零 |
+| `stationary-session-collapse.json` | 整段静止 | 单代表点，总里程为 0 |
+| `stationary-drift-collapse.json` | 停留漂移云 | 局部锚点压缩 |
+| `weak-recovery-shape-anchor.json` | 弱恢复端点 | 弱点云代表锚点，保持新段边界 |
+| `rest-photo-micro-move-anchor.json` | 休息/拍照微移动 | 微移动压缩，不污染总里程 |
+| `dense-main-route-settlement.json` | 密集区主路线 | 主路线骨架抽稀，总里程按骨架计算 |
+| `round-trip-line-settlement.json` | 往返线形 | 折返点保留，往返线形抽稀 |
+| `gnss-ascent-descent.json` | GNSS 高度可用 | 累计爬升/累计下降 |
+| `barometer-ascent-descent-priority.json` | 气压计高度可用 | BAROMETER 优先于 GNSS |
+
+已在 Rust core 实现、但还缺独立端到端 fixture 的清洗点：
+
+| 清洗点 | 当前证据 | 需要补的 fixture |
+| --- | --- | --- |
+| `same_road_round_trip` 中心线压缩 | Rust 单元测试校验 `round_trip_interwoven_*` 清洗点被压到中心线；fixture verifier 已支持 `expected.trackPoints[]` 坐标校验 | 同路往返端到端 ProcessRequest，校验中心线坐标和折返点保留 |
+| `enclosed_loop_cluster_settlement` 遮挡回环压缩 | Rust 单元测试覆盖 settlement helper 行为 | 端到端 evidence / ProcessRequest，校验 start/anchor/end 和总里程归零/有界 |
+
+## 当前 Android legacy fixture 覆盖
+
+`acceptance-web/tests/androidReplayFixtures.test.mjs` 会读取
+`app/src/test/resources/replay-fixtures/*.jsonl`，验证这些 Android legacy fixture 可以被
+平台中立 Web 目标函数消费。测试不把旧 `expectedResult` / `expectedReason` 当成 Web
+目标策略真相，而是验证跨端必须一致的指标不变量：
+
+| Fixture | 覆盖问题 | Web 平台中立期望 |
+| --- | --- | --- |
+| `good_walk.jsonl` | 正常徒步 | 两个可信点；第二点计距和计运动时间 |
+| `weak_start_cloud.jsonl` | 起点弱定位 | 不进入可信轨迹；不计距、不计运动时间 |
+| `gap_recovery_after_stationary_gap.jsonl` | 长 GAP 后恢复 | `gap_recovery` 开新 segment；distance / moving time delta 为 0 |
+| `stationary_recovery_after_gap.jsonl` | 静止 GAP 后恢复等待 | 恢复点保持 weak pending；不产生成品距离或运动时间 |
+| `transport_mode.jsonl` | 疑似交通工具混入后恢复 | transport raw 被 reject；徒步距离/运动时间不累计；恢复点作为 GAP boundary 归零 |
+| `stationary_recovery_with_motion.jsonl` | 有运动证据的慢恢复 | 保留移动点并正常计距、计运动时间 |
+
+这些真实样本不是 replay 的全部覆盖。下一批仍需补齐：
+
+```text
+weak GPS / weak recovery
+long GAP after tunnel or indoor
+rest recovery with resume
+same-road round trip with stronger true route labels
+transport contamination with explicit walk recovery
+```
+
+真实样本进入 regression 时，除了最终 track / distance / moving time 外，还必须检查
+`streamingDiagnosticContexts`，确保 diagnostic-only context 保留证据但不拥有指标。
 
 ## Fixture 事件期望示例
 

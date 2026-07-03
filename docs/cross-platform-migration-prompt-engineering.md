@@ -14,6 +14,12 @@ iOS。它不是一次性聊天提示词，
 3. `docs/technical-debt-governance-plan.md`
 4. `docs/system-gnss-track-recording-plan.md`
 5. `docs/diagnostic-jsonl-schema.md`
+6. `docs/platform-neutral-evidence-jsonl-contract.md`
+7. `docs/platform-adapter-field-mapping.md`
+8. `docs/platform-neutral-track-engine-contract.md`
+9. `docs/track-sdk-public-api-contract.md`
+10. `docs/streaming-scenario-window-settlement-plan.md`
+11. `docs/review-queue-ai-alignment-prompt.md`
 
 迁移的对象是“轨迹策略 SDK”，不是 Android UI，也不是当前 App 的完整产品形态。
 最终产物应是可被鸿蒙 / iOS App 集成的 SDK，而不是另一个完整 App。
@@ -40,13 +46,15 @@ SDK 不负责：
 1. 抽取平台中立 SDK 契约。
 2. 抽取诊断 schema 和报告字段契约。
 3. 整理回放样本（replay fixtures）输入输出预期。
-4. 设计 SDK 模块边界和公共 API。
-5. 为目标平台设计采集适配层。
-6. 实现策略 SDK 核心或移植策略核心。
-7. 实现目标平台 SDK replay / 离线对齐工具。
-8. 用同一批回放样本对齐 Android 原型输出。
-9. 用同路线真实设备采样对比 Android / 鸿蒙 / iOS 输出。
-10. 只在有真实样本、回放样本、测试和文档闭环时调整策略。
+4. 按 `docs/track-sdk-public-api-contract.md` 设计 SDK 模块边界和公共 API。
+5. 按 `docs/platform-adapter-field-mapping.md` 冻结目标平台字段映射。
+6. 为目标平台设计采集适配层。
+7. 实现策略 SDK 核心或移植策略核心。
+8. 实现目标平台 SDK replay / 离线对齐工具。
+9. 生成 Web `review-queue-v1` / `review-queue-batch-v1` 审核包。
+10. 用同一批回放样本和 review queue 对齐 Android / Web 目标函数输出。
+11. 用同路线真实设备采样对比 Android / 鸿蒙 / iOS 输出。
+12. 只在有真实样本、回放样本、测试和文档闭环时调整策略。
 
 ## 不可让 AI 越界的事项
 
@@ -72,7 +80,13 @@ SDK 不负责：
 - docs/technical-debt-governance-plan.md
 - docs/system-gnss-track-recording-plan.md
 - docs/diagnostic-jsonl-schema.md
+- docs/platform-neutral-evidence-jsonl-contract.md
+- docs/platform-adapter-field-mapping.md
+- docs/platform-neutral-track-engine-contract.md
+- docs/track-sdk-public-api-contract.md
+- docs/streaming-scenario-window-settlement-plan.md
 - docs/cross-platform-migration-prompt-engineering.md
+- docs/review-queue-ai-alignment-prompt.md
 
 项目定位：
 - 这是策略原型项目，不追求 UI 体验。
@@ -111,8 +125,10 @@ SDK 不负责：
 4. 判点规则：首点、弱信号、静止漂移、GAP、疑似交通工具、休息恢复。
 5. 不变量：哪些行为跨平台必须保持一致。
 6. 历史数据口径：历史 session 仅用历史版本工具读取，新 v3 SDK 不继承旧判点结果。
-7. SDK 公共 API：初始化、输入采样、结束 session、导出诊断、运行回放样本。
-8. SDK 不负责的边界：UI、地图展示、账号、云同步等非策略功能。
+7. Adapter 字段映射入口：必须引用 `docs/platform-adapter-field-mapping.md` 和
+   `docs/platform-adapter-field-mapping.v1.json`。
+8. SDK 公共 API：初始化、输入采样、结束 session、导出诊断、运行回放样本。
+9. SDK 不负责的边界：UI、地图展示、账号、云同步等非策略功能。
 
 要求：
 - 用中文说明。
@@ -179,6 +195,13 @@ SDK 不负责：
 ```text
 请为 {HarmonyOS 或 iOS} 设计 GNSS 轨迹策略采集适配层。
 
+必须遵守：
+- docs/platform-neutral-evidence-jsonl-contract.md
+- docs/platform-adapter-field-mapping.md
+- docs/platform-adapter-field-mapping.v1.json
+- docs/track-sdk-public-api-contract.md
+- docs/track-sdk-public-api.v1.json
+
 已知平台中立策略需要输入：
 - RawPoint
 - 采样归因和等价单调时钟
@@ -188,17 +211,24 @@ SDK 不负责：
 
 请输出：
 1. 目标平台可用的定位、卫星、气压计、运动传感器 API 映射。
-2. Android 字段到目标平台字段的映射表。
-3. 无法一一映射字段的降级策略。
-4. 后台采样限制和风险。
-5. 如何生成与 Android 兼容的 evidence.jsonl。
-6. 如何保证策略核心只接收平台中立输入。
-7. SDK 适配层应该暴露哪些接口给宿主 App。
+2. 目标平台原生字段到 `outdoor-track-evidence-v1` 的映射表。
+3. `fixElapsedRealtimeNanos`、`eventElapsedRealtimeNanos`、
+   `receivedElapsedRealtimeNanos`、`callbackDelayNanos` 的时间语义验证方式。
+4. `windowAscentMeters` 和 `windowDescentMeters` 的生成方式。
+5. 无法一一映射字段的降级策略。
+6. 后台采样限制和风险。
+7. 如何生成平台中立 `outdoor_track_evidence_v1.jsonl`。
+8. 如何保证策略核心只接收平台中立输入。
+9. SDK 适配层应该暴露哪些接口给宿主 App。
 
 要求：
+- watchOS / iOS 的持久化轨迹证据输出必须直接是 `outdoor-track-evidence-v1`，不要另建
+  watchOS 私有 evidence schema 再交给策略核心二次转换。
 - 不要改策略阈值。
 - 不要用平台融合定位静默替代纯 GNSS，除非明确标记数据源。
 - 无法提供的字段必须进入诊断报告，而不是静默丢失。
+- `callbackDelayNanos` 只能用于诊断展示，不能作为判点硬门槛。
+- GNSS 质量字段只能作为诊断扩展，不能直接变成 route truth。
 ```
 
 ## Prompt 5：SDK 迁移实现提示词
@@ -210,6 +240,8 @@ SDK 不负责：
 
 输入资料：
 - 平台中立 SDK 契约
+- 平台 adapter 字段映射契约
+- SDK 公共 API 和 replay 契约
 - 诊断与报告契约
 - 回放样本对齐要求
 - 当前目标平台 SDK 项目结构
@@ -223,6 +255,12 @@ SDK 不负责：
 6. SDK 公共 API。
 7. evidence.jsonl 输出。
 8. replay runner 或等价离线回放工具。
+
+公共 API 要求：
+- `process` / `process_debug` / `verify_fixtures` 必须按
+  `docs/track-sdk-public-api-contract.md` 实现或标注暂缺。
+- replay fixture 必须保留 `totalAscentMeters` 和 `totalDescentMeters`。
+- 当前 POC 字段别名不能扩散为目标平台长期公共 API。
 
 暂不实现：
 - UI 体验优化。
@@ -250,6 +288,8 @@ SDK 不负责：
 - 目标平台 SDK replay 报告
 - 对应回放样本
 - 平台中立 SDK 契约
+- Web 目标函数导出的 `review-queue-v1` 或 `review-queue-batch-v1`
+- 可选：由 `npm run report-review-queue` 生成的 `review-queue-alignment-report-v1`
 
 请逐项比较：
 1. decisionResult
@@ -261,16 +301,60 @@ SDK 不负责：
 7. GAP 处理
 8. 弱 GPS 解释字段
 9. evidence.jsonl 事件和关键字段
+10. review queue 中每个 task 的 rawRange、scenario、metricOwner、affectedMetricGates
+11. diagnostic_context 是否保持 metricOwner=false，且没有产生 route/distance/moving_time/elevation ownership
 
 请输出：
 1. 完全一致项。
 2. 不一致项。
 3. 差异可能来自策略实现、平台字段映射、时钟语义、精度单位、传感器缺失还是样本解析。
 4. 每个差异的修复建议。
+5. 按 `P0/P1/P2` 标注严重程度，并引用 `reviewKey` 和 `rawRange`。
 
 禁止：
 - 为了通过测试直接改预期。
 - 在没有真实样本支撑时改策略阈值。
+- 把 review queue 当成算法输入。
+- 把 `diagnostic_context` 升级成 metric owner。
+```
+
+## Prompt 6A：Review Queue AI 对齐审查
+
+适用场景：已经导出 `review-queue-v1` 或 `review-queue-batch-v1`，需要交给 AI 或端侧实现方
+逐项复盘。
+
+推荐先生成带失败门的对齐包：
+
+```bash
+cd acceptance-web
+npm run package-review-queue -- ../path/to/evidence-or-fixture-dir --filter all --out-dir /tmp/track-review
+npm run validate-review-queue-package -- /tmp/track-review/{base-name}-manifest.json
+```
+
+```text
+请使用 docs/review-queue-ai-alignment-prompt.md 中的固定提示词，审查以下审核包：
+
+- review queue 包：{review-queue-v1 或 review-queue-batch-v1 JSON}
+- review queue 对齐报告：{review-queue-alignment-report-v1 Markdown}
+- review queue manifest：{review-queue-ai-package-v1 JSON，符合 track-rs/schemas/review-queue-ai-package.schema.json，safeToSend 应为 true}
+- 固定 AI 提示词副本：{package-review-queue 输出的 *-prompt.md}
+- 目标平台输出：{若已有，附 replay/engine 输出；若没有，说明暂无}
+
+请严格按提示词输出：
+1. Markdown 摘要。
+2. `review-queue-ai-alignment-result-v1` JSON，符合
+   `track-rs/schemas/review-queue-ai-alignment-result.schema.json`。
+3. 数据集摘要。
+4. 必须对齐的指标任务。
+5. 必须保持诊断态的任务。
+6. P0/P1/P2 差异清单。
+7. 不应改策略项。
+8. 需要补充的 replay fixtures。
+
+特别注意：
+- `review-queue-v1` / `review-queue-batch-v1` 不是 engine 输入。
+- `type=diagnostic_context` 必须保持 `metricOwner=false`。
+- 每条结论必须引用 `reviewKey` 和 `rawRange`。
 ```
 
 ## Prompt 7：真实设备迁移验收
@@ -309,26 +393,28 @@ SDK 不负责：
 一次合格的鸿蒙 / iOS SDK 迁移准备，至少应产出：
 
 - 平台中立 SDK 契约。
-- SDK 公共 API 草案。
+- SDK 公共 API 和 replay 契约。
 - 诊断与报告契约。
 - 回放样本对齐清单。
 - 目标平台字段映射表。
 - 目标平台 SDK replay runner 或等价离线回放工具。
 - Android 与目标平台 SDK replay 对齐报告。
+- Web `review-queue-v1` / `review-queue-batch-v1` 对齐报告。
 - 同路线真实设备采样对比报告。
 - 差异修复记录。
 - SDK 集成说明。
 
 ## 当前成熟度
 
-稳定提示词工程成熟度：`6.0 / 10`
+稳定提示词工程成熟度：`7.1 / 10`
 
 原因：
 
 - 已有清晰 Android 策略原型、治理文档、诊断 schema 和回放样本目录。
 - 本文已经给出固定迁移 prompt 顺序和输出要求。
-- 但平台中立 SDK 契约尚未单独成文。
-- SDK 公共 API 尚未设计。
-- 鸿蒙 / iOS 字段映射表尚未建立。
+- 平台中立 evidence / engine 契约、adapter 字段映射契约、SDK 公共 API 契约和
+  review queue 对齐提示词已经成文。
+- Rust POC 仍使用部分 temporary aliases，尚未完全收敛到 SDK v1 公共 API。
+- 鸿蒙 / iOS 具体项目字段映射实现尚未建立。
 - 目标平台 SDK replay runner 尚未实现。
 - 还没有跨平台回放对齐报告和真实设备对比报告。

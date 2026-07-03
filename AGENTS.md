@@ -123,13 +123,19 @@ RecordingForegroundService
 1. `README.md` - 给人和机器人看的快速概览。
 2. `docs/technical-debt-governance-plan.md` - 架构、不变量、已完成阶段和验证规则。
 3. `docs/system-gnss-track-recording-plan.md` - 当前 GNSS 记录策略。
-4. `docs/diagnostic-jsonl-schema.md` - 诊断 JSONL schema。
-5. `docs/outdoor-track-six-layer-model.md` - 六层目标函数模型。
-6. `docs/outdoor-track-scenario-recognizers.md` - 情景识别和局部重建规则。
-7. `docs/outdoor-track-v17-conflict-aware-settlement-plan.md` - V17 密集区保方向候选仲裁计划。
-8. `docs/platform-neutral-track-engine-contract.md` - 平台中立函数契约。
-9. `docs/cross-platform-migration-prompt-engineering.md` - 跨平台迁移提示词工程。
-10. `docs/` 下的专题文档 - 只在任务涉及对应主题时阅读。
+4. `docs/diagnostic-jsonl-schema.md` - Android v3 诊断 JSONL legacy schema。
+5. `docs/platform-neutral-evidence-jsonl-contract.md` - 平台中立证据 JSONL 契约。
+6. `docs/platform-adapter-field-mapping.md` - 三端 adapter 到平台中立 evidence 的字段映射。
+7. `docs/outdoor-track-six-layer-model.md` - 六层目标函数模型。
+8. `docs/outdoor-track-scenario-recognizers.md` - 情景识别和局部重建规则。
+9. `docs/streaming-scenario-window-settlement-plan.md` - 实时情景窗口和重叠仲裁规则。
+10. `docs/outdoor-track-v17-conflict-aware-settlement-plan.md` - V17 密集区保方向候选仲裁计划。
+11. `docs/platform-neutral-track-engine-contract.md` - 平台中立函数契约。
+12. `docs/track-sdk-public-api-contract.md` - SDK 公共 API 和 replay 契约。
+13. `track-rs/schemas/review-queue-ai-package.schema.json` - review queue AI 包 manifest 契约。
+14. `docs/cross-platform-migration-prompt-engineering.md` - 跨平台迁移提示词工程。
+15. `docs/review-queue-ai-alignment-prompt.md` - review queue AI 对齐提示词。
+16. `docs/` 下的专题文档 - 只在任务涉及对应主题时阅读。
 
 ## 关键路径
 
@@ -146,6 +152,18 @@ RecordingForegroundService
 | Replay 运行器 | `app/src/main/java/com/example/gnsssatdemo/track/replay/` |
 | 回放样本 | `app/src/test/resources/replay-fixtures/` |
 | 爬升验收 Web | `acceptance-web/` |
+| 情景窗口仲裁 | `acceptance-web/src/scenarioWindowCoordinator.mjs` |
+| 实时封段状态 | `acceptance-web/src/streamingSettlementState.mjs` |
+| 多批次实时封段 session | `acceptance-web/src/streamingScenarioSettlementSession.mjs` |
+| 平台中立 JSONL 分片 intake | `acceptance-web/src/streamingEvidenceIntake.mjs` |
+| 流式基础安全内核 v0 | `acceptance-web/src/streamingBaseTrackKernel.mjs` |
+| 流式指标累计 v0 | `acceptance-web/src/streamingMetricAccumulator.mjs` |
+| 流式情景识别 proposal v0 | `acceptance-web/src/streamingScenarioRecognizer.mjs` |
+| 流式轨迹引擎串联 v0 | `acceptance-web/src/streamingTrackEngine.mjs` |
+| review queue JSON 导出 | `acceptance-web/scripts/export-review-queue.mjs` |
+| review queue Markdown 对齐报告 | `acceptance-web/scripts/report-review-queue.mjs` |
+| review queue AI 发包 | `acceptance-web/scripts/package-review-queue.mjs` |
+| review queue AI 包校验 | `acceptance-web/scripts/validate-review-queue-package.mjs` |
 
 ## 验证命令
 
@@ -173,6 +191,11 @@ npm test
 - 多台 Android 真机同路线采样。
 - 对比 `session.json`、`evidence.jsonl`、`track.gpx`、弱 GPS 报告和样本报告。
 - 使用 `acceptance-web/` 验证多设备气压计累计爬升一致性。
+- 使用 `acceptance-web` 的
+  `npm run package-review-queue -- <evidence.jsonl-or-directory> --filter all --out-dir /tmp/track-review`
+  一次生成 `review-queue-v1` / `review-queue-batch-v1`、Markdown 对齐报告、固定 AI 提示词
+  和 manifest；该命令会在 report issue 存在时返回非零退出码，避免把未通过自检的真实问题片段
+  发给 AI 或端侧实现方。
 - 从真实 session 中补充 replay fixtures，覆盖弱 GPS、长 GAP、休息恢复、
   城市峡谷、山谷、隧道/室内出口和疑似交通工具移动。
 - 将已验证规则整理为平台中立函数契约，再考虑 SDK 封装和鸿蒙 / iOS 适配。

@@ -19,15 +19,22 @@ SDK 设计。它不是新 App 设计，也不是 Web 复核工具设计，更不
 - 情景识别是内部清洗手段，不是 SDK 的主要产品输出。
 - 普通 App 默认消费成品轨迹和运动指标。
 - replay、验收和 Web 复核可以使用 debug 输出查看清洗过程。
+- Rust POC 的 `track-cli verify-fixtures-json <fixtures-dir>` 已输出
+  `track-sdk-replay-report-v1`，用于后续三端 replay 对齐。
 
 ## 推荐阅读顺序
 
-1. `01-core-boundary.md` - SDK Core 的目标、非目标和产品输出边界。
-2. `02-rust-architecture.md` - Rust crates、模块和三端嵌入架构。
-3. `03-api-contract.md` - 批处理 API、debug API、FFI 和 JSON 边界。
-4. `04-migration-plan.md` - POC、迁移阶段、验证与风险控制。
-5. `05-poc-status.md` - 当前 Rust POC 已落地内容和验证方式。
-6. `06-web-algorithm-translation.md` - Web 轨迹生成算法翻译到 Rust Core 的实施口径。
+1. `../platform-neutral-evidence-jsonl-contract.md` - SDK Core 的标准 evidence 输入。
+2. `../platform-adapter-field-mapping.md` - 三端 Adapter 到标准 evidence 的字段映射。
+3. `../track-sdk-public-api-contract.md` - SDK 公共 API、debug 和 replay 契约。
+4. `../../track-rs/schemas/review-queue-ai-package.schema.json` - review queue AI 包 manifest 契约。
+5. `../../track-rs/schemas/review-queue-ai-alignment-result.schema.json` - review queue AI 对齐结果契约。
+6. `01-core-boundary.md` - SDK Core 的目标、非目标和产品输出边界。
+7. `02-rust-architecture.md` - Rust crates、模块和三端嵌入架构。
+8. `03-api-contract.md` - 批处理 API、debug API、FFI 和 JSON 边界。
+9. `04-migration-plan.md` - POC、迁移阶段、验证与风险控制。
+10. `05-poc-status.md` - 当前 Rust POC 已落地内容和验证方式。
+11. `06-web-algorithm-translation.md` - Web 轨迹生成算法翻译到 Rust Core 的实施口径。
 
 ## 和现有项目的关系
 
