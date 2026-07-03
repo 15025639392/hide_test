@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "track-rs-verification-manifest-v1",
+  "rustToolchainFile": "rust-toolchain.toml",
+  "requiredTools": [
+    "cargo",
+    "rustc",
+    "rustfmt"
+  ],
+  "optionalAppleTools": [
+    "rustup",
+    "xcodebuild"
+  ],
+  "appleTargets": [
+    "aarch64-apple-ios",
+    "aarch64-apple-ios-sim",
+    "aarch64-apple-watchos",
+    "aarch64-apple-watchos-sim"
+  ],
+  "bootstrapCommand": "./scripts/bootstrap-rust-toolchain.sh",
+  "alwaysRunGates": [
+    "python3 scripts/check-static-contracts.py",
+    "python3 scripts/audit-verification-status.py",
+    "cd ../acceptance-web && npm test",
+    "bash -n apple/package-watchos-integration.sh",
+    "swiftc -typecheck apple/TrackCoreModels.swift apple/TrackCoreBridge.swift apple/TrackCoreStreamingEngine.swift",
+    "swiftc apple/TrackCoreModels.swift apple/TrackCoreDecodeSmoke.swift && TrackCoreDecodeSmoke",
+    "apple/package-watchos-integration.sh"
+  ],
+  "rustToolchainGates": [
+    "cargo fmt --all --check",
+    "cargo test --workspace",
+    "cargo run -p track-ffi --example smoke",
+    "cargo run -p track-cli -- process examples/minimal-stable-v1-input.json",
+    "cargo run -p track-cli -- process-debug examples/minimal-input.json",
+    "cargo run -p track-cli -- process-product-snapshot examples/minimal-stable-v1-input.json",
+    "cargo run -p track-cli -- process-evidence-jsonl-product-snapshot examples/minimal-evidence-v1.jsonl",
+    "cargo run -p track-cli -- verify-fixtures fixtures",
+    "cargo run -p track-cli -- verify-fixtures-json fixtures"
+  ],
+  "optionalAppleXcframeworkGate": {
+    "env": "VERIFY_APPLE_XCFRAMEWORK=1",
+    "command": "apple/build-track-core-xcframework.sh",
+    "requires": [
+      "rustup",
+      "xcodebuild"
+    ]
+  },
+  "completionCriteria": [
+    "All alwaysRunGates pass.",
+    "All rustToolchainGates pass on a machine with cargo, rustc, and rustfmt.",
+    "The watchOS integration package is generated.",
+    "If VERIFY_APPLE_XCFRAMEWORK=1 is requested, the Apple XCFramework gate passes."
+  ]
+}

@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://device-fix.local/schemas/track-replay-report.schema.json",
+  "title": "Track SDK Replay Report",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "strategyVersion",
+    "fixtureCount",
+    "passedCount",
+    "failedCount",
+    "failures"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "track-sdk-replay-report-v1"
+    },
+    "strategyVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fixtureCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "passedCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "failedCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["message"],
+        "properties": {
+          "fixturePath": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ruleId": {
+            "type": ["string", "null"],
+            "pattern": "^[a-z0-9._-]+$"
+          },
+          "rawRange": {
+            "type": "object",
+            "deprecated": true,
+            "description": "Legacy locator alias kept for old review/report tools. New SDK targets must emit sampleRange for range-level algorithm differences.",
+            "additionalProperties": true,
+            "required": ["startRawPointId", "endRawPointId"],
+            "properties": {
+              "startRawPointId": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "endRawPointId": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "sampleRange": {
+            "type": "object",
+            "description": "Stable range locator for platform-neutral replay failures. Values reference LocationSample.sampleId.",
+            "additionalProperties": true,
+            "required": ["startSampleId", "endSampleId"],
+            "properties": {
+              "startSampleId": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "endSampleId": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "sampleId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "anyOf": [
+          {
+            "required": ["ruleId"],
+            "properties": {
+              "ruleId": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          {
+            "required": ["sampleRange"]
+          },
+          {
+            "required": ["rawRange"]
+          },
+          {
+            "required": ["sampleId"]
+          },
+          {
+            "required": ["fixturePath"]
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "track-apple-integration-manifest-v1",
+  "binaryTargetName": "TrackCore",
+  "xcframeworkRelativePath": "Vendor/TrackCore.xcframework",
+  "swiftTargetName": "HikingCore",
+  "swiftFiles": [
+    "TrackCoreBridge.swift",
+    "TrackCoreModels.swift",
+    "TrackCoreStreamingEngine.swift"
+  ],
+  "requiredFfiSymbols": [
+    "track_process_json",
+    "track_process_evidence_jsonl",
+    "track_process_evidence_jsonl_product_snapshot",
+    "track_free_string"
+  ],
+  "requiredProductSnapshotFields": [
+    "trackPoints",
+    "totalDistanceMeters",
+    "totalAscentMeters",
+    "totalDescentMeters",
+    "selectedElevationSource"
+  ],
+  "forbiddenProductSnapshotFields": [
+    "movingTimeSeconds",
+    "paceSecondsPerKm",
+    "movingTimeDeltaSeconds"
+  ],
+  "watchHikingAppRecommendedPaths": {
+    "xcframework": "watch-hiking-app/Vendor/TrackCore.xcframework",
+    "swiftFilesDirectory": "watch-hiking-app/Sources/HikingCore"
+  }
+}

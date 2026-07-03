@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://device-fix.local/schemas/track-process-response.schema.json",
+  "title": "Track SDK Process Response",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["ok"],
+  "properties": {
+    "ok": {
+      "type": "boolean"
+    },
+    "result": {
+      "$ref": "#/$defs/CleanedTrackResult"
+    },
+    "error": {
+      "$ref": "#/$defs/TrackError"
+    }
+  },
+  "oneOf": [
+    {
+      "required": ["ok", "result"],
+      "properties": {
+        "ok": {
+          "const": true
+        }
+      },
+      "not": {
+        "required": ["error"]
+      }
+    },
+    {
+      "required": ["ok", "error"],
+      "properties": {
+        "ok": {
+          "const": false
+        }
+      },
+      "not": {
+        "required": ["result"]
+      }
+    }
+  ],
+  "$defs": {
+    "CleanedTrackResult": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["trackPoints", "segments", "gpxTrackPoints", "summary"],
+      "properties": {
+        "trackPoints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CleanedTrackPoint"
+          }
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CleanedTrackSegment"
+          }
+        },
+        "gpxTrackPoints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CleanedTrackPoint"
+          }
+        },
+        "summary": {
+          "$ref": "#/$defs/TrackSummary"
+        }
+      }
+    },
+    "CleanedTrackPoint": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "trackPointId",
+        "sourceSampleId",
+        "lat",
+        "lng",
+        "fixElapsedRealtimeNanos",
+        "wallTimeMillis",
+        "horizontalAccuracyMeters",
+        "distanceDeltaMeters",
+        "movingTimeDeltaSeconds",
+        "segmentId"
+      ],
+      "properties": {
+        "trackPointId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sourceSampleId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "lat": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "lng": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        },
+        "trackDirectionDegrees": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 360
+        },
+        "fixElapsedRealtimeNanos": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "wallTimeMillis": {
+          "type": "integer"
+        },
+        "horizontalAccuracyMeters": {
+          "type": "number",
+          "minimum": 0
+        },
+        "distanceDeltaMeters": {
+          "type": "number",
+          "minimum": 0
+        },
+        "movingTimeDeltaSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "segmentId": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["sourceRawPointId"] },
+          { "required": ["latitude"] },
+          { "required": ["longitude"] },
+          { "required": ["elapsedRealtimeNanos"] }
+        ]
+      }
+    },
+    "CleanedTrackSegment": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "segmentId",
+        "startTrackPointId",
+        "endTrackPointId",
+        "distanceMeters",
+        "movingTimeSeconds"
+      ],
+      "properties": {
+        "segmentId": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "startTrackPointId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "endTrackPointId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "distanceMeters": {
+          "type": "number",
+          "minimum": 0
+        },
+        "movingTimeSeconds": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "TrackSummary": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "totalDistanceMeters",
+        "movingTimeSeconds",
+        "totalAscentMeters",
+        "totalDescentMeters",
+        "selectedElevationSource"
+      ],
+      "properties": {
+        "totalDistanceMeters": {
+          "type": "number",
+          "minimum": 0
+        },
+        "movingTimeSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "paceSecondsPerKm": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "totalAscentMeters": {
+          "type": "number",
+          "minimum": 0
+        },
+        "totalDescentMeters": {
+          "type": "number",
+          "minimum": 0
+        },
+        "selectedElevationSource": {
+          "type": "string",
+          "enum": ["BAROMETER", "GNSS", "NONE"]
+        }
+      },
+      "not": {
+        "required": ["ascentMeters"]
+      }
+    },
+    "TrackError": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

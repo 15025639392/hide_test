@@ -1,11 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://device-fix.local/schemas/track-fixture.schema.json",
-  "title": "Track Core Fixture",
+  "title": "Track SDK Replay Fixture",
   "type": "object",
   "additionalProperties": true,
-  "required": ["ruleId", "ruleVersion", "source", "request", "expected"],
+  "required": ["schemaVersion", "ruleId", "ruleVersion", "source", "request", "expected"],
   "properties": {
+    "schemaVersion": {
+      "const": "track-sdk-replay-fixture-v1"
+    },
     "ruleId": {
       "type": "string",
       "pattern": "^[a-z0-9._-]+$"
@@ -16,7 +19,7 @@
     },
     "source": {
       "type": "string",
-      "enum": ["web_algorithm", "rust_infrastructure"]
+      "enum": ["web_algorithm", "rust_infrastructure", "android_replay", "real_session_slice"]
     },
     "request": {
       "type": "object"
@@ -28,7 +31,9 @@
         "gpxTrackPointCount",
         "segmentCount",
         "totalDistanceMeters",
-        "movingTimeSeconds"
+        "movingTimeSeconds",
+        "totalAscentMeters",
+        "totalDescentMeters"
       ],
       "properties": {
         "trackPointCount": {
@@ -57,59 +62,109 @@
           "type": "number",
           "minimum": 0
         },
-        "ascentMeters": {
+        "totalAscentMeters": {
           "type": "number"
         },
-        "ascentMetersTolerance": {
+        "totalAscentMetersTolerance": {
           "type": "number",
           "minimum": 0
         },
-        "ascentSource": {
+        "totalDescentMeters": {
+          "type": "number"
+        },
+        "totalDescentMetersTolerance": {
+          "type": "number",
+          "minimum": 0
+        },
+        "selectedElevationSource": {
           "type": "string",
           "enum": ["BAROMETER", "GNSS", "NONE"]
         },
-        "barometerAscentMeters": {
-          "type": "number"
+        "acceptedSampleIds": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
         },
-        "barometerAscentMetersTolerance": {
-          "type": "number",
-          "minimum": 0
+        "weakSampleIds": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
         },
-        "gnssAscentMeters": {
-          "type": "number"
-        },
-        "gnssAscentMetersTolerance": {
-          "type": "number",
-          "minimum": 0
+        "rejectedSampleIds": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
         },
         "acceptedRawPointIds": {
           "type": "array",
+          "deprecated": true,
+          "description": "Legacy alias for acceptedSampleIds.",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "weakRawPointIds": {
+          "type": "array",
+          "deprecated": true,
+          "description": "Legacy alias for weakSampleIds.",
           "items": {
             "type": "integer"
           }
         },
         "rejectedRawPointIds": {
           "type": "array",
+          "deprecated": true,
+          "description": "Legacy alias for rejectedSampleIds.",
           "items": {
             "type": "integer"
           }
         },
         "decisionReasons": {
           "type": "object",
+          "description": "Optional expected decision reason map keyed by sampleId encoded as a JSON object property name.",
+          "propertyNames": {
+            "pattern": "^[0-9]+$"
+          },
           "additionalProperties": {
             "type": "string"
           }
         },
-        "barometerDecisionReasons": {
+        "decisionReasonCounts": {
           "type": "object",
+          "description": "Optional expected decision reason histogram. Keys are decision reason strings, values are expected counts.",
           "additionalProperties": {
-            "type": "string"
+            "type": "integer",
+            "minimum": 0
           }
         },
-        "barometerCalibrationReasons": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
+        "trackPoints": {
+          "type": "array",
+          "description": "Optional expected cleaned track point coordinate checks. Omitted fields are not checked.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sourceSampleId": {
+                "type": "integer"
+              },
+              "lat": {
+                "type": "number"
+              },
+              "lng": {
+                "type": "number"
+              },
+              "latTolerance": {
+                "type": "number",
+                "minimum": 0
+              },
+              "lngTolerance": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
           }
         }
       }

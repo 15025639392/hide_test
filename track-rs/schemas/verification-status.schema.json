@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://device-fix.local/schemas/track-rs-verification-status.schema.json",
+  "title": "Track Rust Verification Status",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "verificationManifest",
+    "completionReady",
+    "productScope",
+    "requiredTools",
+    "optionalAppleTools",
+    "missingRequiredTools",
+    "missingOptionalAppleTools",
+    "blockedReason",
+    "alwaysRunGates",
+    "alwaysRunGateCount",
+    "rustToolchainGates",
+    "rustToolchainGateCount",
+    "rustToolchainGatesRunnable",
+    "optionalAppleXcframeworkGateRunnable",
+    "nextRequiredCommand",
+    "nextOptionalAppleCommand",
+    "bootstrapCommand",
+    "completionCriteria"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "track-rs-verification-status-v1"
+    },
+    "verificationManifest": {
+      "type": "string",
+      "minLength": 1
+    },
+    "completionReady": {
+      "type": "boolean"
+    },
+    "productScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackPoints",
+        "totalDistanceMeters",
+        "totalAscentMeters",
+        "totalDescentMeters",
+        "movingTimeSeconds",
+        "paceSecondsPerKm"
+      ],
+      "properties": {
+        "trackPoints": {
+          "const": true
+        },
+        "totalDistanceMeters": {
+          "const": true
+        },
+        "totalAscentMeters": {
+          "const": true
+        },
+        "totalDescentMeters": {
+          "const": true
+        },
+        "movingTimeSeconds": {
+          "const": false
+        },
+        "paceSecondsPerKm": {
+          "const": false
+        }
+      }
+    },
+    "requiredTools": {
+      "$ref": "#/$defs/ToolStatusMap"
+    },
+    "optionalAppleTools": {
+      "$ref": "#/$defs/ToolStatusMap"
+    },
+    "missingRequiredTools": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "missingOptionalAppleTools": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "blockedReason": {
+      "type": ["string", "null"]
+    },
+    "alwaysRunGates": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "alwaysRunGateCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "rustToolchainGates": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "rustToolchainGateCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "rustToolchainGatesRunnable": {
+      "type": "boolean"
+    },
+    "optionalAppleXcframeworkGateRunnable": {
+      "type": "boolean"
+    },
+    "nextRequiredCommand": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nextOptionalAppleCommand": {
+      "type": "string",
+      "minLength": 1
+    },
+    "bootstrapCommand": {
+      "const": "./scripts/bootstrap-rust-toolchain.sh"
+    },
+    "completionCriteria": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "ToolStatusMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["available", "path"],
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": ["string", "null"]
+          }
+        }
+      }
+    }
+  }
+}

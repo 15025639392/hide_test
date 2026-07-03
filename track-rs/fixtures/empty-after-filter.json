@@ -1,4 +1,5 @@
 {
+  "schemaVersion": "track-sdk-replay-fixture-v1",
   "ruleId": "safety_kernel_v0",
   "ruleVersion": "0.1.0",
   "source": "rust_infrastructure",
@@ -13,28 +14,43 @@
       },
       "locationSamples": [
         {
-          "rawPointId": 1,
-          "positioningSource": "",
-          "latitude": 91.0,
-          "longitude": 181.0,
-          "horizontalAccuracyMeters": 0.0,
+          "sampleId": 1,
+          "provider": "",
+          "lat": 91,
+          "lng": 181,
+          "horizontalAccuracyMeters": 0,
           "wallTimeMillis": -1,
-          "elapsedRealtimeNanos": -1,
+          "fixElapsedRealtimeNanos": -1,
           "isMock": true
         }
-      ]
+      ],
+      "samplingEpochs": [],
+      "motionWindows": [],
+      "barometerWindows": [],
+      "barometerCalibrations": []
     }
   },
   "expected": {
     "trackPointCount": 0,
     "gpxTrackPointCount": 0,
     "segmentCount": 0,
-    "totalDistanceMeters": 0.0,
-    "movingTimeSeconds": 0.0,
-    "acceptedRawPointIds": [],
-    "rejectedRawPointIds": [1],
+    "totalDistanceMeters": 0,
+    "totalDistanceMetersTolerance": 0.000001,
+    "movingTimeSeconds": 0,
+    "totalAscentMeters": 0,
+    "totalDescentMeters": 0,
+    "selectedElevationSource": "NONE",
+    "acceptedSampleIds": [],
+    "weakSampleIds": [],
+    "rejectedSampleIds": [
+      1
+    ],
     "decisionReasons": {
       "1": "missing_position_source"
-    }
+    },
+    "decisionReasonCounts": {
+      "missing_position_source": 1
+    },
+    "trackPoints": []
   }
 }

@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://device-fix.local/schemas/track-process-request.schema.json",
+  "title": "Track SDK Process Request",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schemaVersion", "config", "input"],
+  "properties": {
+    "schemaVersion": {
+      "const": "track-sdk-process-request-v1"
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "strategyVersion": {
+          "type": ["string", "null"],
+          "minLength": 1
+        }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["sessionContext", "samplingEpochs", "locationSamples"],
+      "properties": {
+        "sessionContext": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "sessionId",
+            "strategyVersion",
+            "createdElapsedRealtimeNanos",
+            "createdWallTimeMillis"
+          ],
+          "properties": {
+            "sessionId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "strategyVersion": {
+              "type": "string",
+              "minLength": 1
+            },
+            "createdElapsedRealtimeNanos": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "createdWallTimeMillis": {
+              "type": "integer"
+            }
+          }
+        },
+        "samplingEpochs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "epochId",
+              "state",
+              "startedElapsedRealtimeNanos",
+              "requestedMinTimeMs",
+              "requestedMinDistanceMeters"
+            ],
+            "properties": {
+              "epochId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "state": {
+                "type": "string",
+                "minLength": 1
+              },
+              "startedElapsedRealtimeNanos": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "requestedMinTimeMs": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "requestedMinDistanceMeters": {
+                "type": "number",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "locationSamples": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "sampleId",
+              "provider",
+              "lat",
+              "lng",
+              "horizontalAccuracyMeters",
+              "wallTimeMillis",
+              "fixElapsedRealtimeNanos",
+              "isMock"
+            ],
+            "properties": {
+              "sampleId": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "provider": {
+                "type": "string",
+                "enum": ["gnss", "gps", "network", "fused", "unknown"]
+              },
+              "lat": {
+                "type": "number",
+                "minimum": -90,
+                "maximum": 90
+              },
+              "lng": {
+                "type": "number",
+                "minimum": -180,
+                "maximum": 180
+              },
+              "horizontalAccuracyMeters": {
+                "type": "number",
+                "minimum": 0
+              },
+              "altitudeMeters": {
+                "type": ["number", "null"]
+              },
+              "verticalAccuracyMeters": {
+                "type": ["number", "null"],
+                "minimum": 0
+              },
+              "speedMetersPerSecond": {
+                "type": ["number", "null"],
+                "minimum": 0
+              },
+              "bearingDegrees": {
+                "type": ["number", "null"],
+                "minimum": 0,
+                "maximum": 360
+              },
+              "wallTimeMillis": {
+                "type": "integer"
+              },
+              "fixElapsedRealtimeNanos": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "receivedElapsedRealtimeNanos": {
+                "type": ["integer", "null"],
+                "minimum": 0
+              },
+              "callbackDelayNanos": {
+                "type": ["integer", "null"],
+                "minimum": 0
+              },
+              "samplingEpochId": {
+                "type": ["string", "null"]
+              },
+              "isMock": {
+                "type": "boolean"
+              }
+            },
+            "not": {
+              "anyOf": [
+                { "required": ["rawPointId"] },
+                { "required": ["positioningSource"] },
+                { "required": ["latitude"] },
+                { "required": ["longitude"] },
+                { "required": ["elapsedRealtimeNanos"] },
+                { "required": ["callbackReceivedElapsedRealtimeNanos"] }
+              ]
+            }
+          }
+        },
+        "motionWindows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "barometerWindows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "windowId",
+              "startElapsedRealtimeNanos",
+              "endElapsedRealtimeNanos",
+              "windowAscentMeters",
+              "windowDescentMeters"
+            ],
+            "properties": {
+              "windowId": {
+                "type": ["string", "integer"],
+                "minLength": 1
+              },
+              "startElapsedRealtimeNanos": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "endElapsedRealtimeNanos": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "altitudeReference": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Optional evidence reference frame. Current Rust core does not use it for gain/loss accumulation."
+              },
+              "windowAscentMeters": {
+                "type": "number",
+                "minimum": 0
+              },
+              "windowDescentMeters": {
+                "type": "number",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "barometerCalibrations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "sessionEvents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  }
+}

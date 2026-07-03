@@ -1,0 +1,32 @@
+{
+  "selectedElevationSource": "BAROMETER",
+  "totalAscentMeters": 12,
+  "totalDescentMeters": 7,
+  "totalDistanceMeters": 94.51568764812367,
+  "trackPoints": [
+    {
+      "distanceDeltaMeters": 0,
+      "fixElapsedRealtimeNanos": 1000000000,
+      "horizontalAccuracyMeters": 8,
+      "lat": 30,
+      "lng": 120,
+      "segmentId": 1,
+      "sourceSampleId": 1,
+      "trackDirectionDegrees": null,
+      "trackPointId": 1,
+      "wallTimeMillis": 1000
+    },
+    {
+      "distanceDeltaMeters": 94.51568764812367,
+      "fixElapsedRealtimeNanos": 122000000000,
+      "horizontalAccuracyMeters": 34,
+      "lat": 30.00085,
+      "lng": 120,
+      "segmentId": 2,
+      "sourceSampleId": 2,
+      "trackDirectionDegrees": 0,
+      "trackPointId": 2,
+      "wallTimeMillis": 122000
+    }
+  ]
+}

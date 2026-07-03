@@ -1,0 +1,254 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://device-fix.local/schemas/review-queue-ai-alignment-result.schema.json",
+  "title": "Review Queue AI Alignment Result",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "packageSchemaVersion",
+    "sourceSchemaVersion",
+    "alignable",
+    "hasP0",
+    "hasP1",
+    "datasets",
+    "metricTaskResults",
+    "diagnosticTaskResults",
+    "differences",
+    "noStrategyChangeItems",
+    "replayFixtureRequests",
+    "nextActions"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "review-queue-ai-alignment-result-v1"
+    },
+    "packageSchemaVersion": {
+      "type": "string",
+      "enum": [
+        "review-queue-ai-package-v1",
+        "not_provided"
+      ]
+    },
+    "sourceSchemaVersion": {
+      "type": "string",
+      "enum": [
+        "review-queue-v1",
+        "review-queue-batch-v1"
+      ]
+    },
+    "alignable": {
+      "type": "boolean"
+    },
+    "hasP0": {
+      "type": "boolean"
+    },
+    "hasP1": {
+      "type": "boolean"
+    },
+    "datasets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DatasetSummary"
+      }
+    },
+    "metricTaskResults": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TaskResult"
+      }
+    },
+    "diagnosticTaskResults": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TaskResult"
+      }
+    },
+    "differences": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Difference"
+      }
+    },
+    "noStrategyChangeItems": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "replayFixtureRequests": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ReplayFixtureRequest"
+      }
+    },
+    "nextActions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/NextAction"
+      }
+    }
+  },
+  "$defs": {
+    "RawRange": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["startRawPointId", "endRawPointId"],
+      "properties": {
+        "startRawPointId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "endRawPointId": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "Severity": {
+      "type": "string",
+      "enum": ["P0", "P1", "P2"]
+    },
+    "DatasetSummary": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "fileName",
+        "filter",
+        "taskCount",
+        "highRisk",
+        "metricOwner",
+        "diagnosticContext"
+      ],
+      "properties": {
+        "fileName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "filter": {
+          "type": "string",
+          "minLength": 1
+        },
+        "taskCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "highRisk": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "metricOwner": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "diagnosticContext": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "TaskResult": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "reviewKey",
+        "scenario",
+        "rawRange",
+        "checkResult"
+      ],
+      "properties": {
+        "reviewKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scenario": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rawRange": {
+          "$ref": "#/$defs/RawRange"
+        },
+        "checkResult": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "Difference": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "severity",
+        "reviewKey",
+        "rawRange",
+        "problem",
+        "likelyCause",
+        "recommendedAction"
+      ],
+      "properties": {
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "reviewKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rawRange": {
+          "$ref": "#/$defs/RawRange"
+        },
+        "problem": {
+          "type": "string",
+          "minLength": 1
+        },
+        "likelyCause": {
+          "type": "string",
+          "minLength": 1
+        },
+        "recommendedAction": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "ReplayFixtureRequest": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["reviewKey", "rawRange", "reason"],
+      "properties": {
+        "reviewKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rawRange": {
+          "$ref": "#/$defs/RawRange"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "NextAction": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "description"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "add_replay_fixture",
+            "fix_platform_adapter",
+            "fix_engine_settlement",
+            "manual_review_only",
+            "no_action"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

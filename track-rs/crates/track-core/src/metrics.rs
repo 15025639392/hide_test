@@ -55,3 +55,59 @@ pub(crate) fn initial_bearing_degrees(
         None
     }
 }
+
+pub(crate) fn distance_to_segment_meters(
+    point_latitude_degrees: f64,
+    point_longitude_degrees: f64,
+    start_latitude_degrees: f64,
+    start_longitude_degrees: f64,
+    end_latitude_degrees: f64,
+    end_longitude_degrees: f64,
+) -> f64 {
+    if !point_latitude_degrees.is_finite()
+        || !point_longitude_degrees.is_finite()
+        || !start_latitude_degrees.is_finite()
+        || !start_longitude_degrees.is_finite()
+        || !end_latitude_degrees.is_finite()
+        || !end_longitude_degrees.is_finite()
+    {
+        return f64::INFINITY;
+    }
+
+    let origin_latitude_radians = start_latitude_degrees.to_radians();
+    let point_x = local_x_meters(
+        point_longitude_degrees,
+        start_longitude_degrees,
+        origin_latitude_radians,
+    );
+    let point_y = local_y_meters(point_latitude_degrees, start_latitude_degrees);
+    let end_x = local_x_meters(
+        end_longitude_degrees,
+        start_longitude_degrees,
+        origin_latitude_radians,
+    );
+    let end_y = local_y_meters(end_latitude_degrees, start_latitude_degrees);
+    let length_squared = end_x * end_x + end_y * end_y;
+    let t = if length_squared <= 0.0 {
+        0.0
+    } else {
+        ((point_x * end_x + point_y * end_y) / length_squared).clamp(0.0, 1.0)
+    };
+    let projection_x = t * end_x;
+    let projection_y = t * end_y;
+    ((point_x - projection_x).powi(2) + (point_y - projection_y).powi(2)).sqrt()
+}
+
+fn local_x_meters(
+    longitude_degrees: f64,
+    origin_longitude_degrees: f64,
+    origin_latitude_radians: f64,
+) -> f64 {
+    (longitude_degrees - origin_longitude_degrees).to_radians()
+        * origin_latitude_radians.cos()
+        * EARTH_RADIUS_METERS
+}
+
+fn local_y_meters(latitude_degrees: f64, origin_latitude_degrees: f64) -> f64 {
+    (latitude_degrees - origin_latitude_degrees).to_radians() * EARTH_RADIUS_METERS
+}

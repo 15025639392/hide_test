@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://device-fix.local/schemas/track-streaming-settlement-state.schema.json",
+  "title": "Track SDK Streaming Settlement State",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "committedCursorSampleId",
+    "commitSequence",
+    "committedRanges",
+    "committedMetricOwnershipRanges",
+    "hardBoundaryCheckpoints",
+    "blockingRanges",
+    "lastCommitPlanStatus",
+    "lastCommitWatermark"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "track-sdk-streaming-settlement-state-v1"
+    },
+    "committedCursorSampleId": {
+      "type": ["integer", "null"],
+      "minimum": 1
+    },
+    "commitSequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "committedRanges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CommittedRange"
+      }
+    },
+    "committedMetricOwnershipRanges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CommittedMetricOwnershipRange"
+      }
+    },
+    "hardBoundaryCheckpoints": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/HardBoundaryCheckpoint"
+      }
+    },
+    "blockingRanges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/BlockingRange"
+      }
+    },
+    "lastCommitPlanStatus": {
+      "type": "string",
+      "enum": ["none", "committable", "blocked_at_watermark"]
+    },
+    "lastCommitWatermark": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    }
+  },
+  "not": {
+    "anyOf": [
+      { "required": ["committedCursorRawPointId"] },
+      { "required": ["lastCommitWatermarkRawPointId"] },
+      { "required": ["rawRange"] },
+      { "required": ["range"] }
+    ]
+  },
+  "$defs": {
+    "SampleRange": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["startSampleId", "endSampleId"],
+      "properties": {
+        "startSampleId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "endSampleId": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["startRawPointId"] },
+          { "required": ["endRawPointId"] }
+        ]
+      }
+    },
+    "MetricGate": {
+      "type": "string",
+      "enum": ["route", "distance", "moving_time", "elevation"]
+    },
+    "AffectedMetricGates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/MetricGate"
+      }
+    },
+    "CommittedRange": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "sampleRange", "affectedMetricGates", "commitSequence"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["normal", "hard_boundary"]
+        },
+        "proposalId": {
+          "type": ["string", "null"]
+        },
+        "scenario": {
+          "type": ["string", "null"]
+        },
+        "sampleRange": {
+          "$ref": "#/$defs/SampleRange"
+        },
+        "affectedMetricGates": {
+          "$ref": "#/$defs/AffectedMetricGates"
+        },
+        "commitSequence": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["range"] },
+          { "required": ["rawRange"] }
+        ]
+      }
+    },
+    "CommittedMetricOwnershipRange": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "ownerId",
+        "sampleRange",
+        "affectedMetricGates",
+        "hardBoundary",
+        "commitSequence"
+      ],
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sampleRange": {
+          "$ref": "#/$defs/SampleRange"
+        },
+        "affectedMetricGates": {
+          "$ref": "#/$defs/AffectedMetricGates"
+        },
+        "hardBoundary": {
+          "type": "boolean"
+        },
+        "commitSequence": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["rawRange"] },
+          { "required": ["range"] }
+        ]
+      }
+    },
+    "HardBoundaryCheckpoint": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "proposalId",
+        "scenario",
+        "sampleRange",
+        "affectedMetricGates",
+        "commitSequence"
+      ],
+      "properties": {
+        "proposalId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scenario": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sampleRange": {
+          "$ref": "#/$defs/SampleRange"
+        },
+        "affectedMetricGates": {
+          "$ref": "#/$defs/AffectedMetricGates"
+        },
+        "commitSequence": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["rawRange"] },
+          { "required": ["range"] }
+        ]
+      }
+    },
+    "BlockingRange": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "id", "sampleRange", "affectedMetricGates"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["open_window", "unresolved_conflict"]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "relation": {
+          "type": "string"
+        },
+        "proposalIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sampleRange": {
+          "$ref": "#/$defs/SampleRange"
+        },
+        "affectedMetricGates": {
+          "$ref": "#/$defs/AffectedMetricGates"
+        }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["rawRange"] },
+          { "required": ["range"] }
+        ]
+      }
+    }
+  }
+}

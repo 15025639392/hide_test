@@ -1,4 +1,5 @@
 {
+  "schemaVersion": "track-sdk-replay-fixture-v1",
   "ruleId": "web_intake_v0",
   "ruleVersion": "0.1.0",
   "source": "web_algorithm",
@@ -17,34 +18,48 @@
           "state": "MOVING",
           "startedElapsedRealtimeNanos": 0,
           "requestedMinTimeMs": 1000,
-          "requestedMinDistanceMeters": 1.0
+          "requestedMinDistanceMeters": 1
         }
       ],
       "locationSamples": [
         {
-          "rawPointId": 1,
-          "positioningSource": "gnss",
-          "latitude": 30.0,
-          "longitude": 120.0,
-          "horizontalAccuracyMeters": 8.0,
+          "sampleId": 1,
+          "provider": "gnss",
+          "lat": 30,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
           "wallTimeMillis": 1000,
-          "elapsedRealtimeNanos": 1000000000,
-          "isMock": false,
-          "samplingEpochId": "missing"
+          "fixElapsedRealtimeNanos": 1000000000,
+          "samplingEpochId": "missing",
+          "isMock": false
         }
-      ]
+      ],
+      "motionWindows": [],
+      "barometerWindows": [],
+      "barometerCalibrations": []
     }
   },
   "expected": {
     "trackPointCount": 0,
     "gpxTrackPointCount": 0,
     "segmentCount": 0,
-    "totalDistanceMeters": 0.0,
-    "movingTimeSeconds": 0.0,
-    "acceptedRawPointIds": [],
-    "rejectedRawPointIds": [1],
+    "totalDistanceMeters": 0,
+    "totalDistanceMetersTolerance": 0.000001,
+    "movingTimeSeconds": 0,
+    "totalAscentMeters": 0,
+    "totalDescentMeters": 0,
+    "selectedElevationSource": "NONE",
+    "acceptedSampleIds": [],
+    "weakSampleIds": [],
+    "rejectedSampleIds": [
+      1
+    ],
     "decisionReasons": {
       "1": "sampling_epoch_mismatch"
-    }
+    },
+    "decisionReasonCounts": {
+      "sampling_epoch_mismatch": 1
+    },
+    "trackPoints": []
   }
 }

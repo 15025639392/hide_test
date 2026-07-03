@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://device-fix.local/schemas/track-apple-integration-manifest.schema.json",
+  "title": "Track Apple Integration Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "binaryTargetName",
+    "xcframeworkRelativePath",
+    "swiftTargetName",
+    "swiftFiles",
+    "requiredFfiSymbols",
+    "requiredProductSnapshotFields",
+    "forbiddenProductSnapshotFields",
+    "watchHikingAppRecommendedPaths"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "track-apple-integration-manifest-v1"
+    },
+    "binaryTargetName": {
+      "const": "TrackCore"
+    },
+    "xcframeworkRelativePath": {
+      "const": "Vendor/TrackCore.xcframework"
+    },
+    "swiftTargetName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "swiftFiles": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "string",
+        "pattern": "^TrackCore[A-Za-z]+\\.swift$"
+      }
+    },
+    "requiredFfiSymbols": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "type": "string",
+        "pattern": "^track_[a-z0-9_]+$"
+      }
+    },
+    "requiredProductSnapshotFields": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "forbiddenProductSnapshotFields": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "watchHikingAppRecommendedPaths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["xcframework", "swiftFilesDirectory"],
+      "properties": {
+        "xcframework": {
+          "type": "string",
+          "minLength": 1
+        },
+        "swiftFilesDirectory": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

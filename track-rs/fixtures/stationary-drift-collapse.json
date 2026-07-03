@@ -1,0 +1,326 @@
+{
+  "schemaVersion": "track-sdk-replay-fixture-v1",
+  "ruleId": "stationary_drift_collapse_v0",
+  "ruleVersion": "0.1.0",
+  "source": "web_algorithm",
+  "request": {
+    "config": {
+      "strategyVersion": "rust-poc"
+    },
+    "input": {
+      "sessionContext": {
+        "sessionId": "stationary-drift-collapse",
+        "strategyVersion": "rust-poc",
+        "createdElapsedRealtimeNanos": 0,
+        "createdWallTimeMillis": 0
+      },
+      "locationSamples": [
+        {
+          "sampleId": 1,
+          "provider": "gnss",
+          "lat": 30,
+          "lng": 120,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 1000,
+          "fixElapsedRealtimeNanos": 1000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 2,
+          "provider": "gnss",
+          "lat": 30.00003,
+          "lng": 120,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 5000,
+          "fixElapsedRealtimeNanos": 5000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 3,
+          "provider": "gnss",
+          "lat": 30.00003,
+          "lng": 120.00003,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 9000,
+          "fixElapsedRealtimeNanos": 9000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 4,
+          "provider": "gnss",
+          "lat": 30,
+          "lng": 120.00003,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 13000,
+          "fixElapsedRealtimeNanos": 13000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 5,
+          "provider": "gnss",
+          "lat": 30,
+          "lng": 120,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 17000,
+          "fixElapsedRealtimeNanos": 17000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 6,
+          "provider": "gnss",
+          "lat": 30.00003,
+          "lng": 120,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 21000,
+          "fixElapsedRealtimeNanos": 21000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 7,
+          "provider": "gnss",
+          "lat": 30.00003,
+          "lng": 120.00003,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 25000,
+          "fixElapsedRealtimeNanos": 25000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 8,
+          "provider": "gnss",
+          "lat": 30,
+          "lng": 120.00003,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 29000,
+          "fixElapsedRealtimeNanos": 29000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 9,
+          "provider": "gnss",
+          "lat": 30,
+          "lng": 120,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 33000,
+          "fixElapsedRealtimeNanos": 33000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 10,
+          "provider": "gnss",
+          "lat": 30.00003,
+          "lng": 120,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 37000,
+          "fixElapsedRealtimeNanos": 37000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 11,
+          "provider": "gnss",
+          "lat": 30.00003,
+          "lng": 120.00003,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 41000,
+          "fixElapsedRealtimeNanos": 41000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 12,
+          "provider": "gnss",
+          "lat": 30,
+          "lng": 120.00003,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 45000,
+          "fixElapsedRealtimeNanos": 45000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 13,
+          "provider": "gnss",
+          "lat": 30,
+          "lng": 120,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 49000,
+          "fixElapsedRealtimeNanos": 49000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 14,
+          "provider": "gnss",
+          "lat": 30.00003,
+          "lng": 120,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 53000,
+          "fixElapsedRealtimeNanos": 53000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 15,
+          "provider": "gnss",
+          "lat": 30.00003,
+          "lng": 120.00003,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 57000,
+          "fixElapsedRealtimeNanos": 57000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 16,
+          "provider": "gnss",
+          "lat": 30,
+          "lng": 120.00003,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 61000,
+          "fixElapsedRealtimeNanos": 61000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 17,
+          "provider": "gnss",
+          "lat": 30,
+          "lng": 120,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 65000,
+          "fixElapsedRealtimeNanos": 65000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 18,
+          "provider": "gnss",
+          "lat": 30.00003,
+          "lng": 120,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 69000,
+          "fixElapsedRealtimeNanos": 69000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 19,
+          "provider": "gnss",
+          "lat": 30.00003,
+          "lng": 120.00003,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 73000,
+          "fixElapsedRealtimeNanos": 73000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 20,
+          "provider": "gnss",
+          "lat": 30,
+          "lng": 120.00003,
+          "horizontalAccuracyMeters": 30,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 77000,
+          "fixElapsedRealtimeNanos": 77000000000,
+          "isMock": false
+        }
+      ],
+      "motionWindows": [
+        {
+          "windowId": "walk-drift",
+          "startElapsedRealtimeNanos": 0,
+          "endElapsedRealtimeNanos": 80000000000,
+          "linearAccelerationRmsMps2": 0.4,
+          "accelerometerDynamicRmsMps2": 0.4,
+          "gyroscopeRmsRadps": 0.2,
+          "stepCounterDelta": 20,
+          "deviceStill": false
+        }
+      ],
+      "samplingEpochs": [],
+      "barometerWindows": [],
+      "barometerCalibrations": []
+    }
+  },
+  "expected": {
+    "trackPointCount": 1,
+    "gpxTrackPointCount": 1,
+    "segmentCount": 1,
+    "totalDistanceMeters": 0,
+    "totalDistanceMetersTolerance": 0.000001,
+    "movingTimeSeconds": 0,
+    "totalAscentMeters": 0,
+    "totalDescentMeters": 0,
+    "selectedElevationSource": "NONE",
+    "acceptedSampleIds": [
+      2
+    ],
+    "weakSampleIds": [
+      1,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20
+    ],
+    "rejectedSampleIds": [],
+    "decisionReasons": {
+      "1": "moving_spike_line_bridge_suppressed",
+      "2": "stationary_drift_anchor",
+      "3": "stationary_drift_anchor_suppressed",
+      "4": "stationary_drift_anchor_suppressed",
+      "5": "stationary_drift_anchor_suppressed",
+      "6": "stationary_drift_anchor_suppressed",
+      "7": "stationary_drift_anchor_suppressed",
+      "8": "stationary_drift_anchor_suppressed",
+      "9": "stationary_drift_anchor_suppressed",
+      "10": "stationary_drift_anchor_suppressed",
+      "11": "stationary_drift_anchor_suppressed",
+      "12": "stationary_drift_anchor_suppressed",
+      "13": "stationary_drift_anchor_suppressed",
+      "14": "stationary_drift_anchor_suppressed",
+      "15": "stationary_drift_anchor_suppressed",
+      "16": "stationary_drift_anchor_suppressed",
+      "17": "stationary_drift_anchor_suppressed",
+      "18": "stationary_drift_anchor_suppressed",
+      "19": "stationary_drift_anchor_suppressed",
+      "20": "stationary_drift_anchor_suppressed"
+    },
+    "decisionReasonCounts": {
+      "moving_spike_line_bridge_suppressed": 1,
+      "stationary_drift_anchor": 1,
+      "stationary_drift_anchor_suppressed": 18
+    },
+    "trackPoints": [
+      {
+        "sourceSampleId": 2,
+        "lat": 30.000015,
+        "lng": 120.000015
+      }
+    ]
+  }
+}

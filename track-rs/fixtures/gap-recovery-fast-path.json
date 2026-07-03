@@ -1,4 +1,5 @@
 {
+  "schemaVersion": "track-sdk-replay-fixture-v1",
   "ruleId": "horizontal_decision.gap_recovery_fast_path",
   "ruleVersion": "0.1.0",
   "source": "web_algorithm",
@@ -15,40 +16,67 @@
       },
       "locationSamples": [
         {
-          "rawPointId": 1,
-          "positioningSource": "gnss",
-          "latitude": 30.0,
-          "longitude": 120.0,
-          "horizontalAccuracyMeters": 8.0,
+          "sampleId": 1,
+          "provider": "gnss",
+          "lat": 30,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
           "wallTimeMillis": 1000,
-          "elapsedRealtimeNanos": 1000000000,
+          "fixElapsedRealtimeNanos": 1000000000,
           "isMock": false
         },
         {
-          "rawPointId": 2,
-          "positioningSource": "gnss",
-          "latitude": 30.000135,
-          "longitude": 120.0,
-          "horizontalAccuracyMeters": 8.0,
+          "sampleId": 2,
+          "provider": "gnss",
+          "lat": 30.000135,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
           "wallTimeMillis": 122000,
-          "elapsedRealtimeNanos": 122000000000,
+          "fixElapsedRealtimeNanos": 122000000000,
           "isMock": false
         }
-      ]
+      ],
+      "samplingEpochs": [],
+      "motionWindows": [],
+      "barometerWindows": [],
+      "barometerCalibrations": []
     }
   },
   "expected": {
     "trackPointCount": 2,
     "gpxTrackPointCount": 2,
     "segmentCount": 2,
-    "totalDistanceMeters": 0.0,
+    "totalDistanceMeters": 0,
     "totalDistanceMetersTolerance": 0.000001,
-    "movingTimeSeconds": 0.0,
-    "acceptedRawPointIds": [1, 2],
-    "rejectedRawPointIds": [],
+    "movingTimeSeconds": 0,
+    "totalAscentMeters": 0,
+    "totalDescentMeters": 0,
+    "selectedElevationSource": "NONE",
+    "acceptedSampleIds": [
+      1,
+      2
+    ],
+    "weakSampleIds": [],
+    "rejectedSampleIds": [],
     "decisionReasons": {
       "1": "first_fix_good",
       "2": "gap_recovery"
-    }
+    },
+    "decisionReasonCounts": {
+      "first_fix_good": 1,
+      "gap_recovery": 1
+    },
+    "trackPoints": [
+      {
+        "sourceSampleId": 1,
+        "lat": 30,
+        "lng": 120
+      },
+      {
+        "sourceSampleId": 2,
+        "lat": 30.000135,
+        "lng": 120
+      }
+    ]
   }
 }

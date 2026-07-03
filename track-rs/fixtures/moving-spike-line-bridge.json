@@ -1,0 +1,91 @@
+{
+  "schemaVersion": "track-sdk-replay-fixture-v1",
+  "ruleId": "moving_spike_line_bridge_v0",
+  "ruleVersion": "0.1.0",
+  "source": "web_algorithm",
+  "request": {
+    "config": {
+      "strategyVersion": "rust-poc"
+    },
+    "input": {
+      "sessionContext": {
+        "sessionId": "moving-spike-line-bridge",
+        "strategyVersion": "rust-poc",
+        "createdElapsedRealtimeNanos": 0,
+        "createdWallTimeMillis": 0
+      },
+      "locationSamples": [
+        {
+          "sampleId": 1,
+          "provider": "gnss",
+          "lat": 30,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "wallTimeMillis": 1000,
+          "fixElapsedRealtimeNanos": 1000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 2,
+          "provider": "gnss",
+          "lat": 30.00006,
+          "lng": 120.00005,
+          "horizontalAccuracyMeters": 8,
+          "speedMetersPerSecond": 0.1,
+          "wallTimeMillis": 2000,
+          "fixElapsedRealtimeNanos": 2000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 3,
+          "provider": "gnss",
+          "lat": 30,
+          "lng": 120.0001,
+          "horizontalAccuracyMeters": 8,
+          "wallTimeMillis": 3000,
+          "fixElapsedRealtimeNanos": 3000000000,
+          "isMock": false
+        }
+      ],
+      "samplingEpochs": [],
+      "motionWindows": [],
+      "barometerWindows": [],
+      "barometerCalibrations": []
+    }
+  },
+  "expected": {
+    "trackPointCount": 1,
+    "gpxTrackPointCount": 1,
+    "segmentCount": 1,
+    "totalDistanceMeters": 0,
+    "totalDistanceMetersTolerance": 0.000001,
+    "movingTimeSeconds": 0,
+    "totalAscentMeters": 0,
+    "totalDescentMeters": 0,
+    "selectedElevationSource": "NONE",
+    "acceptedSampleIds": [
+      1
+    ],
+    "weakSampleIds": [],
+    "rejectedSampleIds": [
+      2,
+      3
+    ],
+    "decisionReasons": {
+      "1": "first_fix_good",
+      "2": "stationary_cloud_jitter",
+      "3": "stationary_cloud_jitter"
+    },
+    "decisionReasonCounts": {
+      "first_fix_good": 1,
+      "stationary_cloud_jitter": 2
+    },
+    "trackPoints": [
+      {
+        "sourceSampleId": 1,
+        "lat": 30,
+        "lng": 120
+      }
+    ]
+  }
+}

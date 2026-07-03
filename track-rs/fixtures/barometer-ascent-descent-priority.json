@@ -1,0 +1,148 @@
+{
+  "schemaVersion": "track-sdk-replay-fixture-v1",
+  "ruleId": "barometer_ascent_descent_priority_v0",
+  "ruleVersion": "0.1.0",
+  "source": "web_algorithm",
+  "request": {
+    "config": {
+      "strategyVersion": "rust-poc"
+    },
+    "input": {
+      "sessionContext": {
+        "sessionId": "barometer-ascent-descent-priority",
+        "strategyVersion": "rust-poc",
+        "createdElapsedRealtimeNanos": 0,
+        "createdWallTimeMillis": 0
+      },
+      "locationSamples": [
+        {
+          "sampleId": 1,
+          "provider": "gnss",
+          "lat": 30,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "altitudeMeters": 100,
+          "verticalAccuracyMeters": 4,
+          "wallTimeMillis": 1000,
+          "fixElapsedRealtimeNanos": 1000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 2,
+          "provider": "gnss",
+          "lat": 30.0001,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "altitudeMeters": 110,
+          "verticalAccuracyMeters": 4,
+          "wallTimeMillis": 31000,
+          "fixElapsedRealtimeNanos": 31000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 3,
+          "provider": "gnss",
+          "lat": 30.0002,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "altitudeMeters": 104,
+          "verticalAccuracyMeters": 4,
+          "wallTimeMillis": 61000,
+          "fixElapsedRealtimeNanos": 61000000000,
+          "isMock": false
+        }
+      ],
+      "barometerWindows": [
+        {
+          "windowId": "barometer-1",
+          "startElapsedRealtimeNanos": 1000000000,
+          "endElapsedRealtimeNanos": 1000000000,
+          "sampleCount": 1,
+          "minPressureHpa": 1000,
+          "maxPressureHpa": 1000,
+          "avgPressureHpa": 1000,
+          "minRawBarometerAltitudeMeters": 100,
+          "maxRawBarometerAltitudeMeters": 100,
+          "avgRawBarometerAltitudeMeters": 100,
+          "deltaRawBarometerAltitudeMeters": 0,
+          "windowAscentMeters": 0,
+          "windowDescentMeters": 0
+        },
+        {
+          "windowId": "barometer-2",
+          "startElapsedRealtimeNanos": 31000000000,
+          "endElapsedRealtimeNanos": 31000000000,
+          "sampleCount": 1,
+          "minPressureHpa": 999,
+          "maxPressureHpa": 999,
+          "avgPressureHpa": 999,
+          "minRawBarometerAltitudeMeters": 112,
+          "maxRawBarometerAltitudeMeters": 112,
+          "avgRawBarometerAltitudeMeters": 112,
+          "deltaRawBarometerAltitudeMeters": 0,
+          "windowAscentMeters": 12,
+          "windowDescentMeters": 0
+        },
+        {
+          "windowId": "barometer-3",
+          "startElapsedRealtimeNanos": 61000000000,
+          "endElapsedRealtimeNanos": 61000000000,
+          "sampleCount": 1,
+          "minPressureHpa": 1001,
+          "maxPressureHpa": 1001,
+          "avgPressureHpa": 1001,
+          "minRawBarometerAltitudeMeters": 105,
+          "maxRawBarometerAltitudeMeters": 105,
+          "avgRawBarometerAltitudeMeters": 105,
+          "deltaRawBarometerAltitudeMeters": 0,
+          "windowAscentMeters": 0,
+          "windowDescentMeters": 7
+        }
+      ],
+      "barometerCalibrations": [],
+      "samplingEpochs": [],
+      "motionWindows": []
+    }
+  },
+  "expected": {
+    "trackPointCount": 2,
+    "gpxTrackPointCount": 2,
+    "segmentCount": 1,
+    "totalDistanceMeters": 22.23898532886,
+    "totalDistanceMetersTolerance": 0.000001,
+    "movingTimeSeconds": 60,
+    "totalAscentMeters": 12,
+    "totalDescentMeters": 7,
+    "selectedElevationSource": "BAROMETER",
+    "acceptedSampleIds": [
+      1,
+      3
+    ],
+    "weakSampleIds": [],
+    "rejectedSampleIds": [
+      2
+    ],
+    "decisionReasons": {
+      "1": "first_fix_good",
+      "2": "stationary_cloud_jitter",
+      "3": "moving_good_fix"
+    },
+    "decisionReasonCounts": {
+      "first_fix_good": 1,
+      "moving_good_fix": 1,
+      "stationary_cloud_jitter": 1
+    },
+    "trackPoints": [
+      {
+        "sourceSampleId": 1,
+        "lat": 30,
+        "lng": 120
+      },
+      {
+        "sourceSampleId": 3,
+        "lat": 30.0002,
+        "lng": 120
+      }
+    ]
+  }
+}

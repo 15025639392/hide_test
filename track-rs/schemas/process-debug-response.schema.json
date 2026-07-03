@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://device-fix.local/schemas/track-process-debug-response.schema.json",
+  "title": "Track SDK Process Debug Response",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["ok"],
+  "properties": {
+    "ok": {
+      "type": "boolean"
+    },
+    "result": {
+      "$ref": "#/$defs/TrackProcessDebugResult"
+    },
+    "error": {
+      "$ref": "track-process-response.schema.json#/$defs/TrackError"
+    }
+  },
+  "oneOf": [
+    {
+      "required": ["ok", "result"],
+      "properties": {
+        "ok": {
+          "const": true
+        }
+      },
+      "not": {
+        "required": ["error"]
+      }
+    },
+    {
+      "required": ["ok", "error"],
+      "properties": {
+        "ok": {
+          "const": false
+        }
+      },
+      "not": {
+        "required": ["result"]
+      }
+    }
+  ],
+  "$defs": {
+    "TrackProcessDebugResult": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "cleanedTrack",
+        "rawPointDecisions",
+        "cleaningOperations",
+        "metricOwnershipRanges",
+        "replayDiagnostics"
+      ],
+      "properties": {
+        "cleanedTrack": {
+          "$ref": "track-process-response.schema.json#/$defs/CleanedTrackResult"
+        },
+        "rawPointDecisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RawPointDecision"
+          }
+        },
+        "cleaningOperations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CleaningOperation"
+          }
+        },
+        "metricOwnershipRanges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MetricOwnershipRange"
+          }
+        },
+        "replayDiagnostics": {
+          "$ref": "#/$defs/ReplayDiagnostics"
+        }
+      }
+    },
+    "RawPointDecision": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "sampleId",
+        "result",
+        "reason",
+        "metricOwner",
+        "affectedMetricGates"
+      ],
+      "properties": {
+        "sampleId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "result": {
+          "type": "string",
+          "enum": ["accept", "weak", "reject", "intake_rejected"]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "trackPointId": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "metricOwner": {
+          "type": "boolean"
+        },
+        "affectedMetricGates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "not": {
+        "required": ["rawPointId"]
+      }
+    },
+    "CleaningOperation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "operationId",
+        "kind",
+        "inputSampleRange",
+        "distancePolicy",
+        "movingTimePolicy",
+        "elevationPolicy"
+      ],
+      "properties": {
+        "operationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputSampleRange": {
+          "$ref": "#/$defs/SampleRange"
+        },
+        "distancePolicy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "movingTimePolicy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "elevationPolicy": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "not": {
+        "required": ["inputRawRange"]
+      }
+    },
+    "MetricOwnershipRange": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["ownerId", "sampleRange", "affectedMetricGates", "hardBoundary"],
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sampleRange": {
+          "$ref": "#/$defs/SampleRange"
+        },
+        "affectedMetricGates": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["route", "distance", "moving_time", "elevation"]
+          }
+        },
+        "hardBoundary": {
+          "type": "boolean"
+        }
+      },
+      "not": {
+        "required": ["rawRange"]
+      }
+    },
+    "SampleRange": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["startSampleId", "endSampleId"],
+      "properties": {
+        "startSampleId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "endSampleId": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "ReplayDiagnostics": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["engine", "settlementScope", "notes"],
+      "properties": {
+        "engine": {
+          "type": "string",
+          "minLength": 1
+        },
+        "settlementScope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

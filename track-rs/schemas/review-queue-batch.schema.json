@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://device-fix.local/schemas/review-queue-batch.schema.json",
+  "title": "Review Queue Batch Export",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "sourcePath",
+    "filter",
+    "exportedAt",
+    "fileCount",
+    "successCount",
+    "errorCount",
+    "exports",
+    "errors"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "review-queue-batch-v1"
+    },
+    "sourcePath": {
+      "type": ["string", "null"]
+    },
+    "filter": {
+      "type": "string",
+      "enum": ["all", "metric", "diagnostic", "highRisk", "pending"]
+    },
+    "exportedAt": {
+      "type": "string"
+    },
+    "fileCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "successCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "errorCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "exports": {
+      "type": "array",
+      "items": {
+        "$ref": "review-queue.schema.json"
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["filePath", "message"],
+        "properties": {
+          "filePath": {
+            "type": "string",
+            "minLength": 1
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

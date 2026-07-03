@@ -1,0 +1,212 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://device-fix.local/schemas/review-queue.schema.json",
+  "title": "Review Queue Export",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "dataset",
+    "filter",
+    "stats",
+    "taskCount",
+    "tasks",
+    "streamingSettlementState",
+    "streamingDiagnosticContexts"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "review-queue-v1"
+    },
+    "dataset": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "fileName", "filePath"],
+      "properties": {
+        "id": {
+          "type": ["string", "null"]
+        },
+        "fileName": {
+          "type": ["string", "null"]
+        },
+        "filePath": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "filter": {
+      "type": "string",
+      "enum": ["all", "metric", "diagnostic", "highRisk", "pending"]
+    },
+    "stats": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "total",
+        "pending",
+        "done",
+        "highRisk",
+        "metricOwner",
+        "diagnosticContext"
+      ],
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pending": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "done": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "highRisk": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "metricOwner": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "diagnosticContext": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "taskCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ReviewTask"
+      }
+    },
+    "streamingSettlementState": {
+      "$ref": "streaming-settlement-state.schema.json"
+    },
+    "streamingDiagnosticContexts": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "exportedAt": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "RawRange": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["startRawPointId", "endRawPointId"],
+      "properties": {
+        "startRawPointId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "endRawPointId": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "TrackRange": {
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "properties": {
+        "startTrackPointId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "endTrackPointId": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "MetricGate": {
+      "type": "string",
+      "enum": ["route", "distance", "moving_time", "elevation"]
+    },
+    "ReviewTask": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "order",
+        "reviewKey",
+        "type",
+        "status",
+        "highRisk",
+        "scenario",
+        "title",
+        "rawRange",
+        "metricOwner",
+        "affectedMetricGates"
+      ],
+      "properties": {
+        "order": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reviewKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "enum": ["scenario", "conflict", "diagnostic_context"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "question", "skipped"]
+        },
+        "highRisk": {
+          "type": "boolean"
+        },
+        "scenario": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rawRange": {
+          "$ref": "#/$defs/RawRange"
+        },
+        "trackRange": {
+          "$ref": "#/$defs/TrackRange"
+        },
+        "metricOwner": {
+          "type": "boolean"
+        },
+        "affectedMetricGates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MetricGate"
+          }
+        },
+        "action": {
+          "type": ["string", "null"]
+        },
+        "localRebuild": {
+          "type": ["string", "null"]
+        },
+        "anchorRawPointIds": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "evidence": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        }
+      }
+    }
+  }
+}

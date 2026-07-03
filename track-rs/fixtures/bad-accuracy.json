@@ -1,4 +1,5 @@
 {
+  "schemaVersion": "track-sdk-replay-fixture-v1",
   "ruleId": "safety_kernel_v0",
   "ruleVersion": "0.1.0",
   "source": "rust_infrastructure",
@@ -13,39 +14,56 @@
       },
       "locationSamples": [
         {
-          "rawPointId": 1,
-          "positioningSource": "gnss",
-          "latitude": 30.0,
-          "longitude": 120.0,
-          "horizontalAccuracyMeters": -1.0,
+          "sampleId": 1,
+          "provider": "gnss",
+          "lat": 30,
+          "lng": 120,
+          "horizontalAccuracyMeters": -1,
           "wallTimeMillis": 1000,
-          "elapsedRealtimeNanos": 1000000000,
+          "fixElapsedRealtimeNanos": 1000000000,
           "isMock": false
         },
         {
-          "rawPointId": 2,
-          "positioningSource": "gnss",
-          "latitude": 30.0001,
-          "longitude": 120.0,
-          "horizontalAccuracyMeters": 81.0,
+          "sampleId": 2,
+          "provider": "gnss",
+          "lat": 30.0001,
+          "lng": 120,
+          "horizontalAccuracyMeters": 81,
           "wallTimeMillis": 2000,
-          "elapsedRealtimeNanos": 2000000000,
+          "fixElapsedRealtimeNanos": 2000000000,
           "isMock": false
         }
-      ]
+      ],
+      "samplingEpochs": [],
+      "motionWindows": [],
+      "barometerWindows": [],
+      "barometerCalibrations": []
     }
   },
   "expected": {
     "trackPointCount": 0,
     "gpxTrackPointCount": 0,
     "segmentCount": 0,
-    "totalDistanceMeters": 0.0,
-    "movingTimeSeconds": 0.0,
-    "acceptedRawPointIds": [],
-    "rejectedRawPointIds": [1, 2],
+    "totalDistanceMeters": 0,
+    "totalDistanceMetersTolerance": 0.000001,
+    "movingTimeSeconds": 0,
+    "totalAscentMeters": 0,
+    "totalDescentMeters": 0,
+    "selectedElevationSource": "NONE",
+    "acceptedSampleIds": [],
+    "weakSampleIds": [],
+    "rejectedSampleIds": [
+      1,
+      2
+    ],
     "decisionReasons": {
       "1": "invalid_accuracy",
       "2": "accuracy_too_large"
-    }
+    },
+    "decisionReasonCounts": {
+      "accuracy_too_large": 1,
+      "invalid_accuracy": 1
+    },
+    "trackPoints": []
   }
 }

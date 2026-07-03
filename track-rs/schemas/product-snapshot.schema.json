@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://device-fix.local/schemas/track-product-snapshot.schema.json",
+  "title": "Track Core Product Snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "trackPoints",
+    "totalDistanceMeters",
+    "totalAscentMeters",
+    "totalDescentMeters",
+    "selectedElevationSource"
+  ],
+  "properties": {
+    "trackPoints": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ProductTrackPoint"
+      }
+    },
+    "totalDistanceMeters": {
+      "type": "number",
+      "minimum": 0
+    },
+    "totalAscentMeters": {
+      "type": "number",
+      "minimum": 0
+    },
+    "totalDescentMeters": {
+      "type": "number",
+      "minimum": 0
+    },
+    "selectedElevationSource": {
+      "type": "string",
+      "enum": ["BAROMETER", "GNSS", "NONE"]
+    }
+  },
+  "$defs": {
+    "ProductTrackPoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackPointId",
+        "sourceSampleId",
+        "lat",
+        "lng",
+        "fixElapsedRealtimeNanos",
+        "wallTimeMillis",
+        "horizontalAccuracyMeters",
+        "distanceDeltaMeters",
+        "segmentId"
+      ],
+      "properties": {
+        "trackPointId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sourceSampleId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "lat": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "lng": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        },
+        "trackDirectionDegrees": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 360
+        },
+        "fixElapsedRealtimeNanos": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "wallTimeMillis": {
+          "type": "integer"
+        },
+        "horizontalAccuracyMeters": {
+          "type": "number",
+          "minimum": 0
+        },
+        "distanceDeltaMeters": {
+          "type": "number",
+          "minimum": 0
+        },
+        "segmentId": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

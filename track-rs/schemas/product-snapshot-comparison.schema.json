@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://device-fix.local/schemas/track-product-snapshot-comparison.schema.json",
+  "title": "Track Product Snapshot Comparison Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "ok",
+    "expectedPath",
+    "actualPath",
+    "metersTolerance",
+    "issueCount",
+    "issues"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "track-product-snapshot-comparison-v1"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "expectedPath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "actualPath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "metersTolerance": {
+      "type": "number",
+      "minimum": 0
+    },
+    "issueCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ComparisonIssue"
+      }
+    }
+  },
+  "$defs": {
+    "ComparisonIssue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field", "message"],
+      "properties": {
+        "field": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected": {},
+        "actual": {},
+        "diff": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tolerance": {
+          "type": "number",
+          "minimum": 0
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

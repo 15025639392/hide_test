@@ -1,0 +1,363 @@
+{
+  "schemaVersion": "track-sdk-replay-fixture-v1",
+  "ruleId": "round_trip_line_settlement_v0",
+  "ruleVersion": "0.1.0",
+  "source": "web_algorithm",
+  "request": {
+    "config": {
+      "strategyVersion": "rust-poc"
+    },
+    "input": {
+      "sessionContext": {
+        "sessionId": "round-trip-line-settlement",
+        "strategyVersion": "rust-poc",
+        "createdElapsedRealtimeNanos": 0,
+        "createdWallTimeMillis": 0
+      },
+      "locationSamples": [
+        {
+          "sampleId": 1,
+          "provider": "gnss",
+          "lat": 30,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "wallTimeMillis": 1000,
+          "fixElapsedRealtimeNanos": 1000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 2,
+          "provider": "gnss",
+          "lat": 30.00085,
+          "lng": 120,
+          "horizontalAccuracyMeters": 34,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 122000,
+          "fixElapsedRealtimeNanos": 122000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 3,
+          "provider": "gnss",
+          "lat": 30.000855,
+          "lng": 120,
+          "horizontalAccuracyMeters": 34,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 123000,
+          "fixElapsedRealtimeNanos": 123000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 4,
+          "provider": "gnss",
+          "lat": 30.00086,
+          "lng": 120,
+          "horizontalAccuracyMeters": 34,
+          "speedMetersPerSecond": 0,
+          "wallTimeMillis": 124000,
+          "fixElapsedRealtimeNanos": 124000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 5,
+          "provider": "gnss",
+          "lat": 30.00085,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "speedMetersPerSecond": 1.2,
+          "wallTimeMillis": 126000,
+          "fixElapsedRealtimeNanos": 126000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 6,
+          "provider": "gnss",
+          "lat": 30.0008,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "speedMetersPerSecond": 1.2,
+          "wallTimeMillis": 128000,
+          "fixElapsedRealtimeNanos": 128000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 7,
+          "provider": "gnss",
+          "lat": 30.00075,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "speedMetersPerSecond": 1.2,
+          "wallTimeMillis": 130000,
+          "fixElapsedRealtimeNanos": 130000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 8,
+          "provider": "gnss",
+          "lat": 30.0007,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "speedMetersPerSecond": 1.2,
+          "wallTimeMillis": 132000,
+          "fixElapsedRealtimeNanos": 132000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 9,
+          "provider": "gnss",
+          "lat": 30.00065,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "speedMetersPerSecond": 1.2,
+          "wallTimeMillis": 134000,
+          "fixElapsedRealtimeNanos": 134000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 10,
+          "provider": "gnss",
+          "lat": 30.0006,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "speedMetersPerSecond": 1.2,
+          "wallTimeMillis": 136000,
+          "fixElapsedRealtimeNanos": 136000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 11,
+          "provider": "gnss",
+          "lat": 30.00055,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "speedMetersPerSecond": 1.2,
+          "wallTimeMillis": 138000,
+          "fixElapsedRealtimeNanos": 138000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 12,
+          "provider": "gnss",
+          "lat": 30.0005,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "speedMetersPerSecond": 1.2,
+          "wallTimeMillis": 140000,
+          "fixElapsedRealtimeNanos": 140000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 13,
+          "provider": "gnss",
+          "lat": 30.00045,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "speedMetersPerSecond": 1.2,
+          "wallTimeMillis": 142000,
+          "fixElapsedRealtimeNanos": 142000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 14,
+          "provider": "gnss",
+          "lat": 30.0004,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "speedMetersPerSecond": 1.2,
+          "wallTimeMillis": 144000,
+          "fixElapsedRealtimeNanos": 144000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 15,
+          "provider": "gnss",
+          "lat": 30.00035,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "speedMetersPerSecond": 1.2,
+          "wallTimeMillis": 146000,
+          "fixElapsedRealtimeNanos": 146000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 16,
+          "provider": "gnss",
+          "lat": 30.0003,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "speedMetersPerSecond": 1.2,
+          "wallTimeMillis": 148000,
+          "fixElapsedRealtimeNanos": 148000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 17,
+          "provider": "gnss",
+          "lat": 30.00025,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "speedMetersPerSecond": 1.2,
+          "wallTimeMillis": 150000,
+          "fixElapsedRealtimeNanos": 150000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 18,
+          "provider": "gnss",
+          "lat": 30.0002,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "speedMetersPerSecond": 1.2,
+          "wallTimeMillis": 152000,
+          "fixElapsedRealtimeNanos": 152000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 19,
+          "provider": "gnss",
+          "lat": 30.00015,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "speedMetersPerSecond": 1.2,
+          "wallTimeMillis": 154000,
+          "fixElapsedRealtimeNanos": 154000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 20,
+          "provider": "gnss",
+          "lat": 30.0001,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "speedMetersPerSecond": 1.2,
+          "wallTimeMillis": 156000,
+          "fixElapsedRealtimeNanos": 156000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 21,
+          "provider": "gnss",
+          "lat": 30.00005,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "speedMetersPerSecond": 1.2,
+          "wallTimeMillis": 158000,
+          "fixElapsedRealtimeNanos": 158000000000,
+          "isMock": false
+        },
+        {
+          "sampleId": 22,
+          "provider": "gnss",
+          "lat": 30,
+          "lng": 120,
+          "horizontalAccuracyMeters": 8,
+          "speedMetersPerSecond": 1.2,
+          "wallTimeMillis": 160000,
+          "fixElapsedRealtimeNanos": 160000000000,
+          "isMock": false
+        }
+      ],
+      "motionWindows": [
+        {
+          "windowId": "walk-round-trip",
+          "startElapsedRealtimeNanos": 125000000000,
+          "endElapsedRealtimeNanos": 170000000000,
+          "linearAccelerationRmsMps2": 0.4,
+          "accelerometerDynamicRmsMps2": 0.4,
+          "gyroscopeRmsRadps": 0.2,
+          "stepCounterDelta": 36,
+          "deviceStill": false
+        }
+      ],
+      "samplingEpochs": [],
+      "barometerWindows": [],
+      "barometerCalibrations": []
+    }
+  },
+  "expected": {
+    "trackPointCount": 3,
+    "gpxTrackPointCount": 3,
+    "segmentCount": 2,
+    "totalDistanceMeters": 94.515687647852,
+    "totalDistanceMetersTolerance": 0.000001,
+    "movingTimeSeconds": 159,
+    "totalAscentMeters": 0,
+    "totalDescentMeters": 0,
+    "selectedElevationSource": "NONE",
+    "acceptedSampleIds": [
+      1,
+      3,
+      22
+    ],
+    "weakSampleIds": [
+      2,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21
+    ],
+    "rejectedSampleIds": [],
+    "decisionReasons": {
+      "1": "round_trip_interwoven_start",
+      "2": "gap_recovery_pending",
+      "3": "weak_recovery_shape_anchor",
+      "4": "gap_recovery_pending",
+      "5": "round_trip_line_suppressed",
+      "6": "round_trip_line_suppressed",
+      "7": "round_trip_line_suppressed",
+      "8": "round_trip_line_suppressed",
+      "9": "round_trip_line_suppressed",
+      "10": "round_trip_line_suppressed",
+      "11": "round_trip_line_suppressed",
+      "12": "round_trip_line_suppressed",
+      "13": "round_trip_line_suppressed",
+      "14": "round_trip_line_suppressed",
+      "15": "round_trip_line_suppressed",
+      "16": "round_trip_line_suppressed",
+      "17": "round_trip_line_suppressed",
+      "18": "round_trip_line_suppressed",
+      "19": "round_trip_line_suppressed",
+      "20": "round_trip_line_suppressed",
+      "21": "round_trip_line_suppressed",
+      "22": "round_trip_interwoven_end"
+    },
+    "decisionReasonCounts": {
+      "gap_recovery_pending": 2,
+      "round_trip_interwoven_end": 1,
+      "round_trip_interwoven_start": 1,
+      "round_trip_line_suppressed": 17,
+      "weak_recovery_shape_anchor": 1
+    },
+    "trackPoints": [
+      {
+        "sourceSampleId": 1,
+        "lat": 30,
+        "lng": 120
+      },
+      {
+        "sourceSampleId": 3,
+        "lat": 30.000855,
+        "lng": 120
+      },
+      {
+        "sourceSampleId": 22,
+        "lat": 30,
+        "lng": 120
+      }
+    ]
+  }
+}

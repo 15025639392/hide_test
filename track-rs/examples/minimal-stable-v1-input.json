@@ -1,0 +1,73 @@
+{
+  "schemaVersion": "track-sdk-process-request-v1",
+  "config": {
+    "strategyVersion": "rust-poc"
+  },
+  "input": {
+    "sessionContext": {
+      "sessionId": "minimal-stable-v1",
+      "strategyVersion": "rust-poc",
+      "createdElapsedRealtimeNanos": 0,
+      "createdWallTimeMillis": 0,
+      "deviceModel": null,
+      "completionState": null
+    },
+    "samplingEpochs": [],
+    "locationSamples": [
+      {
+        "sampleId": 1,
+        "provider": "gnss",
+        "lat": 30.0,
+        "lng": 120.0,
+        "horizontalAccuracyMeters": 8.0,
+        "altitudeMeters": null,
+        "verticalAccuracyMeters": null,
+        "speedMetersPerSecond": null,
+        "bearingDegrees": null,
+        "wallTimeMillis": 1000,
+        "fixElapsedRealtimeNanos": 1000000000,
+        "isMock": false,
+        "samplingEpochId": null,
+        "receivedElapsedRealtimeNanos": null,
+        "callbackDelayNanos": null
+      },
+      {
+        "sampleId": 2,
+        "provider": "gnss",
+        "lat": 30.0001,
+        "lng": 120.0,
+        "horizontalAccuracyMeters": 8.0,
+        "altitudeMeters": null,
+        "verticalAccuracyMeters": null,
+        "speedMetersPerSecond": null,
+        "bearingDegrees": null,
+        "wallTimeMillis": 2000,
+        "fixElapsedRealtimeNanos": 2000000000,
+        "isMock": false,
+        "samplingEpochId": null,
+        "receivedElapsedRealtimeNanos": null,
+        "callbackDelayNanos": null
+      },
+      {
+        "sampleId": 3,
+        "provider": "gnss",
+        "lat": 30.0002,
+        "lng": 120.0,
+        "horizontalAccuracyMeters": 8.0,
+        "altitudeMeters": null,
+        "verticalAccuracyMeters": null,
+        "speedMetersPerSecond": null,
+        "bearingDegrees": null,
+        "wallTimeMillis": 3500,
+        "fixElapsedRealtimeNanos": 3500000000,
+        "isMock": false,
+        "samplingEpochId": null,
+        "receivedElapsedRealtimeNanos": null,
+        "callbackDelayNanos": null
+      }
+    ],
+    "motionWindows": [],
+    "barometerWindows": [],
+    "barometerCalibrations": []
+  }
+}
