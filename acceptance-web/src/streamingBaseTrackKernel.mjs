@@ -33,6 +33,7 @@ export function createStreamingBaseTrackKernelState(overrides = {}) {
     lastTransportRawPoint: cloneObject(overrides.lastTransportRawPoint),
     lastGapRecoveryPendingRawPoint: cloneObject(overrides.lastGapRecoveryPendingRawPoint),
     recoveryCloud: cloneObject(overrides.recoveryCloud),
+    stationaryCloud: cloneObject(overrides.stationaryCloud),
     lastLegalElapsedRealtimeNanos: finiteNumber(overrides.lastLegalElapsedRealtimeNanos),
     legalFixKeys: cloneArray(overrides.legalFixKeys),
     rawPointTimelinePrunedBeforeRawPointId:
@@ -293,15 +294,38 @@ function decideHorizontal(rawPoint, motion, state, config) {
         cloudType: 'MOVING_CLOUD'
       });
     }
-    return diagnosticDecision(rawPoint, 'reject', 'stationary_cloud_jitter', motion, {
-      cloudType: 'STATIONARY_CLOUD'
-    });
+    return decideStationaryCloud(rawPoint, previous, motion, state, config, thresholdMeters);
   }
 
   return trustedDecision(rawPoint, 'accept', 'moving_good_fix', motion, {
     distanceDeltaMeters: distance,
     movingTimeDeltaSeconds: Math.max(0, dtSeconds),
     cloudType: 'MOVING_CLOUD'
+  });
+}
+
+function decideStationaryCloud(rawPoint, previous, motion, state, config, thresholdMeters) {
+  const stationaryCloud = recordBoundaryCloudSample(state, 'stationaryCloud',
+    'STATIONARY_CLOUD', rawPoint, previous, config);
+  const cloudFields = boundaryCloudDecisionFields(stationaryCloud);
+  if (previous.reason === 'stationary_anchor') {
+    return diagnosticDecision(rawPoint, 'reject', 'stationary_anchor_redundant', motion, {
+      ...cloudFields,
+      cloudType: 'STATIONARY_CLOUD'
+    });
+  }
+  if (motion.state === 'still'
+      && isBoundaryCloudStable(stationaryCloud, thresholdMeters, config.stationaryCloudMinSamples)) {
+    return trustedDecision(rawPoint, 'anchor', 'stationary_anchor', motion, {
+      ...cloudFields,
+      distanceDeltaMeters: 0,
+      movingTimeDeltaSeconds: 0,
+      cloudType: 'STATIONARY_CLOUD'
+    });
+  }
+  return diagnosticDecision(rawPoint, 'reject', 'stationary_cloud_jitter', motion, {
+    ...cloudFields,
+    cloudType: 'STATIONARY_CLOUD'
   });
 }
 

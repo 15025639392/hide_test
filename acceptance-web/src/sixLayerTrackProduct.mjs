@@ -1094,6 +1094,7 @@ function collapseStationaryDualClusterDrift(product, evidence, config) {
   const removeIndexes = new Set(trackIndexes);
   product.track = product.track.filter((point, index) => !removeIndexes.has(index));
   product.track.splice(insertIndex, 0, collapsedPoint);
+  recomputeDistanceAfterCollapse(product.track, insertIndex);
   removeExcludedRawPoints(product, rawPointIds);
   addScenario(product, stationaryDualClusterDriftScenario(candidate));
   renumberTrackPoints(product);
@@ -2150,6 +2151,7 @@ function collapseDwellDriftClouds(product, evidence, config, denseAreaIntents = 
     const removeIndexes = new Set(trackIndexes);
     product.track = product.track.filter((point, index) => !removeIndexes.has(index));
     product.track.splice(insertIndex, 0, collapsedPoint);
+    recomputeDistanceAfterCollapse(product.track, insertIndex);
     removeExcludedRawPoints(product, rawPointIds);
     addScenario(product, stationaryDwellDriftScenario(interval, denseAreaIntents));
     changed = true;
@@ -3377,6 +3379,10 @@ function eligibleMovingSpikeCandidates(candidates) {
 function movingSpikeCandidate(previous, point, next, afterNext, index, config) {
   if (!hasValidLngLat(previous) || !hasValidLngLat(point) || !hasValidLngLat(next)) return null;
   if (!point.entersTrustedGpx || !next.entersTrustedGpx) return null;
+  // next 若是段边界点（gap_recovery / 交通恢复等，startsNewSegment=true），其
+  // distanceDeltaMeters 必须保持为 0；把尖刺桥接距离写到它上面会破坏边界零增量不变量，
+  // 且跨越 GAP/段边界的桥接本身也不成立。
+  if (next.startsNewSegment) return null;
   if (point.reason !== 'motion_supported_low_speed' && point.reason !== 'moving_good_fix') {
     return null;
   }
@@ -4101,8 +4107,10 @@ function restPhotoMicroMoveKeptPoint(candidate, keepIndexes, spanIndex, keepInde
     virtualCoordinate: original.virtualCoordinate === true,
     activityState: 'rest_photo_micro_move',
     boundaryState: 'rest_photo_micro_move_simplified',
-    countsDistance: simplifiedDistance > 0 && original.countsDistance === true,
-    countsMovingTime: aggregateMovingTime > 0 && original.countsMovingTime === true,
+    // 合并组的距离/运动时长按聚合值门控（与其它 collapse/simplify 站点一致），
+    // 不能被单个代表点（可能恰是 countsMovingTime=false 的 anchor）的门控丢弃整组真实运动。
+    countsDistance: simplifiedDistance > 0,
+    countsMovingTime: aggregateMovingTime > 0,
     countsAscentWindow: false,
     entersTrustedGpx: true
   };
@@ -4500,6 +4508,19 @@ function renumberTrackPoints(product) {
   });
 }
 
+// 折叠一段云为单个虚拟锚点后，紧邻其后的普通计距移动点的 distanceDeltaMeters 仍相对
+// 已删除的云内点，需重算为相对锚点（云中心）的距离，否则里程按 stale delta 求和、
+// 误差以云 bbox 为界。边界点（startsNewSegment，如 gap_recovery）和不计距点保持零增量。
+function recomputeDistanceAfterCollapse(track, anchorIndex) {
+  const anchor = track[anchorIndex];
+  const next = track[anchorIndex + 1];
+  if (!anchor || !next) return;
+  if (next.startsNewSegment || !next.countsDistance) return;
+  const distance = distanceMeters(anchor.lat, anchor.lng, next.lat, next.lng);
+  next.distanceDeltaMeters = distance;
+  next.countsDistance = distance > 0;
+}
+
 function rebuildRawPointDecisions(product) {
   const decisions = [];
   for (const point of product.track) {
@@ -4678,10 +4699,15 @@ function classifyActivity(rawPoint, motionIndex) {
 
 function applyGnssAltitude(rawPoint, decision, state, product, config) {
   const trusted = decision.result === 'anchor' || decision.result === 'accept';
+  // moving：只有真正累计里程的可信移动点才参与 GNSS 爬升累计。用 distanceDeltaMeters>0
+  // 语义标志（与 settleDecision 的 countsAscentWindow、流式 streamingMetricAccumulator
+  // 口径一致），而非 reason 白名单——否则结算管线新增的 distanceDeltaMeters=0 锚点
+  // （rest_photo_micro_move_anchor、position_snap_recovery_anchor 等）会被误当移动点累计。
   const moving = decision.result === 'accept'
     && decision.reason !== 'gap_recovery'
     && decision.reason !== 'transport_risk'
-    && !isTransportTrackReason(decision.reason);
+    && !isTransportTrackReason(decision.reason)
+    && Number(decision.distanceDeltaMeters) > 0;
 
   if (!Number.isFinite(rawPoint.altitude)) {
     return { result: 'unavailable', reason: 'gnss_altitude_missing' };
@@ -4689,6 +4715,17 @@ function applyGnssAltitude(rawPoint, decision, state, product, config) {
   if (!trusted) {
     product.stats.locationAltitudeAscentRejectedSampleCount++;
     return { result: 'rejected', reason: 'horizontal_point_not_trusted' };
+  }
+  // 边界/锚点（!moving）必须先打断 GNSS 高度锚点连续性，防止跨边界高度差被累计。
+  // 放在垂直精度检查之前：即便边界点垂直精度不足也要 reset（否则旧锚点跨 GAP/anchor
+  // 边界，后续移动点的 delta 被错误累计）；垂直精度不足时锚点置 null，等下一个可信
+  // 移动点重新 anchor。
+  if (!moving) {
+    const verticalOk = Number.isFinite(rawPoint.verticalAccuracy)
+      && rawPoint.verticalAccuracy <= config.locationAltitudeAscentMaxVerticalAccuracyMeters;
+    state.gnssAltitudeAnchorMeters = verticalOk ? rawPoint.altitude : null;
+    product.stats.locationAltitudeAscentSampleCount++;
+    return { result: 'reset', reason: altitudeResetReason(decision.reason) };
   }
   if (!Number.isFinite(rawPoint.verticalAccuracy)
       || rawPoint.verticalAccuracy > config.locationAltitudeAscentMaxVerticalAccuracyMeters) {
@@ -4699,11 +4736,6 @@ function applyGnssAltitude(rawPoint, decision, state, product, config) {
         ? 'vertical_accuracy_too_large'
         : 'vertical_accuracy_missing'
     };
-  }
-  if (!moving) {
-    state.gnssAltitudeAnchorMeters = rawPoint.altitude;
-    product.stats.locationAltitudeAscentSampleCount++;
-    return { result: 'reset', reason: altitudeResetReason(decision.reason) };
   }
 
   product.stats.locationAltitudeAscentSampleCount++;

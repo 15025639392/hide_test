@@ -12,6 +12,11 @@ function scenarioByName(product, name) {
   return product.scenarios.find((scenario) => scenario.scenario === name);
 }
 
+function settlementProposalByScenario(product, name) {
+  return product.scenarioSettlementPlan?.proposals.find((proposal) =>
+    proposal.scenario === name);
+}
+
 function scenarioByIntent(product, intent) {
   return product.scenarios.find((scenario) =>
     scenario.scenario === 'dense_area_intent'
@@ -100,6 +105,20 @@ test('buildSixLayerTrackProduct builds a normal walk with separate altitude line
   assert.equal(product.stats.locationAltitudeTotalAscentMeters, 5);
   assert.equal(product.stats.barometerTotalAscentMeters, 10);
   assert.equal(product.stats.selectedAscentSource, 'BAROMETER');
+});
+
+test('buildSixLayerTrackProduct uses platform-neutral continuity terms in primitive facts', () => {
+  const model = parseEvidenceJsonl([
+    '{"event":"session_metadata","sessionId":"S1","strategyVersion":"six-layer-doc","recordStartElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+    '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":5,"elapsedRealtimeNanos":1000000000}',
+    '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.0001,"lng":120,"accuracy":5,"elapsedRealtimeNanos":3000000000}'
+  ].join('\n'));
+
+  const product = buildSixLayerTrackProduct(model);
+
+  assert.ok(product.rawPointDecisions[1].primitiveFacts.includes('movement_continuity'));
+  assert.ok(product.rawPointDecisions[1].primaryExplanation.facts.includes('movement_continuity'));
 });
 
 test('buildSixLayerTrackProduct keeps gap recovery zero-delta and resets ascent boundary', () => {
@@ -560,7 +579,7 @@ test('buildSixLayerTrackProduct recognizes an enclosed gap cluster', () => {
   assert.equal(typeof scenario.evidence.mixedIntentSupported, 'boolean');
 });
 
-test('buildSixLayerTrackProduct preserves dense area main route skeleton first', () => {
+test('buildSixLayerTrackProduct preserves dense area continuity skeleton first', () => {
   const events = loopEvents(30, 120, [
     [0, 0], [4, 3], [8, -3], [12, 3], [16, -3], [20, 3],
     [24, -3], [28, 3], [32, -3], [36, 3], [40, -3], [44, 3],
@@ -902,6 +921,13 @@ test('buildSixLayerTrackProduct removes a single low-speed moving spike', () => 
   assert.ok(coverage);
   assert.ok(coverage.contextTrackPointCount > 0);
   assert.ok(coverage.rawDecisionContextCount > 0);
+  const proposal = settlementProposalByScenario(product, 'moving_spike_cleanup');
+  assert.ok(proposal);
+  assert.equal(proposal.metricOwner, true);
+  assert.equal(proposal.hardBoundary, false);
+  assert.deepEqual(proposal.affectedMetricGates, ['route', 'distance', 'moving_time']);
+  assert.ok(product.scenarioSettlementPlan.activeProposals.some((item) =>
+    item.scenario === 'moving_spike_cleanup'));
 });
 
 test('buildSixLayerTrackProduct removes a high reported speed spike with strong forward geometry', () => {
@@ -1040,6 +1066,19 @@ test('buildSixLayerTrackProduct removes moving spike before rest photo micro mov
   assert.ok(bridgePoint.scenarioContexts.some((context) =>
     context.scenario === 'moving_spike_cleanup'));
   assert.ok(restPoints.length > 0);
+  const plan = product.scenarioSettlementPlan;
+  assert.ok(plan);
+  assert.ok(plan.activeProposals.some((item) =>
+    item.scenario === 'moving_spike_cleanup'));
+  assert.ok(plan.activeProposals.some((item) =>
+    item.scenario === 'rest_photo_micro_move'
+      && item.coordinatorState === 'active_split'));
+  assert.ok(plan.contextProposals.some((item) =>
+    item.scenario === 'rest_photo_micro_move'
+      && item.coordinatorState === 'nested_parent_split'));
+  assert.ok(plan.conflicts.some((conflict) =>
+    conflict.relation === 'nested'
+      && conflict.resolution === 'split_parent_remaining'));
 });
 
 test('buildSixLayerTrackProduct picks the strongest adjacent moving spike candidate', () => {
@@ -1163,6 +1202,85 @@ test('buildSixLayerTrackProduct waits for a stable stationary cloud', () => {
   assert.equal(product.stats.totalDistanceMeters, 0);
 });
 
+// 正确性回归 #2：低垂直精度的 GAP 恢复边界点必须 reset GNSS 高度锚点，
+// 否则旧锚点跨 GAP 边界保留，后续移动点的高度差被错误计入爬升。
+test('buildSixLayerTrackProduct resets GNSS altitude anchor at a low-vertical-accuracy gap recovery boundary', () => {
+  const product = buildSixLayerTrackProduct([
+    { event: 'session_metadata', sessionId: 'S1', recordStartElapsedRealtimeNanos: 1_000_000_000 },
+    { event: 'sampling_policy', samplingEpochId: 1, state: 'MOVING', eventElapsedRealtimeNanos: 1_000_000_000 },
+    { event: 'raw_location', rawPointId: 1, provider: 'gps', lat: 30, lng: 120, accuracy: 5, altitude: 1000, verticalAccuracy: 4, elapsedRealtimeNanos: 1_000_000_000 },
+    { event: 'raw_location', rawPointId: 2, provider: 'gps', lat: 30.0001, lng: 120, accuracy: 5, altitude: 1002, verticalAccuracy: 4, elapsedRealtimeNanos: 3_000_000_000 },
+    { event: 'raw_location', rawPointId: 3, provider: 'gps', lat: 30.001, lng: 120, accuracy: 5, altitude: 1020, verticalAccuracy: 50, elapsedRealtimeNanos: 200_000_000_000 },
+    { event: 'raw_location', rawPointId: 4, provider: 'gps', lat: 30.0011, lng: 120, accuracy: 5, altitude: 1020, verticalAccuracy: 4, elapsedRealtimeNanos: 203_000_000_000 }
+  ]);
+
+  const gap = product.track.find((point) => point.reason === 'gap_recovery');
+  assert.ok(gap);
+  // 低垂直精度的边界点也必须 reset（而非 rejected 后跳过 reset）。
+  assert.equal(gap.gnssAltitudeResult, 'reset');
+  // 跨 GAP 边界的 1020 vs 1002 高度差不得计入；只保留 GAP 前真实的 +2。
+  assert.equal(product.stats.locationAltitudeTotalAscentMeters, 2);
+});
+
+// 正确性回归 #1：结算管线生成的 distanceDeltaMeters=0 的 accept 锚点
+// （rest_photo_micro_move_anchor 等）不得被当作移动点累计 GNSS 爬升——
+// 应按边界点 reset 高度锚点（gnssAltitudeResult='reset'，而非 'accepted'）。
+test('buildSixLayerTrackProduct does not accumulate GNSS ascent on a zero-distance settlement anchor', () => {
+  const cos = Math.cos(30 * Math.PI / 180);
+  const la = (northMeters) => 30 + northMeters / 111_111;
+  const ln = (eastMeters) => 120 + eastMeters / (111_111 * cos);
+  const events = [
+    { event: 'session_metadata', sessionId: 'S1', recordStartElapsedRealtimeNanos: 1_000_000_000 },
+    { event: 'sampling_policy', samplingEpochId: 1, state: 'MOVING', eventElapsedRealtimeNanos: 1_000_000_000 }
+  ];
+  let id = 0;
+  let t = 1;
+  const add = (north, east, altitude) => {
+    id += 1;
+    events.push({ event: 'device_motion_window', startElapsedRealtimeNanos: (t - 1) * 1_000_000_000, endElapsedRealtimeNanos: t * 1_000_000_000, linearAccelerationRmsMps2: 0.6, gyroscopeRmsRadps: 0.2, stepDetectorCount: 1 });
+    events.push({ event: 'raw_location', rawPointId: id, provider: 'gps', lat: la(north), lng: ln(east), accuracy: 3, altitude, verticalAccuracy: 4, elapsedRealtimeNanos: t * 1_000_000_000, speed: 1 });
+    t += 3;
+  };
+  add(0, 0, 100); add(20, 0, 100); add(40, 0, 100);
+  const loop = [[50, 0], [52, -2], [55, -5], [56, -6], [53, -3], [57, -7], [55, -5], [52, -2], [51, -1], [56, -6], [54, -4], [50, 0]];
+  loop.forEach(([n, e], i) => add(n, e, i === 5 ? 120 : 100));
+  add(90, 0, 100); add(120, 0, 100); add(150, 0, 100);
+
+  const product = buildSixLayerTrackProduct(events, { config: { restPhotoMicroMoveMaxPathMeters: 200 } });
+  const anchor = product.track.find((point) => point.reason === 'rest_photo_micro_move_anchor');
+  assert.ok(anchor, 'expected a rest_photo_micro_move_anchor');
+  assert.equal(anchor.distanceDeltaMeters, 0);
+  // 关键断言：零距离结算锚点按边界 reset，不进入 GNSS 爬升累计。
+  assert.equal(anchor.gnssAltitudeResult, 'reset');
+});
+
+// 正确性回归 #5：移动尖刺清理不得把 next 为 GAP 恢复边界点的距离重算为正，
+// 否则破坏 GAP 恢复距离/运动时间必须为 0 的硬不变量。
+test('buildSixLayerTrackProduct does not bridge a moving spike into a gap recovery boundary', () => {
+  const cos = Math.cos(30 * Math.PI / 180);
+  const la = (northMeters) => 30 + northMeters / 111_111;
+  const ln = (eastMeters) => 120 + eastMeters / (111_111 * cos);
+  const events = [
+    { event: 'session_metadata', sessionId: 'S1', recordStartElapsedRealtimeNanos: 1_000_000_000 },
+    { event: 'sampling_policy', samplingEpochId: 1, state: 'MOVING', eventElapsedRealtimeNanos: 1_000_000_000 }
+  ];
+  const pts = [
+    [1664, 0, 0, 1, 1.2], [1665, 4, 0, 4, 1.2], [1666, 9, 0, 7, 1.2],
+    [1667, 9, -6, 10, 0], [1668, 14, 1, 200, 1.2], [1669, 18, 2, 203, 1.2]
+  ];
+  for (const [id, east, north, tSec, speed] of pts) {
+    events.push({ event: 'device_motion_window', startElapsedRealtimeNanos: (tSec - 1) * 1_000_000_000, endElapsedRealtimeNanos: tSec * 1_000_000_000, linearAccelerationRmsMps2: 0.6, gyroscopeRmsRadps: 0.2, stepDetectorCount: 1 });
+    events.push({ event: 'raw_location', rawPointId: id, provider: 'gps', lat: la(north), lng: ln(east), accuracy: 5, elapsedRealtimeNanos: tSec * 1_000_000_000, speed });
+  }
+  const product = buildSixLayerTrackProduct(events);
+  const gap = product.track.find((point) => point.reason === 'gap_recovery');
+  assert.ok(gap);
+  // GAP 恢复边界点的零增量不变量必须保持，不能被尖刺桥接距离覆盖。
+  assert.equal(gap.distanceDeltaMeters, 0);
+  assert.equal(gap.countsDistance, false);
+  assert.equal(gap.movingTimeDeltaSeconds, 0);
+});
+
 test('buildSixLayerTrackProduct keeps transport risk out of hiking truth', () => {
   const model = parseEvidenceJsonl([
     '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
@@ -1236,6 +1354,13 @@ test('buildSixLayerTrackProduct resets distance at position snap recovery', () =
   assert.equal(product.rawPointDecisions.find((decision) =>
     decision.rawPointId === 2).entersTrustedGpx, false);
   assert.ok(product.track.find((point) => point.sourceRawPointId === 5).countsDistance);
+  const proposal = settlementProposalByScenario(product, 'position_snap_recovery');
+  assert.ok(proposal);
+  assert.equal(proposal.hardBoundary, true);
+  assert.deepEqual(proposal.affectedMetricGates,
+    ['route', 'distance', 'moving_time', 'elevation']);
+  assert.ok(product.scenarioSettlementPlan.activeProposals.some((item) =>
+    item.scenario === 'position_snap_recovery'));
 });
 
 test('buildSixLayerTrackProduct keeps recovery transport continuity without hiking distance', () => {
@@ -1308,6 +1433,33 @@ test('buildSixLayerTrackProduct can recover after excluded transport risk', () =
   assert.ok(product.stats.totalDistanceMeters > 6);
   assert.ok(scenarioByName(product, 'transport_contamination'));
   assert.ok(scenarioByName(product, 'gap_recovery_boundary'));
+  const activeHardBoundaries = product.scenarioSettlementPlan.activeProposals
+    .filter((proposal) => proposal.hardBoundary)
+    .map((proposal) => proposal.scenario)
+    .sort();
+  assert.deepEqual(activeHardBoundaries, [
+    'gap_recovery_boundary',
+    'transport_contamination'
+  ]);
+  assert.equal(product.scenarioSettlementPlan.ownership.length,
+    product.scenarioSettlementPlan.activeProposals.length);
+  assert.equal(product.scenarioSettlementPlan.commitPlan.status, 'committable');
+  assert.equal(product.scenarioSettlementPlan.commitPlan.commitWatermark, 5);
+  assert.deepEqual(product.scenarioSettlementPlan.commitPlan.hardBoundaries
+    .map((boundary) => boundary.scenario)
+    .sort(), [
+    'gap_recovery_boundary',
+    'transport_contamination'
+  ]);
+  assert.ok(product.scenarioSettlementPlan.commitPlan.committableRanges.some((item) =>
+    item.type === 'hard_boundary' && item.scenario === 'transport_contamination'));
+  assert.equal(product.streamingSettlementState.committedCursorRawPointId, 5);
+  assert.deepEqual(product.streamingSettlementState.hardBoundaryCheckpoints
+    .map((checkpoint) => checkpoint.scenario)
+    .sort(), [
+    'gap_recovery_boundary',
+    'transport_contamination'
+  ]);
 });
 
 test('buildSixLayerTrackProduct collapses a marked dwell drift cloud into one anchor', () => {
@@ -1488,6 +1640,49 @@ test('buildSixLayerTrackProduct collapses a whole stationary session near weak d
   assert.deepEqual(stationaryScenario.anchorRawPointIds, [157]);
   assert.equal(stationaryScenario.evidence.collapsedRawPointCount, 31);
   assert.equal(stationaryScenario.evidence.representativeRawPointId, 157);
+});
+
+test('buildSixLayerTrackProduct collapses stationary dual-cluster GNSS drift', () => {
+  const events = [
+    '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
+    '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}'
+  ];
+  const baseLat = 30;
+  const baseLng = 120;
+  const cosLat = Math.cos(baseLat * Math.PI / 180);
+  for (let index = 0; index < 40; index++) {
+    const elapsedSeconds = 1 + index * 5;
+    const eastMeters = index % 2 === 0 ? 0 : 80;
+    events.push(JSON.stringify(motionWindowEvent(elapsedSeconds, 'still')));
+    events.push(JSON.stringify({
+      event: 'raw_location',
+      rawPointId: index + 1,
+      provider: 'gps',
+      lat: baseLat + (index % 4) * 0.4 / 111_111,
+      lng: baseLng + eastMeters / (111_111 * cosLat),
+      accuracy: index % 2 === 0 ? 6 : 14,
+      speed: 0,
+      elapsedRealtimeNanos: elapsedSeconds * 1_000_000_000
+    }));
+  }
+  const model = parseEvidenceJsonl(events.join('\n'));
+
+  const product = buildSixLayerTrackProduct(model);
+  const scenario = scenarioByName(product, 'stationary_dual_cluster_gnss_drift');
+
+  assert.ok(scenario);
+  assert.equal(product.track.length, 1);
+  assert.equal(product.track[0].reason, 'stationary_dual_cluster_drift_anchor');
+  assert.equal(product.track[0].countsDistance, false);
+  assert.equal(product.stats.totalDistanceMeters, 0);
+  assert.equal(product.track[0].primaryExplanation.scenario,
+    'stationary_dual_cluster_gnss_drift');
+  assert.equal(scenario.action, 'collapse_dual_cluster_drift_to_stationary_anchor');
+  assert.equal(scenario.localRebuild, 'stationary_dual_cluster_anchor');
+  assert.equal(scenario.evidence.rawPointCount, 40);
+  assert.ok(scenario.evidence.transitionCount >= 30);
+  assert.ok(scenario.evidence.stillMotionRatio >= 0.9);
+  assert.ok(scenario.evidence.clusterCenterDistanceMeters >= 70);
 });
 
 test('buildSixLayerTrackProduct falls back to GNSS altitude when barometer jumps', () => {

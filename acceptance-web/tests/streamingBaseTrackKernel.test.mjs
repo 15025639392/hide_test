@@ -1,0 +1,338 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { buildSixLayerTrackProduct } from '../src/sixLayerTrackProduct.mjs';
+import {
+  advanceStreamingBaseTrackKernel,
+  createStreamingBaseTrackKernelState
+} from '../src/streamingBaseTrackKernel.mjs';
+
+const CONFIG = { stationarySessionCollapseEnabled: false };
+
+// 正确性回归 #4：对一段 still 稳定驻留，流式 base kernel 必须与批处理一致地
+// 产出可信 stationary_anchor，而不是把整段驻留全判 stationary_cloud_jitter 丢弃
+// （否则误删本应可信的驻留锚点，可信轨迹/GPX 少点、里程锚点错位）。
+test('streaming base kernel keeps a stationary_anchor for a stable still dwell, matching the full product', () => {
+  const cos = Math.cos(30 * Math.PI / 180);
+  const lat = (northMeters) => 30 + northMeters / 111_111;
+  const lng = (eastMeters) => 120 + eastMeters / (111_111 * cos);
+  const events = [sessionMetadata(), samplingPolicy()];
+  for (let t = 4; t <= 30; t += 2) {
+    events.push(motionWindow(100 + t, (t - 1) * 1_000_000_000, t * 1_000_000_000, {
+      linearAccelerationRmsMps2: 0.03,
+      gyroscopeRmsRadps: 0.01,
+      stepDetectorCount: 0
+    }));
+  }
+  events.push(locationSample(1, lat(0), lng(0), 5, 1_000_000_000));
+  for (let i = 0; i < 12; i++) {
+    events.push(locationSample(2 + i, lat(i % 2 === 0 ? 0 : 2), lng(i % 3 === 0 ? 0 : 1.5), 5,
+      (6 + i * 2) * 1_000_000_000, { speedMetersPerSecond: 0 }));
+  }
+  events.push(locationSample(14, lat(111), lng(0), 5, 40_000_000_000));
+
+  const full = buildSixLayerTrackProduct(events, { config: CONFIG });
+  const streamed = advanceStreamingBaseTrackKernel(
+    createStreamingBaseTrackKernelState({ config: CONFIG }), events);
+
+  // 本测试文件的核心契约：流式 base kernel 必须逐点匹配批处理 full product。
+  assert.deepEqual(baseProjection(streamed), baseProjection(full));
+  // 且必须保留一个可信驻留锚点。
+  assert.ok(streamed.track.some((point) => point.reason === 'stationary_anchor'),
+    'stable still dwell must yield a trusted stationary_anchor');
+});
+
+test('streaming base kernel matches full product for normal movement batches', () => {
+  const events = [
+    sessionMetadata(),
+    samplingPolicy(),
+    locationSample(1, 30, 120, 5, 1_000_000_000),
+    locationSample(2, 30.0001, 120, 5, 31_000_000_000),
+    locationSample(3, 30.0002, 120, 5, 61_000_000_000)
+  ];
+  const full = buildSixLayerTrackProduct(events, { config: CONFIG });
+  const first = advanceStreamingBaseTrackKernel(createStreamingBaseTrackKernelState({
+    config: CONFIG
+  }), events.slice(0, 3));
+  const streamed = advanceStreamingBaseTrackKernel(first, events.slice(3));
+
+  assert.deepEqual(baseProjection(streamed), baseProjection(full));
+});
+
+test('streaming base kernel preserves GNSS altitude evidence on trusted track points', () => {
+  const streamed = advanceStreamingBaseTrackKernel(createStreamingBaseTrackKernelState({
+    config: CONFIG
+  }), [
+    sessionMetadata(),
+    samplingPolicy(),
+    locationSample(1, 30, 120, 5, 1_000_000_000, {
+      altitudeMeters: 100,
+      verticalAccuracyMeters: 4
+    }),
+    locationSample(2, 30.0001, 120, 5, 31_000_000_000, {
+      altitudeMeters: 108,
+      verticalAccuracyMeters: 5
+    })
+  ]);
+
+  assert.deepEqual(streamed.track.map((point) => ({
+    sourceRawPointId: point.sourceRawPointId,
+    altitude: point.altitude,
+    verticalAccuracy: point.verticalAccuracy
+  })), [
+    { sourceRawPointId: 1, altitude: 100, verticalAccuracy: 4 },
+    { sourceRawPointId: 2, altitude: 108, verticalAccuracy: 5 }
+  ]);
+});
+
+test('streaming base kernel preserves GAP recovery boundary semantics', () => {
+  const events = [
+    sessionMetadata(),
+    samplingPolicy(),
+    locationSample(1, 30, 120, 5, 1_000_000_000),
+    locationSample(2, 30.001, 120, 5, 130_000_000_000, {
+      speedMetersPerSecond: 1
+    })
+  ];
+  const full = buildSixLayerTrackProduct(events, { config: CONFIG });
+  const first = advanceStreamingBaseTrackKernel(createStreamingBaseTrackKernelState({
+    config: CONFIG
+  }), events.slice(0, 3));
+  const streamed = advanceStreamingBaseTrackKernel(first, events.slice(3));
+
+  assert.deepEqual(baseProjection(streamed), baseProjection(full));
+  assert.equal(streamed.track[1].reason, 'gap_recovery');
+  assert.equal(streamed.track[1].distanceDeltaMeters, 0);
+  assert.equal(streamed.track[1].movingTimeDeltaSeconds, 0);
+  assert.equal(streamed.stats.gapCount, 1);
+});
+
+test('streaming base kernel keeps high-accuracy-error points as weak raw decisions', () => {
+  const events = [
+    sessionMetadata(),
+    samplingPolicy(),
+    locationSample(1, 30, 120, 5, 1_000_000_000),
+    locationSample(2, 30.0001, 120, 100, 31_000_000_000)
+  ];
+  const full = buildSixLayerTrackProduct(events, { config: CONFIG });
+  const streamed = advanceStreamingBaseTrackKernel(createStreamingBaseTrackKernelState({
+    config: CONFIG
+  }), events);
+
+  assert.deepEqual(baseProjection(streamed), baseProjection(full));
+  assert.equal(streamed.excluded.intakeRejected.length, 0);
+  assert.equal(streamed.excluded.weak.length, 1);
+  assert.equal(streamed.excluded.weak[0].reason, 'weak_horizontal_accuracy');
+});
+
+test('streaming base kernel uses neutral motion windows for low speed movement', () => {
+  const events = [
+    sessionMetadata(),
+    samplingPolicy(),
+    locationSample(1, 30, 120, 5, 1_000_000_000),
+    motionWindow(30, 14_000_000_000, 15_000_000_000, {
+      accelerometerDynamicRmsMps2: 0.8,
+      gyroscopeRmsRadps: 0.16,
+      stepCounterDelta: 4
+    }),
+    locationSample(2, 30.00003, 120, 5, 15_000_000_000, {
+      speedMetersPerSecond: 0.25
+    })
+  ];
+  const full = buildSixLayerTrackProduct(events, { config: CONFIG });
+  const first = advanceStreamingBaseTrackKernel(createStreamingBaseTrackKernelState({
+    config: CONFIG
+  }), events.slice(0, 4));
+  const streamed = advanceStreamingBaseTrackKernel(first, events.slice(4));
+
+  assert.deepEqual(baseProjection(streamed), baseProjection(full));
+  assert.equal(streamed.track[1].reason, 'motion_supported_low_speed');
+  assert.equal(streamed.track[1].activityState, 'walking');
+  assert.ok(streamed.track[1].countsDistance);
+});
+
+test('streaming base kernel preserves unconfirmed implied transport weak points', () => {
+  const events = [
+    sessionMetadata(),
+    samplingPolicy(),
+    locationSample(1, 30, 120, 5, 1_000_000_000, {
+      speedMetersPerSecond: 1
+    }),
+    locationSample(2, 30.0002, 120, 5, 2_000_000_000, {
+      speedMetersPerSecond: 1.2
+    })
+  ];
+  const streamed = advanceStreamingBaseTrackKernel(createStreamingBaseTrackKernelState({
+    config: CONFIG
+  }), events);
+
+  assert.deepEqual(streamed.track.map((point) => point.sourceRawPointId), [1]);
+  assert.equal(streamed.excluded.weak[0].reason,
+    'implied_speed_unconfirmed_by_reported_speed');
+  assert.equal(streamed.rawPointDecisions.find((decision) =>
+    decision.rawPointId === 2).horizontalReason,
+    'implied_speed_unconfirmed_by_reported_speed');
+});
+
+test('streaming base kernel preserves recovery transport continuity', () => {
+  const events = [
+    sessionMetadata(),
+    samplingPolicy(),
+    locationSample(1, 30, 120, 5, 1_000_000_000),
+    locationSample(2, 30.01, 120, 50, 130_000_000_000, {
+      speedMetersPerSecond: 20
+    }),
+    locationSample(3, 30.0104, 120, 34, 132_000_000_000, {
+      speedMetersPerSecond: 20
+    }),
+    locationSample(4, 30.0106, 120, 36, 133_000_000_000, {
+      speedMetersPerSecond: 20
+    })
+  ];
+  const full = buildSixLayerTrackProduct(events, { config: CONFIG });
+  const streamed = advanceStreamingBaseTrackKernel(createStreamingBaseTrackKernelState({
+    config: CONFIG
+  }), events);
+
+  assert.deepEqual(baseProjection(streamed), baseProjection(full));
+  assert.deepEqual(streamed.track.map((point) => point.sourceRawPointId), [1, 3, 4]);
+  assert.deepEqual(streamed.track.map((point) => point.reason), [
+    'first_fix_good',
+    'recovery_transport_suspected_kept',
+    'transport_suspected_kept'
+  ]);
+  assert.deepEqual(streamed.track.map((point) => point.entersTrustedGpx), [
+    true,
+    false,
+    false
+  ]);
+  assert.equal(streamed.excluded.weak[0].reason, 'gap_recovery_pending');
+  assert.equal(streamed.stats.totalDistanceMeters, 0);
+  assert.equal(streamed.stats.movingTimeSeconds, 0);
+  assert.equal(streamed.stats.transportCount, 2);
+});
+
+test('streaming base kernel rejects out-of-order fix without moving the cursor backward', () => {
+  const events = [
+    sessionMetadata(),
+    samplingPolicy(),
+    locationSample(1, 30, 120, 5, 10_000_000_000),
+    locationSample(2, 30.0001, 120, 5, 9_000_000_000)
+  ];
+  const streamed = advanceStreamingBaseTrackKernel(createStreamingBaseTrackKernelState({
+    config: CONFIG
+  }), events);
+
+  assert.deepEqual(streamed.track.map((point) => point.sourceRawPointId), [1]);
+  assert.equal(streamed.excluded.intakeRejected[0].reason, 'out_of_order_fix');
+  assert.equal(streamed.lastLegalElapsedRealtimeNanos, 10_000_000_000);
+});
+
+function baseProjection(productOrState) {
+  return {
+    track: productOrState.track.map((point) => ({
+      sourceRawPointId: point.sourceRawPointId,
+      result: point.result,
+      reason: point.reason,
+      segmentId: point.segmentId,
+      distanceDeltaMeters: rounded(point.distanceDeltaMeters),
+      movingTimeDeltaSeconds: rounded(point.movingTimeDeltaSeconds),
+      countsDistance: point.countsDistance,
+      countsMovingTime: point.countsMovingTime,
+      entersTrustedGpx: point.entersTrustedGpx
+    })),
+    rawPointDecisions: productOrState.rawPointDecisions.map((decision) => ({
+      rawPointId: decision.rawPointId,
+      intakeResult: decision.intakeResult,
+      intakeReason: decision.intakeReason,
+      horizontalResult: decision.horizontalResult,
+      horizontalReason: decision.horizontalReason,
+      countsDistance: decision.countsDistance,
+      countsMovingTime: decision.countsMovingTime,
+      entersTrustedGpx: decision.entersTrustedGpx
+    })),
+    stats: {
+      rawPointCount: productOrState.stats.rawPointCount,
+      trustedPointCount: productOrState.stats.trustedPointCount,
+      weakPointCount: productOrState.stats.weakPointCount,
+      rejectedPointCount: productOrState.stats.rejectedPointCount,
+      intakeRejectedPointCount: productOrState.stats.intakeRejectedPointCount,
+      segmentCount: productOrState.stats.segmentCount,
+      gapCount: productOrState.stats.gapCount,
+      transportCount: productOrState.stats.transportCount,
+      totalDistanceMeters: rounded(productOrState.stats.totalDistanceMeters),
+      movingTimeSeconds: rounded(productOrState.stats.movingTimeSeconds)
+    }
+  };
+}
+
+function sessionMetadata() {
+  return {
+    schemaVersion: 'outdoor-track-evidence-v1',
+    event: 'session_metadata',
+    sessionId: 'S1',
+    eventSeq: 1,
+    eventWallTimeMillis: 1_760_000_000_001,
+    eventElapsedRealtimeNanos: 1_000_000_000,
+    createdElapsedRealtimeNanos: 1_000_000_000
+  };
+}
+
+function samplingPolicy() {
+  return {
+    schemaVersion: 'outdoor-track-evidence-v1',
+    event: 'sampling_policy',
+    sessionId: 'S1',
+    eventSeq: 2,
+    eventWallTimeMillis: 1_760_000_000_002,
+    eventElapsedRealtimeNanos: 1_000_000_000,
+    samplingEpochId: 1,
+    state: 'MOVING_STANDARD',
+    startedElapsedRealtimeNanos: 1_000_000_000
+  };
+}
+
+function locationSample(sampleId, lat, lng, horizontalAccuracyMeters, fixElapsedRealtimeNanos,
+  overrides = {}) {
+  return {
+    schemaVersion: 'outdoor-track-evidence-v1',
+    event: 'location_sample',
+    sessionId: 'S1',
+    eventSeq: 10 + sampleId,
+    eventWallTimeMillis: 1_760_000_000_000 + sampleId,
+    eventElapsedRealtimeNanos: fixElapsedRealtimeNanos + 10_000_000,
+    sampleId,
+    provider: 'gnss',
+    lat,
+    lng,
+    horizontalAccuracyMeters,
+    speedMetersPerSecond: 1.2,
+    wallTimeMillis: 1_760_000_000_000 + fixElapsedRealtimeNanos / 1_000_000,
+    fixElapsedRealtimeNanos,
+    receivedElapsedRealtimeNanos: fixElapsedRealtimeNanos + 10_000_000,
+    callbackDelayNanos: 10_000_000,
+    samplingEpochId: 1,
+    isMock: false,
+    ...overrides
+  };
+}
+
+function motionWindow(eventSeq, startElapsedRealtimeNanos, endElapsedRealtimeNanos,
+  overrides = {}) {
+  return {
+    schemaVersion: 'outdoor-track-evidence-v1',
+    event: 'motion_window',
+    sessionId: 'S1',
+    eventSeq,
+    eventWallTimeMillis: 1_760_000_000_000 + eventSeq,
+    eventElapsedRealtimeNanos: endElapsedRealtimeNanos,
+    windowId: eventSeq,
+    startElapsedRealtimeNanos,
+    endElapsedRealtimeNanos,
+    ...overrides
+  };
+}
+
+function rounded(value) {
+  return Number.isFinite(value) ? Number(value.toFixed(6)) : value;
+}
