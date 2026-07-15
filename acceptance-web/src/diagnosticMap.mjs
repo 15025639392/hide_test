@@ -177,6 +177,20 @@ export function isEvidenceCandidatePath(path) {
   return /evidence[^/]*\.jsonl(?:\.json)?$/i.test(fileName);
 }
 
+export function rawDecisionDisplayState(decision = {}) {
+  if (decision.entersTrustedGpx === false
+      && decision.primaryExplanation?.source === 'scenario') {
+    return {
+      result: 'cleaned',
+      reason: decision.primaryExplanation.scenario || decision.horizontalReason
+    };
+  }
+  return {
+    result: decision.horizontalResult,
+    reason: decision.horizontalReason
+  };
+}
+
 export function parseEvidenceJsonl(text, filePath = 'evidence.jsonl') {
   const events = [];
   const parseErrors = [];

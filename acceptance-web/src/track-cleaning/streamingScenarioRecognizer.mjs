@@ -1,4 +1,8 @@
 import { normalizeSixLayerTrackConfig } from './sixLayerTrackProduct.mjs';
+import {
+  findPositionSnapRecoveryCandidates,
+  unstablePositionSnapRecoveryOpenWindow
+} from './positionSnapRecovery.mjs';
 
 const EARTH_RADIUS_METERS = 6_371_000;
 
@@ -78,10 +82,11 @@ export function advanceStreamingScenarioRecognizer(previousState = {}, baseKerne
     emittedProposalIds.push(proposal.id);
   }
 
-  for (let index = 1; index < track.length; index++) {
-    const candidate = positionSnapRecoveryCandidate(track[index - 1], track[index],
-      weakByRawPointId, config);
-    if (!candidate) continue;
+  for (const candidate of findPositionSnapRecoveryCandidates(
+    track,
+    weakByRawPointId,
+    config
+  )) {
     const proposal = positionSnapRecoveryProposal(candidate);
     if (emittedProposalIds.includes(proposal.id)) continue;
     proposals.push(proposal);
@@ -90,7 +95,7 @@ export function advanceStreamingScenarioRecognizer(previousState = {}, baseKerne
 
   for (let index = 1; index < track.length - 1; index++) {
     const candidate = movingSpikeCandidate(track[index - 1], track[index],
-      track[index + 1], index, config);
+      track[index + 1], track[index + 2] ?? null, index, config);
     if (!candidate) continue;
     const proposal = movingSpikeProposal(candidate);
     if (emittedProposalIds.includes(proposal.id)) continue;
@@ -205,6 +210,12 @@ export function advanceStreamingScenarioRecognizer(previousState = {}, baseKerne
   const openWindows = options.emitOpenWindows === false
     ? []
     : [
+      ...positionSnapRecoveryOpenWindows(
+        track,
+        weakByRawPointId,
+        config,
+        emittedProposalIds
+      ),
       ...movingSpikeOpenWindows(track, emittedProposalIds),
       ...stationaryDriftOpenWindows(baseKernel.excluded?.rejected,
         baseKernel.lastProcessedRawPointId, config),
@@ -579,7 +590,7 @@ function weakRecoveryEndpointRepresentative(center, rawPoints) {
     || a.rawPointId - b.rawPointId)[0] ?? rawPoints[0];
 }
 
-function movingSpikeCandidate(previous, point, next, index, config) {
+function movingSpikeCandidate(previous, point, next, afterNext, index, config) {
   if (!hasValidLngLat(previous) || !hasValidLngLat(point) || !hasValidLngLat(next)) {
     return null;
   }
@@ -609,7 +620,15 @@ function movingSpikeCandidate(previous, point, next, index, config) {
     <= config.movingSpikeMaxReportedSpeedMetersPerSecond;
   const competingSpeed = point.reportedSpeedMetersPerSecond
     <= config.movingSpikeMaxCompetingReportedSpeedMetersPerSecond;
-  if (!strictSpeed && !competingSpeed) return null;
+  const competingSpeedTrough = competingSpeed
+    && movingSpikeCompetingSpeedTrough(previous, next, config);
+  const geometryOverride = !strictSpeed
+    && (!competingSpeed || competingSpeedTrough)
+    && movingSpikeContinuityOverride(previous, point, next, afterNext, {
+      detour,
+      lateral
+    }, config);
+  if (!competingSpeed && !geometryOverride) return null;
 
   return {
     index,
@@ -622,55 +641,83 @@ function movingSpikeCandidate(previous, point, next, index, config) {
     detourMeters: detour,
     lateralMeters: lateral,
     reportedSpeedMetersPerSecond: point.reportedSpeedMetersPerSecond,
-    speedPolicy: strictSpeed ? 'strict_low_reported_speed' : 'competing_low_reported_speed',
+    speedPolicy: movingSpikeSpeedPolicy(strictSpeed, competingSpeed, geometryOverride),
+    forwardAngleDeltaDegrees: movingSpikeForwardAngleDelta(previous, next, afterNext),
     score: detour * 2 + lateral - point.reportedSpeedMetersPerSecond * 0.25
   };
 }
 
-function positionSnapRecoveryCandidate(previous, point, weakByRawPointId, config) {
-  if (!hasValidLngLat(previous) || !hasValidLngLat(point)) return null;
-  if (!point.entersTrustedGpx || point.reason === 'gap_recovery') return null;
-  if (point.reason !== 'moving_good_fix' && point.reason !== 'motion_supported_low_speed'
-      && point.reason !== 'continuity_rescue_low_accuracy') {
+function movingSpikeCompetingSpeedTrough(previous, next, config) {
+  return Number.isFinite(previous.reportedSpeedMetersPerSecond)
+    && Number.isFinite(next.reportedSpeedMetersPerSecond)
+    && previous.reportedSpeedMetersPerSecond
+      > config.movingSpikeMaxCompetingReportedSpeedMetersPerSecond
+    && next.reportedSpeedMetersPerSecond
+      > config.movingSpikeMaxCompetingReportedSpeedMetersPerSecond;
+}
+
+function movingSpikeContinuityOverride(previous, point, next, afterNext, metrics, config) {
+  return point.reportedSpeedMetersPerSecond
+      <= config.movingSpikeGeometryOverrideMaxReportedSpeedMetersPerSecond
+    && metrics.detour >= config.movingSpikeGeometryOverrideMinDetourMeters
+    && metrics.lateral >= config.movingSpikeGeometryOverrideMinLateralMeters
+    && movingSpikeContinuityScore(previous, point, next, afterNext, config) >= 0.33;
+}
+
+function movingSpikeContinuityScore(previous, point, next, afterNext, config) {
+  if (!hasValidLngLat(previous) || !hasValidLngLat(point) || !hasValidLngLat(next)) return 0;
+  const previousDistance = distanceMeters(previous.lat, previous.lng, point.lat, point.lng);
+  const nextDistance = distanceMeters(point.lat, point.lng, next.lat, next.lng);
+  const bridgeDistance = distanceMeters(previous.lat, previous.lng, next.lat, next.lng);
+  const detour = Math.max(0, previousDistance + nextDistance - bridgeDistance);
+  const lateral = distanceToSegmentMeters(point, previous, next);
+  const distanceScore = 1 - Math.min(1,
+    detour / Math.max(config.movingSpikeMinDetourMeters * 4, 1));
+  const lateralScore = 1 - Math.min(1,
+    lateral / Math.max(config.movingSpikeMinLateralMeters * 4, 1));
+  const bridgeScore = 1 - Math.min(1,
+    bridgeDistance / Math.max(config.movingSpikeMaxBridgeDistanceMeters, 1));
+  const bridgeContinuationScore = hasValidLngLat(afterNext)
+    ? 1 - Math.min(1, angleDeltaDegrees(
+      angleDegrees(previous, next),
+      angleDegrees(next, afterNext)
+    ) / 60)
+    : 0.5;
+  const afterNextScore = hasValidLngLat(afterNext)
+    ? 1 - Math.min(1, distanceMeters(next.lat, next.lng, afterNext.lat, afterNext.lng)
+      / Math.max(config.movingSpikeMaxBridgeDistanceMeters, 1))
+    : 0.5;
+  return clamp01(distanceScore * 0.2
+    + lateralScore * 0.2
+    + bridgeScore * 0.15
+    + bridgeContinuationScore * 0.35
+    + afterNextScore * 0.1);
+}
+
+function movingSpikeForwardAngleDelta(previous, next, afterNext) {
+  if (!hasValidLngLat(previous) || !hasValidLngLat(next) || !hasValidLngLat(afterNext)) {
     return null;
   }
-  const reportedSpeed = Number.isFinite(point.reportedSpeedMetersPerSecond)
-    ? point.reportedSpeedMetersPerSecond
-    : null;
-  if (reportedSpeed !== null
-      && reportedSpeed > config.positionSnapRecoveryMaxReportedSpeedMetersPerSecond) {
-    return null;
-  }
-  const bridgeDistanceMeters = distanceMeters(previous.lat, previous.lng, point.lat, point.lng);
-  if (bridgeDistanceMeters < config.positionSnapRecoveryMinBridgeDistanceMeters) return null;
-  const weakPoints = [];
-  for (let rawPointId = previous.sourceRawPointId + 1;
-    rawPointId < point.sourceRawPointId; rawPointId++) {
-    const weak = weakByRawPointId.get(rawPointId);
-    if (!weak) continue;
-    if (weak.reason !== 'implied_speed_unconfirmed_by_reported_speed') continue;
-    weakPoints.push(weak);
-  }
-  if (weakPoints.length < config.positionSnapRecoveryMinWeakPoints) return null;
-  const weakRawPointIds = uniqueNumbers(weakPoints.map((weak) =>
-    finiteNumber(weak.rawPointId ?? weak.sourceRawPointId)));
-  const rawPointIds = uniqueNumbers([...weakRawPointIds, point.sourceRawPointId]);
-  return {
-    previousRawPointId: previous.sourceRawPointId,
-    recoveryRawPointId: point.sourceRawPointId,
-    weakRawPointIds,
-    rawPointIds,
-    rawRange: rawPointRange(rawPointIds),
-    bridgeDistanceMeters,
-    reportedSpeedMetersPerSecond: reportedSpeed
-  };
+  return angleDeltaDegrees(
+    angleDegrees(previous, next),
+    angleDegrees(next, afterNext)
+  );
+}
+
+function movingSpikeSpeedPolicy(strictSpeed, competingSpeed, geometryOverride) {
+  if (strictSpeed) return 'strict_low_reported_speed';
+  if (geometryOverride && competingSpeed) return 'competing_low_speed_geometry_override';
+  if (geometryOverride) return 'high_reported_speed_geometry_override';
+  if (competingSpeed) return 'competing_low_reported_speed';
+  return 'speed_rejected';
 }
 
 function positionSnapRecoveryProposal(candidate) {
   return {
     id: `position-snap:${candidate.previousRawPointId}-${candidate.recoveryRawPointId}`,
     scenario: 'position_snap_recovery',
-    confidence: 0.82,
+    confidence: candidate.recoveryKind === 'unstable_transport_prefix' ? 0.9 : 0.82,
+    ...(candidate.recoveryKind === 'unstable_transport_prefix' ? { priority: 5 } : {}),
     rawRange: candidate.rawRange,
     influenceRange: candidate.rawRange,
     metricRange: candidate.rawRange,
@@ -682,13 +729,45 @@ function positionSnapRecoveryProposal(candidate) {
     evidence: {
       previousRawPointId: candidate.previousRawPointId,
       recoveryRawPointId: candidate.recoveryRawPointId,
+      continuationRawPointId: candidate.continuationRawPointId,
+      recoveryKind: candidate.recoveryKind,
       weakRawPointIds: candidate.weakRawPointIds,
+      suppressedAcceptedRawPointIds: candidate.suppressedAcceptedRawPointIds,
+      suppressedRawPointIds: candidate.suppressedRawPointIds,
       bridgeDistanceMeters: rounded(candidate.bridgeDistanceMeters),
+      detourMeters: rounded(candidate.detourMeters),
+      maxReversalAngleDegrees: rounded(candidate.maxReversalAngleDegrees),
+      continuationAngleDeltaDegrees: rounded(candidate.continuationAngleDeltaDegrees),
       reportedSpeedMetersPerSecond: rounded(candidate.reportedSpeedMetersPerSecond),
       countsDistance: false,
       countsMovingTime: false
     }
   };
+}
+
+function positionSnapRecoveryOpenWindows(
+  track,
+  weakByRawPointId,
+  config,
+  emittedProposalIds
+) {
+  const candidate = unstablePositionSnapRecoveryOpenWindow(
+    track,
+    weakByRawPointId,
+    config
+  );
+  if (!candidate) return [];
+  const alreadyResolved = emittedProposalIds.some((id) =>
+    id.startsWith(`position-snap:${candidate.previousRawPointId}-`));
+  if (alreadyResolved) return [];
+  return [{
+    id: `position-snap-open:${candidate.previousRawPointId}-${candidate.rawRange.endRawPointId}`,
+    scenario: 'position_snap_recovery',
+    metricOwner: true,
+    influenceRange: candidate.rawRange,
+    rawRange: candidate.rawRange,
+    reason: 'awaiting_unstable_transport_prefix_recovery'
+  }];
 }
 
 function movingSpikeProposal(candidate) {
@@ -715,7 +794,8 @@ function movingSpikeProposal(candidate) {
       detourMeters: rounded(candidate.detourMeters),
       lateralMeters: rounded(candidate.lateralMeters),
       bridgeDistanceMeters: rounded(candidate.bridgeDistanceMeters),
-      speedPolicy: candidate.speedPolicy
+      speedPolicy: candidate.speedPolicy,
+      forwardAngleDeltaDegrees: rounded(candidate.forwardAngleDeltaDegrees)
     }
   };
 }
@@ -2438,6 +2518,18 @@ function elapsedSeconds(startElapsedRealtimeNanos, endElapsedRealtimeNanos) {
 
 function clamp01(value) {
   return Math.max(0, Math.min(1, value));
+}
+
+function angleDeltaDegrees(left, right) {
+  const normalized = Math.abs(left - right) % 360;
+  return normalized > 180 ? 360 - normalized : normalized;
+}
+
+function angleDegrees(from, to) {
+  return Math.atan2(
+    localNorthMeters(from, to),
+    localEastMeters(from, to)
+  ) * 180 / Math.PI;
 }
 
 function simplifySpanByDistance(points, startIndex, endIndex, toleranceMeters, keepIndexes) {

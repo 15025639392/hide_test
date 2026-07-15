@@ -150,7 +150,7 @@ motion_window
 当前 Web 默认策略版本：
 
 ```text
-six-layer-evidence-v17.10
+six-layer-evidence-v17.10.2
 ```
 
 以下参数来自 `acceptance-web/src/track-cleaning/sixLayerTrackProduct.mjs` 的
@@ -726,25 +726,32 @@ base decision first
 
 ### 位置跳变恢复
 
-`position_snap_recovery` 处理 GNSS 短时跳到新位置、reported speed 又不足以确认交通的
-恢复片段。
+`position_snap_recovery` 处理 GNSS 短时跳到新位置后的恢复片段，包括低 reported
+speed 的弱跳变，以及交通路线内部短时失稳后重新接回前进方向的恢复前缀。
 
 触发形态：
 
-- 先出现弱跳变点或位置 snap。
-- reported speed 不支持交通污染硬拒绝。
-- 后续位置恢复到稳定低速连续性。
+- `weak_jump`：先出现弱跳变点或位置 snap，reported speed 不支持交通判断，后续位置
+  恢复到稳定低速连续性。
+- `unstable_transport_prefix`：稳定点后至少 2 个 transport kept 与至少 2 个允许 weak
+  点交错，raw span 不超过 8；不稳定折线 detour 至少 `20m`、最大回摆至少 `120°`，
+  恢复方向与后续可信点方向差不超过 `30°`，后续点距离不超过 `60m`。
+- 窗口内 raw id 必须全部由 transport kept 或允许 weak reason 覆盖，避免跨未知证据
+  做推断。
 
 处理方式：
 
-- 跳变弱点保留为贡献 raw 或诊断点。
+- 跳变弱点和被清理的 transport kept 保留为贡献 / suppressed raw。
 - 恢复锚点可以作为零距离锚点。
-- 后续稳定低速点继续按基础内核计距。
+- 后续稳定低速点继续按基础内核计距；后续连续交通路线继续保留但不进入徒步指标。
+- streaming recognizer 在后续方向证据未到齐时输出 open window；候选关闭后，
+  `unstable_transport_prefix` priority `5` 覆盖窗口内逐点 transport passthrough。
 
 指标影响：
 
 - 跳变本身不贡献距离和运动时间。
 - 恢复后重新建立可信连续性。
+- 直线连续交通没有足够 detour / reversal，不会被该规则清洗。
 
 ### 整段静止
 
@@ -1207,6 +1214,7 @@ rebuild 的距离/时间结算一起纳入 proposal 执行。
 
 | Priority | Scenarios |
 | ---: | --- |
+| `5` | `position_snap_recovery` 的 `unstable_transport_prefix` 完整证据候选 |
 | `10` | `gap_recovery_boundary`, `pause_resume_boundary`, `transport_contamination`, `pressure_jump`, `weak_recovery_endpoint` |
 | `20` | `moving_spike_cleanup`, `position_snap_recovery` |
 | `25` | `enclosed_loop_cluster_settlement` |

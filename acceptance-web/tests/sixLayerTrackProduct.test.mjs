@@ -79,6 +79,57 @@ function loopEvents(baseLat, baseLng, offsets, firstRawPointId = 1, stepSeconds 
   return events;
 }
 
+function unstableTransportPrefixEvents(straight = false) {
+  const source = straight
+    ? [
+      [1, 30, 120, 5, 1, 1],
+      [2, 30 + 23 / 111_111, 120, 5, 0, 2],
+      [3, 30 - 40 / 111_111, 120, 55, null, 41],
+      [4, 30 - 170 / 111_111, 120, 34, 8, 45],
+      [5, 30 - 178 / 111_111, 120, 34, 8, 46],
+      [6, 30 - 190 / 111_111, 120, 16, 8, 47],
+      [7, 30 - 203 / 111_111, 120, 14, 8, 48],
+      [8, 30 - 210 / 111_111, 120, 14, 8, 49],
+      [9, 30 - 223 / 111_111, 120, 14, 8, 50],
+      [10, 30 - 230 / 111_111, 120, 9, 8, 51]
+    ]
+    : [
+      [1, 29.603644955104933, 106.50425320404503, 20, 3.95, 1],
+      [2, 29.60385450221229, 106.5042583786816, 19.34, 0, 2],
+      [3, 29.603288064772393, 106.50444585081547, 55.25, null, 41.2],
+      [4, 29.60211104006017, 106.50481700192438, 34.14, 8.16, 45],
+      [5, 29.602037750020088, 106.50482485798724, 34.14, 8.16, 46],
+      [6, 29.602333397089158, 106.50456261527545, 16.29, 8.44, 47],
+      [7, 29.602177135281945, 106.5046545754444, 14, 7.96, 48],
+      [8, 29.60205243777343, 106.50470714807193, 14, 8.24, 49],
+      [9, 29.60194281137089, 106.5047289244814, 14, 8.68, 50],
+      [10, 29.601849091909436, 106.5047400750844, 9.46, 8.64, 51]
+    ];
+  return [
+    {
+      event: 'session_metadata',
+      sessionId: 'unstable-transport-prefix',
+      recordStartElapsedRealtimeNanos: 1_000_000_000
+    },
+    {
+      event: 'sampling_policy',
+      samplingEpochId: 1,
+      state: 'MOVING',
+      eventElapsedRealtimeNanos: 1_000_000_000
+    },
+    ...source.map(([rawPointId, lat, lng, accuracy, speed, elapsedSeconds]) => ({
+      event: 'raw_location',
+      rawPointId,
+      provider: 'gps',
+      lat,
+      lng,
+      accuracy,
+      ...(speed === null ? {} : { speed }),
+      elapsedRealtimeNanos: elapsedSeconds * 1_000_000_000
+    }))
+  ];
+}
+
 test('buildSixLayerTrackProduct builds a normal walk with separate altitude lines', () => {
   const model = parseEvidenceJsonl([
     '{"event":"session_metadata","sessionId":"S1","strategyVersion":"six-layer-doc","recordStartElapsedRealtimeNanos":1000000000}',
@@ -930,6 +981,44 @@ test('buildSixLayerTrackProduct removes a single low-speed moving spike', () => 
     item.scenario === 'moving_spike_cleanup'));
 });
 
+test('buildSixLayerTrackProduct removes a competing low-speed spike with strong forward geometry',
+  () => {
+    const events = loopEvents(30, 120, [
+      [0, 0], [0, 10], [-2, 4], [0, 17], [0, 26]
+    ], 4300, 3);
+    for (const event of events.filter((event) => event.event === 'raw_location')) {
+      event.speed = event.rawPointId === 4302 ? 0.35 : 2.4;
+    }
+
+    const product = buildSixLayerTrackProduct(events, {
+      config: {
+        denseAreaIntentEnabled: false,
+        restPhotoMicroMoveEnabled: false,
+        enclosedLoopSettlementEnabled: false,
+        positionSnapRecoveryEnabled: false
+      }
+    });
+    const scenario = product.scenarios.find((item) =>
+      item.scenario === 'moving_spike_cleanup'
+        && item.evidence?.spikeRawPointId === 4302);
+    const removedDecision = product.rawPointDecisions.find((decision) =>
+      decision.rawPointId === 4302);
+    const bridgePoint = product.track.find((point) =>
+      point.suppressedRawPointIds?.includes(4302));
+
+    assert.ok(scenario);
+    assert.equal(scenario.evidence.speedPolicy, 'competing_low_speed_geometry_override');
+    assert.ok(scenario.evidence.detourMeters > 10);
+    assert.ok(scenario.evidence.lateralMeters > 5);
+    assert.ok(scenario.evidence.forwardAngleDeltaDegrees < 1);
+    assert.equal(removedDecision.entersTrustedGpx, false);
+    assert.equal(removedDecision.countsDistance, false);
+    assert.equal(removedDecision.primaryExplanation.scenario, 'moving_spike_cleanup');
+    assert.ok(bridgePoint);
+    assert.equal(bridgePoint.sourceRawPointId, 4303);
+    assert.deepEqual(bridgePoint.suppressedRawPointIds, [4302]);
+  });
+
 test('buildSixLayerTrackProduct removes a high reported speed spike with strong forward geometry', () => {
   const events = [
     {
@@ -1377,6 +1466,55 @@ test('buildSixLayerTrackProduct resets distance at position snap recovery', () =
     ['route', 'distance', 'moving_time', 'elevation']);
   assert.ok(product.scenarioSettlementPlan.activeProposals.some((item) =>
     item.scenario === 'position_snap_recovery'));
+});
+
+test('buildSixLayerTrackProduct removes an unstable transport prefix before recovery', () => {
+  const product = buildSixLayerTrackProduct(unstableTransportPrefixEvents(), {
+    config: {
+      denseAreaIntentEnabled: false,
+      restPhotoMicroMoveEnabled: false,
+      enclosedLoopSettlementEnabled: false
+    }
+  });
+  const scenario = scenarioByName(product, 'position_snap_recovery');
+  const recovery = product.track.find((point) => point.sourceRawPointId === 8);
+  const continuedTransport = product.track.find((point) => point.sourceRawPointId === 10);
+
+  assert.ok(scenario);
+  assert.equal(scenario.evidence.recoveryKind, 'unstable_transport_prefix');
+  assert.deepEqual(scenario.evidence.weakRawPointIds, [2, 3, 5, 7]);
+  assert.deepEqual(scenario.evidence.suppressedAcceptedRawPointIds, [4, 6]);
+  assert.deepEqual(scenario.evidence.suppressedRawPointIds, [2, 3, 4, 5, 6, 7]);
+  assert.ok(scenario.evidence.detourMeters > 65);
+  assert.ok(scenario.evidence.maxReversalAngleDegrees > 159);
+  assert.ok(scenario.evidence.continuationAngleDeltaDegrees < 6);
+  assert.deepEqual(product.track.map((point) => point.sourceRawPointId), [1, 8, 10]);
+  assert.ok(recovery);
+  assert.equal(recovery.reason, 'position_snap_recovery_anchor');
+  assert.equal(recovery.countsDistance, false);
+  assert.equal(recovery.countsMovingTime, false);
+  assert.deepEqual(recovery.suppressedRawPointIds, [2, 3, 4, 5, 6, 7]);
+  assert.ok(continuedTransport);
+  assert.equal(continuedTransport.reason, 'transport_suspected_kept');
+  assert.equal(continuedTransport.entersTrustedGpx, true);
+});
+
+test('buildSixLayerTrackProduct keeps a straight continuous transport prefix', () => {
+  const product = buildSixLayerTrackProduct(unstableTransportPrefixEvents(true), {
+    config: {
+      denseAreaIntentEnabled: false,
+      restPhotoMicroMoveEnabled: false,
+      enclosedLoopSettlementEnabled: false
+    }
+  });
+  const transportRawPointIds = product.track
+    .filter((point) => point.reason === 'transport_suspected_kept')
+    .map((point) => point.sourceRawPointId);
+
+  assert.equal(product.scenarios.some((scenario) =>
+    scenario.scenario === 'position_snap_recovery'
+      && scenario.evidence?.recoveryKind === 'unstable_transport_prefix'), false);
+  assert.deepEqual(transportRawPointIds, [4, 6, 8, 10]);
 });
 
 test('buildSixLayerTrackProduct keeps recovery transport continuity without hiking distance', () => {

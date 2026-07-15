@@ -4,7 +4,7 @@
 目标是让实时记录和离线 replay 使用同一套 streaming engine：同一份
 platform-neutral evidence 输入，应得到同一份最终结果。
 
-本文是设计和落地计划，不改变当前 Android v3 策略阈值、Web V17.10 输出、
+本文是设计和落地计划，不改变当前 Android v3 策略阈值、Web V17.10.2 输出、
 replay fixture 期望或诊断 schema。第一步落地在 acceptance-web 的纯函数
 coordinator，用于固化 overlap / conflict 规则，再逐步接入现有 recognizer。
 
@@ -158,13 +158,16 @@ Diagnostic-only proposal 必须 `metricOwner=false`，可以和任何 active met
 | Type | Examples | Priority | Metric owner |
 | --- | --- | ---: | --- |
 | hard boundary | `gap_recovery_boundary`, `pause_resume_boundary`, `transport_contamination`, `pressure_jump` | 10 | yes |
-| recovery / point cleanup | `weak_recovery_endpoint`, `moving_spike_cleanup`, `position_snap_recovery` | 10 / 20 | yes |
+| recovery / point cleanup | `weak_recovery_endpoint`, `moving_spike_cleanup`, `position_snap_recovery` | 5 / 10 / 20 | yes |
 | stationary / micro move | `stationary_drift_collapse`, `rest_photo_micro_move` | 30 | yes |
 | occlusion loop settlement | `enclosed_loop_cluster_settlement` | 25 | yes |
 | dense / route settlement | `dense_main_route_settlement`, `same_road_round_trip`, `round_trip_line` | 40 | yes |
 | diagnostic context | `dense_area_intent`, `closed_loop_round_trip`, `enclosed_gap_cluster`, `composite_gap_local_settlement` | 90 | no |
 
 priority 越小越强。priority 只能作为排序输入，不能绕过 hard boundary。
+`position_snap_recovery` 默认 priority 为 `20`；V17.10.2 的
+`unstable_transport_prefix` 在完整回摆与后续接线证据成立后使用 priority `5`，
+只覆盖同一短窗口内的逐点 `transport_contamination` passthrough。
 
 ## Overlap 分类
 
@@ -376,7 +379,7 @@ cap fallback 也是最终结算结果，replay 必须一致。
 2. 覆盖 hard boundary、nested cleanup、equal conflict、diagnostic overlap、
    partial conflict fallback。
 3. 从现有 `scenarios[]` 旁路生成 `scenarioSettlementPlan`，输出 proposal 仲裁、
-   metric ownership 和 `commitPlan`，但不改变 V17.10 轨迹、距离、运动时间和场景解释。
+   metric ownership 和 `commitPlan`，但不改变 V17.10.2 轨迹、距离、运动时间和场景解释。
 4. 在 `acceptance-web/src/track-cleaning/` 新增 `streamingSettlementState.mjs`，
    把 `commitPlan` 应用为
    `committedCursorRawPointId`、`committedRanges[]`、`hardBoundaryCheckpoints[]`
@@ -451,9 +454,14 @@ cap fallback 也是最终结算结果，replay 必须一致。
     `unsupportedScenarioCount`。
 16. `streamingLocalRebuild.mjs` 继续接入 `moving_spike_line_bridge` 和
     `position_snap_recovery_anchor`：前者把尖刺 raw 放入 `suppressedRawPointIds` 并桥接
-    next 点距离/时间；后者把恢复点置零并吸收前序弱点 raw。`transport_contamination`
-    使用 `transport_route_passthrough` 保留产品路线，GAP / pressure 已知边界不计入
+    next 点距离/时间；后者把恢复点置零并吸收前序弱点 raw。V17.10.2 起后者也可吸收
+    短窗口内满足 detour / reversal / continuation 三重证据的 transport kept 恢复前缀；
+    recognizer 在后续方向证据到齐前用 open window 阻止提前提交，关闭后该 proposal
+    优先于窗口内 transport passthrough。`transport_contamination` 使用
+    `transport_route_passthrough` 保留其余产品路线，GAP / pressure 已知边界不计入
     unsupported。
+    recognizer 启用时，每批 `openWindows[]` 是权威快照；空数组必须清除上一批已关闭
+    窗口，不能让旧 blocker 阻止恢复 proposal 提交。
 17. base kernel / recognizer / local rebuild 已覆盖 GAP 后 recovery transport continuity：
     `gap_recovery_pending` 后的连续疑似交通工具点可作为 kept 诊断点保留，
     recognizer 为每个 kept transport raw point 生成硬边界，local rebuild 原样保留

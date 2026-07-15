@@ -43,12 +43,44 @@ test('streaming scenario recognizer emits moving spike cleanup proposal', () => 
       detourMeters: 'checked',
       lateralMeters: 'checked',
       bridgeDistanceMeters: 'checked',
-      speedPolicy: 'strict_low_reported_speed'
+      speedPolicy: 'strict_low_reported_speed',
+      forwardAngleDeltaDegrees: 0
     }
   });
   assert.ok(state.proposals[0].evidence.detourMeters > 1.5);
   assert.ok(state.proposals[0].evidence.lateralMeters > 2.5);
   assert.ok(state.proposals[0].evidence.bridgeDistanceMeters < 15);
+});
+
+test('streaming scenario recognizer emits competing low-speed geometry override', () => {
+  const track = spikeTrack();
+  track[2] = {
+    ...track[2],
+    reportedSpeedMetersPerSecond: 0.35
+  };
+  track[1] = {
+    ...track[1],
+    reportedSpeedMetersPerSecond: 2.4
+  };
+  track[3] = {
+    ...track[3],
+    reportedSpeedMetersPerSecond: 2.4
+  };
+  const state = advanceStreamingScenarioRecognizer(createStreamingScenarioRecognizerState(), {
+    track
+  }, {
+    enabled: true,
+    emitOpenWindows: false
+  });
+  const proposal = state.proposals.find((item) =>
+    item.scenario === 'moving_spike_cleanup');
+
+  assert.ok(proposal);
+  assert.equal(proposal.evidence.spikeRawPointId, 3);
+  assert.equal(proposal.evidence.speedPolicy, 'competing_low_speed_geometry_override');
+  assert.ok(proposal.evidence.detourMeters > 5);
+  assert.ok(proposal.evidence.lateralMeters > 5);
+  assert.equal(proposal.evidence.forwardAngleDeltaDegrees, 0);
 });
 
 test('streaming scenario recognizer keeps a small open window for the latest point', () => {
@@ -136,14 +168,87 @@ test('streaming scenario recognizer emits position snap recovery proposal', () =
     evidence: {
       previousRawPointId: 1,
       recoveryRawPointId: 4,
+      continuationRawPointId: null,
+      recoveryKind: 'weak_jump',
       weakRawPointIds: [2, 3],
+      suppressedAcceptedRawPointIds: [],
+      suppressedRawPointIds: [2, 3],
       bridgeDistanceMeters: 'checked',
+      detourMeters: null,
+      maxReversalAngleDegrees: null,
+      continuationAngleDeltaDegrees: null,
       reportedSpeedMetersPerSecond: 0.8,
       countsDistance: false,
       countsMovingTime: false
     }
   });
   assert.ok(proposal.evidence.bridgeDistanceMeters > 20);
+});
+
+test('streaming scenario recognizer emits unstable transport prefix recovery', () => {
+  const state = advanceStreamingScenarioRecognizer(createStreamingScenarioRecognizerState(), {
+    track: unstableTransportPrefixTrack(),
+    excluded: {
+      weak: unstableTransportPrefixWeakPoints()
+    }
+  }, {
+    enabled: true,
+    emitOpenWindows: false
+  });
+  const proposal = state.proposals.find((item) =>
+    item.scenario === 'position_snap_recovery'
+      && item.evidence?.recoveryKind === 'unstable_transport_prefix');
+
+  assert.ok(proposal);
+  assert.equal(proposal.id, 'position-snap:1-8');
+  assert.equal(proposal.priority, 5);
+  assert.deepEqual(proposal.rawRange, range(2, 8));
+  assert.equal(proposal.evidence.recoveryRawPointId, 8);
+  assert.equal(proposal.evidence.continuationRawPointId, 10);
+  assert.deepEqual(proposal.evidence.weakRawPointIds, [2, 3, 5, 7]);
+  assert.deepEqual(proposal.evidence.suppressedAcceptedRawPointIds, [4, 6]);
+  assert.deepEqual(proposal.evidence.suppressedRawPointIds, [2, 3, 4, 5, 6, 7]);
+  assert.ok(proposal.evidence.detourMeters > 65);
+  assert.ok(proposal.evidence.maxReversalAngleDegrees > 159);
+  assert.ok(proposal.evidence.continuationAngleDeltaDegrees < 6);
+});
+
+test('streaming scenario recognizer holds an unstable transport prefix until recovery', () => {
+  const state = advanceStreamingScenarioRecognizer(createStreamingScenarioRecognizerState(), {
+    track: unstableTransportPrefixTrack().slice(0, 4),
+    excluded: {
+      weak: unstableTransportPrefixWeakPoints()
+    }
+  }, {
+    enabled: true
+  });
+  const openWindow = state.openWindows.find((window) =>
+    window.id === 'position-snap-open:1-8');
+
+  assert.ok(openWindow);
+  assert.deepEqual(openWindow.influenceRange, range(2, 8));
+  assert.equal(openWindow.reason, 'awaiting_unstable_transport_prefix_recovery');
+});
+
+test('streaming scenario recognizer keeps straight continuous transport', () => {
+  const state = advanceStreamingScenarioRecognizer(createStreamingScenarioRecognizerState(), {
+    track: straightTransportTrack(),
+    excluded: {
+      weak: [
+        ...unstableTransportPrefixWeakPoints(),
+        weakPoint(9, 'implied_speed_too_high'),
+        weakPoint(11, 'implied_speed_too_high')
+      ]
+    }
+  }, {
+    enabled: true
+  });
+
+  assert.equal(state.proposals.some((proposal) =>
+    proposal.scenario === 'position_snap_recovery'
+      && proposal.evidence?.recoveryKind === 'unstable_transport_prefix'), false);
+  assert.equal(state.openWindows.some((window) =>
+    window.scenario === 'position_snap_recovery'), false);
 });
 
 test('streaming scenario recognizer emits weak recovery endpoint proposal', () => {
@@ -1302,10 +1407,10 @@ function stationaryDriftRejectedPoints(startRawPointId, endRawPointId) {
   return points;
 }
 
-function weakPoint(rawPointId) {
+function weakPoint(rawPointId, reason = 'implied_speed_unconfirmed_by_reported_speed') {
   return {
     rawPointId,
-    reason: 'implied_speed_unconfirmed_by_reported_speed'
+    reason
   };
 }
 
@@ -1333,6 +1438,54 @@ function point(sourceRawPointId, lat, lng, overrides = {}) {
     entersTrustedGpx: true,
     ...overrides
   };
+}
+
+function unstableTransportPrefixTrack() {
+  return [
+    point(1, 29.603644955104933, 106.50425320404503),
+    point(4, 29.60211104006017, 106.50481700192438, {
+      reason: 'transport_suspected_kept',
+      reportedSpeedMetersPerSecond: 8.16
+    }),
+    point(6, 29.602333397089158, 106.50456261527545, {
+      reason: 'transport_suspected_kept',
+      reportedSpeedMetersPerSecond: 8.44
+    }),
+    point(8, 29.60205243777343, 106.50470714807193, {
+      reason: 'transport_suspected_kept',
+      reportedSpeedMetersPerSecond: 8.24
+    }),
+    point(10, 29.601849091909436, 106.5047400750844, {
+      reason: 'transport_suspected_kept',
+      reportedSpeedMetersPerSecond: 8.64
+    })
+  ];
+}
+
+function unstableTransportPrefixWeakPoints() {
+  return [
+    weakPoint(2),
+    weakPoint(3, 'weak_horizontal_accuracy'),
+    weakPoint(5, 'weak_horizontal_accuracy'),
+    weakPoint(7, 'implied_speed_too_high')
+  ];
+}
+
+function straightTransportTrack() {
+  return [
+    point(1, 30, 120),
+    ...[
+      [4, -170],
+      [6, -190],
+      [8, -210],
+      [10, -230],
+      [12, -250]
+    ].map(([sourceRawPointId, northMeters]) =>
+      point(sourceRawPointId, latFromNorthMeters(30, northMeters), 120, {
+        reason: 'transport_suspected_kept',
+        reportedSpeedMetersPerSecond: 8
+      }))
+  ];
 }
 
 function range(startRawPointId, endRawPointId) {

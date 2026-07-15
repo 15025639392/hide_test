@@ -457,6 +457,78 @@ test('streaming track engine feeds position snap recognizer proposals into settl
   assert.equal(state.localRebuild.unsupportedScenarioCount, 0);
 });
 
+test('streaming track engine rebuilds an unstable transport prefix to its recovery anchor', () => {
+  const state = advanceStreamingTrackEngine(createStreamingTrackEngineState({
+    config: CONFIG
+  }), {
+    events: unstableTransportPrefixEvents(),
+    enableScenarioRecognizers: true,
+    emitScenarioRecognizerOpenWindows: false,
+    finish: true
+  });
+  const proposal = state.scenarioSettlementSession.lastSettlementPlan.activeProposals
+    .find((item) =>
+      item.scenario === 'position_snap_recovery'
+        && item.evidence?.recoveryKind === 'unstable_transport_prefix');
+  const rejectedTransportIds =
+    state.scenarioSettlementSession.lastSettlementPlan.rejectedProposals
+      .filter((item) => item.scenario === 'transport_contamination')
+      .map((item) => item.evidence.keptRawPointIds[0]);
+
+  assert.ok(proposal);
+  assert.equal(proposal.priority, 5);
+  assert.deepEqual(proposal.rawRange, range(2, 8));
+  assert.deepEqual(rejectedTransportIds, [4, 6, 8]);
+  assert.deepEqual(state.localRebuild.committedTrack.map((point) => ({
+    sourceRawPointId: point.sourceRawPointId,
+    reason: point.reason,
+    suppressedRawPointIds: point.suppressedRawPointIds || []
+  })), [
+    {
+      sourceRawPointId: 1,
+      reason: 'first_fix_good',
+      suppressedRawPointIds: []
+    },
+    {
+      sourceRawPointId: 8,
+      reason: 'position_snap_recovery_anchor',
+      suppressedRawPointIds: [2, 3, 4, 5, 6, 7]
+    },
+    {
+      sourceRawPointId: 10,
+      reason: 'transport_suspected_kept',
+      suppressedRawPointIds: []
+    }
+  ]);
+  assert.equal(state.localRebuild.unsupportedScenarioCount, 0);
+});
+
+test('streaming track engine holds an unstable transport prefix across chunks', () => {
+  const events = unstableTransportPrefixEvents();
+  const pending = advanceStreamingTrackEngine(createStreamingTrackEngineState({
+    config: CONFIG
+  }), {
+    events: events.slice(0, 10),
+    enableScenarioRecognizers: true
+  });
+  const settled = advanceStreamingTrackEngine(pending, {
+    events: events.slice(10),
+    enableScenarioRecognizers: true,
+    emitScenarioRecognizerOpenWindows: false,
+    finish: true
+  });
+
+  assert.ok(pending.scenarioRecognizer.openWindows.some((window) =>
+    window.id === 'position-snap-open:1-8'));
+  assert.equal(pending.scenarioSettlementSession.settlementState.committedCursorRawPointId, 1);
+  assert.deepEqual(pending.localRebuild.committedTrack.map((point) =>
+    point.sourceRawPointId), [1]);
+  assert.ok(settled.scenarioSettlementSession.lastSettlementPlan.activeProposals.some((item) =>
+    item.id === 'position-snap:1-8'));
+  assert.deepEqual(settled.localRebuild.committedTrack.map((point) =>
+    point.sourceRawPointId), [1, 8, 10]);
+});
+
 test('streaming track engine preserves weak recovery endpoint as zero-delta shape anchor', () => {
   const state = advanceStreamingTrackEngine(createStreamingTrackEngineState({
     config: CONFIG
@@ -1459,6 +1531,30 @@ function positionSnapEvents() {
     locationSample(15, 5, 30.00035, 120, 5, 14_000_000_000, {
       speedMetersPerSecond: 0.8
     })
+  ];
+}
+
+function unstableTransportPrefixEvents() {
+  const points = [
+    [1, 29.603644955104933, 106.50425320404503, 20, 3.95, 1],
+    [2, 29.60385450221229, 106.5042583786816, 19.34, 0, 2],
+    [3, 29.603288064772393, 106.50444585081547, 55.25, null, 41.2],
+    [4, 29.60211104006017, 106.50481700192438, 34.14, 8.16, 45],
+    [5, 29.602037750020088, 106.50482485798724, 34.14, 8.16, 46],
+    [6, 29.602333397089158, 106.50456261527545, 16.29, 8.44, 47],
+    [7, 29.602177135281945, 106.5046545754444, 14, 7.96, 48],
+    [8, 29.60205243777343, 106.50470714807193, 14, 8.24, 49],
+    [9, 29.60194281137089, 106.5047289244814, 14, 8.68, 50],
+    [10, 29.601849091909436, 106.5047400750844, 9.46, 8.64, 51]
+  ];
+  return [
+    sessionMetadata(1),
+    samplingPolicy(2),
+    ...points.map(([sampleId, lat, lng, accuracy, speed, elapsedSeconds], index) =>
+      locationSample(11 + index, sampleId, lat, lng, accuracy,
+        elapsedSeconds * 1_000_000_000, {
+          ...(speed === null ? {} : { speedMetersPerSecond: speed })
+        }))
   ];
 }
 

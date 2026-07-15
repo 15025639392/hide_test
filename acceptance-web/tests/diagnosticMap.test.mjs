@@ -6,7 +6,8 @@ import {
   explainDecisionReason,
   isEvidenceCandidatePath,
   parseEvidenceJsonl,
-  projectPoint
+  projectPoint,
+  rawDecisionDisplayState
 } from '../src/diagnosticMap.mjs';
 import { buildSixLayerTrackProduct } from '../src/track-cleaning/sixLayerTrackProduct.mjs';
 
@@ -16,6 +17,33 @@ test('evidence path detection accepts exported evidence jsonl', () => {
   assert.equal(isEvidenceCandidatePath('/tmp/location_evidence_session-1.jsonl'), true);
   assert.equal(isEvidenceCandidatePath('/tmp/gnss_evidence_5ccf3a9f-1d85-4c2b-8b24-61839d459845.jsonl'), true);
   assert.equal(isEvidenceCandidatePath('/tmp/diagnostic.jsonl'), false);
+});
+
+test('raw decision display uses final scenario cleanup instead of base accept', () => {
+  assert.deepEqual(rawDecisionDisplayState({
+    horizontalResult: 'accept',
+    horizontalReason: 'motion_supported_low_speed',
+    entersTrustedGpx: false,
+    primaryExplanation: {
+      source: 'scenario',
+      scenario: 'moving_spike_cleanup'
+    }
+  }), {
+    result: 'cleaned',
+    reason: 'moving_spike_cleanup'
+  });
+  assert.deepEqual(rawDecisionDisplayState({
+    horizontalResult: 'accept',
+    horizontalReason: 'transport_suspected_kept',
+    entersTrustedGpx: true,
+    primaryExplanation: {
+      source: 'scenario',
+      scenario: 'transport_contamination'
+    }
+  }), {
+    result: 'accept',
+    reason: 'transport_suspected_kept'
+  });
 });
 
 test('parseEvidenceJsonl parses pure evidence without recorded result events', () => {

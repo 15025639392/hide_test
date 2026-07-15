@@ -1,4 +1,5 @@
 import { coordinateScenarioProposals } from './scenarioWindowCoordinator.mjs';
+import { findPositionSnapRecoveryCandidates } from './positionSnapRecovery.mjs';
 import { streamingSettlementSnapshot } from './streamingSettlementState.mjs';
 import { createRecentMotionSummaryIndex, recentMotionStats } from './timeWindowIndex.mjs';
 
@@ -23,7 +24,7 @@ function safeMax(values) {
   return result;
 }
 
-export const SIX_LAYER_TRACK_ALGORITHM_VERSION = 'six-layer-evidence-v17.10';
+export const SIX_LAYER_TRACK_ALGORITHM_VERSION = 'six-layer-evidence-v17.10.2';
 
 export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   maxIntakeAccuracyMeters: 80,
@@ -160,6 +161,14 @@ export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   positionSnapRecoveryMinWeakPoints: 2,
   positionSnapRecoveryMinBridgeDistanceMeters: 20,
   positionSnapRecoveryMaxReportedSpeedMetersPerSecond: 2,
+  positionSnapRecoveryUnstablePrefixMinWeakPoints: 2,
+  positionSnapRecoveryUnstablePrefixMinTransportPoints: 2,
+  positionSnapRecoveryUnstablePrefixMaxTransportPoints: 4,
+  positionSnapRecoveryUnstablePrefixMaxRawPointSpan: 8,
+  positionSnapRecoveryUnstablePrefixMinDetourMeters: 20,
+  positionSnapRecoveryUnstablePrefixMinReversalAngleDegrees: 120,
+  positionSnapRecoveryUnstablePrefixMaxContinuationAngleDegrees: 30,
+  positionSnapRecoveryUnstablePrefixMaxContinuationDistanceMeters: 60,
   denseAreaIntentEnabled: true,
   denseAreaIntentMinTrackPoints: 8,
   denseAreaIntentMaxSampleGapSeconds: 20,
@@ -3408,7 +3417,10 @@ function movingSpikeCandidate(previous, point, next, afterNext, index, config) {
     <= config.movingSpikeMaxReportedSpeedMetersPerSecond;
   const competingSpeed = point.reportedSpeedMetersPerSecond
     <= config.movingSpikeMaxCompetingReportedSpeedMetersPerSecond;
-  const geometryOverride = !competingSpeed
+  const competingSpeedTrough = competingSpeed
+    && movingSpikeCompetingSpeedTrough(previous, next, config);
+  const geometryOverride = !strictSpeed
+    && (!competingSpeed || competingSpeedTrough)
     && movingSpikeContinuityOverride(previous, point, next, afterNext, {
       detour,
       lateral
@@ -3429,9 +3441,19 @@ function movingSpikeCandidate(previous, point, next, afterNext, index, config) {
     geometryOverride,
     speedPolicy: movingSpikeSpeedPolicy(strictSpeed, competingSpeed, geometryOverride),
     continuityScore: movingSpikeContinuityScore(previous, point, next, afterNext, config),
+    forwardAngleDeltaDegrees: movingSpikeForwardAngleDelta(previous, next, afterNext),
     score: detour * 2 + lateral
       - point.reportedSpeedMetersPerSecond * 0.25
   };
+}
+
+function movingSpikeCompetingSpeedTrough(previous, next, config) {
+  return Number.isFinite(previous.reportedSpeedMetersPerSecond)
+    && Number.isFinite(next.reportedSpeedMetersPerSecond)
+    && previous.reportedSpeedMetersPerSecond
+      > config.movingSpikeMaxCompetingReportedSpeedMetersPerSecond
+    && next.reportedSpeedMetersPerSecond
+      > config.movingSpikeMaxCompetingReportedSpeedMetersPerSecond;
 }
 
 function movingSpikeContinuityOverride(previous, point, next, afterNext, metrics, config) {
@@ -3474,8 +3496,19 @@ function movingSpikeContinuityScore(previous, point, next, afterNext, config) {
     + afterNextScore * 0.1);
 }
 
+function movingSpikeForwardAngleDelta(previous, next, afterNext) {
+  if (!hasValidLngLat(previous) || !hasValidLngLat(next) || !hasValidLngLat(afterNext)) {
+    return null;
+  }
+  return angleDeltaDegrees(
+    angleDegrees(previous, next),
+    angleDegrees(next, afterNext)
+  );
+}
+
 function movingSpikeSpeedPolicy(strictSpeed, competingSpeed, geometryOverride) {
   if (strictSpeed) return 'strict_low_reported_speed';
+  if (geometryOverride && competingSpeed) return 'competing_low_speed_geometry_override';
   if (geometryOverride) return 'high_reported_speed_geometry_override';
   if (competingSpeed) return 'competing_low_reported_speed';
   return 'speed_rejected';
@@ -3716,12 +3749,13 @@ function settlePositionSnapRecoveries(product, config) {
     point.rawPointId ?? point.sourceRawPointId,
     point
   ]));
-  const settled = [];
-  for (let index = 1; index < product.track.length; index++) {
-    const previous = product.track[index - 1];
-    const point = product.track[index];
-    const candidate = positionSnapRecoveryCandidate(previous, point, weakByRawPointId, config);
-    if (!candidate) continue;
+  const settled = findPositionSnapRecoveryCandidates(product.track, weakByRawPointId, config);
+  if (settled.length === 0) return false;
+  const suppressedAcceptedRawPointIds = new Set();
+  for (const candidate of settled) {
+    const point = product.track.find((trackPoint) =>
+      trackPoint.sourceRawPointId === candidate.recoveryRawPointId);
+    if (!point) continue;
     point.reason = 'position_snap_recovery_anchor';
     point.distanceDeltaMeters = 0;
     point.movingTimeDeltaSeconds = 0;
@@ -3732,6 +3766,7 @@ function settlePositionSnapRecoveries(product, config) {
     point.cloudWeightedRadiusMeters = candidate.bridgeDistanceMeters;
     point.representativeRawPointId = point.representativeRawPointId ?? point.sourceRawPointId;
     point.contributingRawPointIds = candidate.rawPointIds;
+    point.suppressedRawPointIds = candidate.suppressedRawPointIds;
     point.activityState = 'position_snap_recovery';
     point.boundaryState = 'position_snap_recovered';
     point.countsDistance = false;
@@ -3739,11 +3774,15 @@ function settlePositionSnapRecoveries(product, config) {
     point.countsAscentWindow = false;
     point.entersTrustedGpx = true;
     addScenario(product, positionSnapRecoveryScenario(candidate));
-    removeExcludedRawPoints(product, new Set(candidate.weakRawPointIds));
-    settled.push(candidate);
+    removeExcludedRawPoints(product, new Set(candidate.suppressedRawPointIds));
+    for (const rawPointId of candidate.suppressedAcceptedRawPointIds) {
+      suppressedAcceptedRawPointIds.add(rawPointId);
+    }
   }
-  if (settled.length === 0) return false;
 
+  product.track = product.track.filter((point) =>
+    !suppressedAcceptedRawPointIds.has(point.sourceRawPointId));
+  renumberTrackPoints(product);
   rebuildRawPointDecisions(product);
   product.positionSnapRecovery = {
     settledCount: settled.length,
@@ -3752,48 +3791,10 @@ function settlePositionSnapRecoveries(product, config) {
   return true;
 }
 
-function positionSnapRecoveryCandidate(previous, point, weakByRawPointId, config) {
-  if (!hasValidLngLat(previous) || !hasValidLngLat(point)) return null;
-  if (!point.entersTrustedGpx || point.reason === 'gap_recovery') return null;
-  if (point.reason !== 'moving_good_fix' && point.reason !== 'motion_supported_low_speed'
-      && point.reason !== 'continuity_rescue_low_accuracy') {
-    return null;
-  }
-  const reportedSpeed = Number.isFinite(point.reportedSpeedMetersPerSecond)
-    ? point.reportedSpeedMetersPerSecond
-    : null;
-  if (reportedSpeed !== null
-      && reportedSpeed > config.positionSnapRecoveryMaxReportedSpeedMetersPerSecond) {
-    return null;
-  }
-  const bridgeDistanceMeters = distanceMeters(previous.lat, previous.lng, point.lat, point.lng);
-  if (bridgeDistanceMeters < config.positionSnapRecoveryMinBridgeDistanceMeters) return null;
-  const weakPoints = [];
-  for (let rawPointId = previous.sourceRawPointId + 1;
-    rawPointId < point.sourceRawPointId; rawPointId++) {
-    const weak = weakByRawPointId.get(rawPointId);
-    if (!weak) continue;
-    if (weak.reason !== 'implied_speed_unconfirmed_by_reported_speed') continue;
-    weakPoints.push(weak);
-  }
-  if (weakPoints.length < config.positionSnapRecoveryMinWeakPoints) return null;
-  const weakRawPointIds = uniqueNumbers(weakPoints.map((weak) =>
-    weak.rawPointId ?? weak.sourceRawPointId));
-  return {
-    previousRawPointId: previous.sourceRawPointId,
-    recoveryRawPointId: point.sourceRawPointId,
-    weakRawPointIds,
-    rawPointIds: uniqueNumbers([...weakRawPointIds, point.sourceRawPointId]),
-    rawRange: rawPointRange([...weakRawPointIds, point.sourceRawPointId]),
-    bridgeDistanceMeters,
-    reportedSpeedMetersPerSecond: reportedSpeed
-  };
-}
-
 function positionSnapRecoveryScenario(candidate) {
   return {
     scenario: 'position_snap_recovery',
-    confidence: 0.82,
+    confidence: candidate.recoveryKind === 'unstable_transport_prefix' ? 0.9 : 0.82,
     rawRange: candidate.rawRange,
     anchorRawPointIds: [candidate.recoveryRawPointId],
     action: 'reset_position_snap_recovery_delta',
@@ -3801,8 +3802,16 @@ function positionSnapRecoveryScenario(candidate) {
     evidence: {
       previousRawPointId: candidate.previousRawPointId,
       recoveryRawPointId: candidate.recoveryRawPointId,
+      continuationRawPointId: candidate.continuationRawPointId,
+      recoveryKind: candidate.recoveryKind,
       weakRawPointIds: candidate.weakRawPointIds,
+      suppressedAcceptedRawPointIds: candidate.suppressedAcceptedRawPointIds,
+      suppressedRawPointIds: candidate.suppressedRawPointIds,
       bridgeDistanceMeters: scenarioNumber(candidate.bridgeDistanceMeters),
+      detourMeters: scenarioNumber(candidate.detourMeters),
+      maxReversalAngleDegrees: scenarioNumber(candidate.maxReversalAngleDegrees),
+      continuationAngleDeltaDegrees:
+        scenarioNumber(candidate.continuationAngleDeltaDegrees),
       reportedSpeedMetersPerSecond: scenarioNumber(candidate.reportedSpeedMetersPerSecond),
       countsDistance: false,
       countsMovingTime: false

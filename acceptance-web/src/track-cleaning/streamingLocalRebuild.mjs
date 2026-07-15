@@ -218,9 +218,13 @@ function positionSnapRecoveryAnchorPoint(proposal, baseTrack, rawPointsById) {
   const weakRawPointIds = cloneArray(proposal.evidence?.weakRawPointIds)
     .map(finiteNumber)
     .filter(Number.isFinite);
-  const rawPointIds = uniqueNumbers([...weakRawPointIds, recoveryRawPointId]);
-  const weakPoints = weakRawPointIds.map((rawPointId) => rawPointsById.get(rawPointId))
-    .filter(Boolean);
+  const suppressedRawPointIds = uniqueNumbers([
+    ...cloneArray(proposal.evidence?.suppressedRawPointIds)
+      .map(finiteNumber)
+      .filter(Number.isFinite),
+    ...weakRawPointIds
+  ]);
+  const rawPointIds = uniqueNumbers([...suppressedRawPointIds, recoveryRawPointId]);
   return [{
     ...recovery,
     reason: 'position_snap_recovery_anchor',
@@ -233,7 +237,7 @@ function positionSnapRecoveryAnchorPoint(proposal, baseTrack, rawPointsById) {
     cloudWeightedRadiusMeters: finiteNumber(proposal.evidence?.bridgeDistanceMeters) ?? 0,
     representativeRawPointId: recovery.representativeRawPointId ?? recovery.sourceRawPointId,
     contributingRawPointIds: rawPointIds,
-    suppressedRawPointIds: weakPoints.length > 0 ? weakRawPointIds : [],
+    suppressedRawPointIds,
     activityState: 'position_snap_recovery',
     boundaryState: 'position_snap_recovered',
     countsDistance: false,

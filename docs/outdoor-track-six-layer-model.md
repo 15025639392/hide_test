@@ -179,6 +179,15 @@ V17.8 起高 reported speed 不再是 moving spike 的绝对保护：当 reporte
 低速竞争阈值但低于交通速度，且 detour / lateral 明显更强、bridge 距离短、bridge 后
 方向能接上后续前进路线时，允许 `high_reported_speed_geometry_override`。该策略覆盖
 真实样本 `Raw#1585`，并保留真实拐点反例，避免仅凭三点 detour 删除转弯。
+V17.10.1 起补齐 strict 与 competing 阈值之间的单点速度塌陷：仅当前后相邻点速度都
+恢复到 competing 阈值以上，且强 detour、强 lateral、短 bridge 和后续方向连续同时
+成立时，才允许 `competing_low_speed_geometry_override`。真实样本 `Raw#698` 因此
+不再进入可信 GPX，Raw#699 按 Raw#697 到 Raw#699 直连重算。
+V17.10.2 起 `position_snap_recovery` 增加 `unstable_transport_prefix`：当稳定点后
+短窗口内 transport kept 与 weak 点交错，路径至少多绕 `20m`、发生至少 `120°` 回摆，
+并在恢复点后重新接回 `30°` 内的前进方向时，只清理恢复前缀并把恢复点作为零距离锚点。
+真实样本 `outdoor_track_evidence_v1.jsonl` 的 Raw#375-378 因此不进入可信 GPX，
+Raw#379 作为恢复锚点；Raw#381 之后的连续交通路线仍保留。直线连续交通反例保持不清洗。
 V17.9 起 `rest_photo_micro_move` 增加弱微移动形状过滤：短路径、少点数、入口/出口
 自然衔接，但单个休息锚点会制造明显绕行时，清洗线保留低速移动形状点，只移除中间
 停留锚点；代表锚点作为 evidence / suppressed raw，不再作为可信 GPX 经过点。

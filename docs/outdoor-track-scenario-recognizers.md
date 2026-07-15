@@ -133,7 +133,7 @@ primitiveFacts:
 | `dense_main_route_settlement` | 定位点密集且存在明确前进方向时，局部噪声会让路线出现锯齿或小折返。 | `dense_main_route_skeleton` | 先保主前进骨架，再允许停留、跳变、遮挡等情景继续修复；骨架外点作为贡献 raw。 |
 | `enclosed_gap_cluster` | 小范围内多次 GAP recovery 和 stationary anchor 聚集，符合山洞/室内类遮挡表现。 | `gap_stationary_cluster_diagnostic` | 当前只做诊断；不跨 GAP 计距或计爬升。 |
 | `enclosed_loop_cluster_settlement` | 遮挡聚集叠加闭合往返时，低速碎点和漂移锚点会形成额外折返距离。 | `enclosed_loop_anchor_settlement` | 只保留贴近进出口走廊的少量锚点；内部碎点并入贡献 raw，不累计距离、运动时间或爬升。 |
-| `position_snap_recovery` | GNSS 短时跳到新位置，但 reported speed 不支持交通判断，随后恢复稳定低速点。 | `position_snap_recovery_anchor` | 跳变恢复点作为零距离锚点；跳变弱点写入贡献 raw；后续低速点继续正常计距。 |
+| `position_snap_recovery` | GNSS 短时跳到新位置后恢复；也覆盖弱点与交通保留点交错、短窗口内明显回摆后重新接回前进方向的恢复前缀。 | `position_snap_recovery_anchor` | 跳变恢复点作为零距离锚点；不稳定前缀写入 suppressed / contributing raw；恢复后的连续交通或低速移动继续保留。 |
 | `stationary_session_collapse` | 整个 session 基本静止，raw 点云只是定位漂移。 | `stationary_session_anchor` | 全段压成一个代表点；距离、运动时间、爬升均不累计。 |
 | `stationary_drift_collapse` | 局部停留期间产生长串漂移点，容易膨胀里程。 | `stationary_drift_anchor` | 漂移云压成一个停留解释锚点；贡献 raw 全部被解释，不进入距离，也不作为清洗路线顶点。 |
 | `rest_photo_micro_move` | 休息、拍照、找路时在小范围内来回挪动。 | `rest_photo_micro_move_diagnostic` / `rest_photo_micro_move_shape_filter` / `rest_photo_micro_move_simplifier` / `rest_photo_micro_move_anchor` | 默认作为已沉淀清洗策略：强休息折返压成休息锚点，弱微移动优先保留移动形状，其他小移动保留少数形状锚点；只有显式关闭重建时才退回诊断。 |
@@ -358,20 +358,37 @@ V16.1 行为：
 
 识别证据：
 
-- 前序存在一个或多个 `implied_speed_unconfirmed_by_reported_speed` 弱点。
-- 这些点表现为短 dt 大位移，但系统 `reported speed` 低于交通阈值。
-- 后续第一个可信点与跳变前可信点距离较大，如果直接桥接会产生不合理距离。
+- `weak_jump` 分支：
+  - 前序存在一个或多个 `implied_speed_unconfirmed_by_reported_speed` 弱点。
+  - 这些点表现为短 dt 大位移，但系统 `reported speed` 低于交通阈值。
+  - 后续第一个可信点与跳变前可信点距离较大，如果直接桥接会产生不合理距离。
+- V17.10.2 的 `unstable_transport_prefix` 分支：
+  - 跳变前是非交通的稳定可信点，随后短窗口内至少有 2 个
+    `transport_suspected_kept`，并与弱点交错；窗口内每个 raw id 都必须能归属于
+    transport kept 或允许的 weak reason。
+  - raw span 不超过 8，最多观察 4 个连续 transport kept 点。
+  - 通过不稳定前缀的折线路径比前后直连至少多 `20m`，最大方向回摆至少 `120°`。
+  - 恢复锚点到后续可信点不超过 `60m`，恢复主方向与后续方向差不超过 `30°`。
+  - 该分支允许高 reported speed，因为它清理的是交通路线内部的定位回摆，不是删除
+    连续交通移动。
 
 重建动作：
 
 - 输出 `position_snap_recovery_anchor`。
 - 将恢复可信点的距离、运动时间和爬升 delta 置零。
-- 将前序跳变弱点写入恢复锚点的 `contributingRawPointIds`。
-- 恢复锚点之后的低速移动继续按基础内核正常计距。
+- 将前序跳变弱点和被清理的 transport kept 点写入恢复锚点的
+  `contributingRawPointIds` / `suppressedRawPointIds`。
+- 恢复锚点之后的低速移动或连续交通路线继续按基础内核保留。
+- 流式 recognizer 在恢复点和后续方向证据尚未到齐时输出 open window，阻止不稳定
+  transport 前缀被提前提交；候选关闭后，该分支以 priority `5` 覆盖窗口内逐点
+  `transport_contamination` passthrough。
 
 不能做：
 
-- 不能把该情景解释为交通工具混入。
+- `weak_jump` 不能被解释为交通工具混入。
+- `unstable_transport_prefix` 不能因为存在 transport kept 就整段删除；只清理满足回摆
+  几何的恢复前缀，恢复锚点之后的连续交通必须保留。
+- 直线或自然转弯的连续交通段不能触发该规则。
 - 不能删除跳变 raw 证据。
 - 不能把恢复锚点前后的空间缺口补成徒步距离。
 
@@ -483,6 +500,10 @@ V16.1 行为：
 - V17.8 起，高于低速竞争阈值但低于交通速度的 reported speed 不再绝对阻止尖刺清理；
   只有 detour / lateral 明显更强，且前后桥接方向能接上后续前进点时，才允许
   `high_reported_speed_geometry_override`。
+- V17.10.1 起，reported speed 位于 strict 与 competing 阈值之间时，如果前后相邻点
+  速度都已高于 competing 阈值，形成单点速度塌陷，同时 detour / lateral 和后续前进
+  方向均满足强几何证据，则允许 `competing_low_speed_geometry_override`。该规则用于
+  清理真实样本 Raw#698，不扩展到连续低速小范围移动。
 - 通过中间点的折线距离明显大于前后直连距离。
 - 当相邻三点窗口同时产生多个尖刺候选时，按 detour 和 lateral 选择几何证据更强的
   单个候选，避免把连续两个点一起删掉。

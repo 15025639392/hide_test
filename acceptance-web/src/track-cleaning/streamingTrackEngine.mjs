@@ -169,7 +169,9 @@ function advanceScenarioSettlement(previousSession, baseKernel, input, recognize
     lookaheadRawPoints: finiteNumber(input.lookaheadRawPoints) ?? 0
   };
   const openWindows = mergeArrays(input.openWindows, recognizer.openWindows);
-  if (openWindows.length > 0 || Object.prototype.hasOwnProperty.call(input, 'openWindows')) {
+  if (openWindows.length > 0
+      || recognizer.enabled === true
+      || Object.prototype.hasOwnProperty.call(input, 'openWindows')) {
     settlementInput.openWindows = openWindows;
   }
   if (Object.prototype.hasOwnProperty.call(input, 'closedProposals')) {

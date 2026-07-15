@@ -11,6 +11,7 @@ const SESSION_5CC_PATH = firstExistingPath([
 ]);
 const SESSION_0DD_PATH = '/Users/ldy/Desktop/device_fix_track_evidence_20260523_210422/track_sessions/0ddf2d35-02e2-454c-9057-667265fe8a71/evidence.jsonl';
 const WATCH_TRANSPORT_PATH = '/Users/ldy/Desktop/数据/outdoor_track_evidence_v1(3).jsonl';
+const WATCH_POSITION_SNAP_PATH = '/Users/ldy/Desktop/数据/outdoor_track_evidence_v1.jsonl';
 
 const modelCache = new Map();
 const productCache = new Map();
@@ -75,6 +76,78 @@ test('watch evidence keeps Raw 661-688 vehicle movement in the route', (t) => {
       && !decision.countsMovingTime));
   assert.deepEqual(trackRawPointIds, Array.from({ length: 28 }, (_, index) => index + 661));
   assert.equal(new Set(decisions.map((decision) => decision.segmentId)).size, 1);
+});
+
+test('watch evidence removes Raw 698 low-speed forward spike', (t) => {
+  if (!existsSync(WATCH_TRANSPORT_PATH)) {
+    t.skip('watch transport evidence is not available on this machine');
+    return;
+  }
+
+  const product = buildProductFromEvidence(WATCH_TRANSPORT_PATH);
+  const scenario = product.scenarios.find((item) =>
+    item.scenario === 'moving_spike_cleanup'
+      && item.evidence?.spikeRawPointId === 698);
+  const rawDecision = product.rawPointDecisions.find((decision) =>
+    decision.rawPointId === 698);
+  const bridgePoint = product.track.find((point) =>
+    point.suppressedRawPointIds?.includes(698));
+
+  assert.ok(scenario);
+  assert.equal(scenario.evidence.previousRawPointId, 697);
+  assert.equal(scenario.evidence.nextRawPointId, 699);
+  assert.equal(scenario.evidence.speedPolicy, 'competing_low_speed_geometry_override');
+  assert.ok(scenario.evidence.detourMeters > 12);
+  assert.ok(scenario.evidence.lateralMeters > 6);
+  assert.ok(scenario.evidence.forwardAngleDeltaDegrees < 3);
+  assert.equal(rawDecision.entersTrustedGpx, false);
+  assert.equal(rawDecision.countsDistance, false);
+  assert.equal(rawDecision.countsMovingTime, false);
+  assert.equal(rawDecision.primaryExplanation.scenario, 'moving_spike_cleanup');
+  assert.ok(bridgePoint);
+  assert.equal(bridgePoint.sourceRawPointId, 699);
+  assert.deepEqual(bridgePoint.suppressedRawPointIds, [698]);
+});
+
+test('watch evidence removes Raw 375-378 unstable transport prefix', (t) => {
+  if (!existsSync(WATCH_POSITION_SNAP_PATH)) {
+    t.skip('watch position snap evidence is not available on this machine');
+    return;
+  }
+
+  const product = buildProductFromEvidence(WATCH_POSITION_SNAP_PATH);
+  const scenario = product.scenarios.find((item) =>
+    item.scenario === 'position_snap_recovery'
+      && item.evidence?.recoveryRawPointId === 379);
+  const recovery = product.track.find((point) =>
+    point.sourceRawPointId === 379);
+  const cleanedDecisions = product.rawPointDecisions.filter((decision) =>
+    decision.rawPointId >= 375 && decision.rawPointId <= 378);
+  const continuedTransport = product.rawPointDecisions.find((decision) =>
+    decision.rawPointId === 381);
+
+  assert.ok(scenario);
+  assert.equal(scenario.evidence.recoveryKind, 'unstable_transport_prefix');
+  assert.deepEqual(scenario.evidence.weakRawPointIds, [373, 374, 376, 378]);
+  assert.deepEqual(scenario.evidence.suppressedAcceptedRawPointIds, [375, 377]);
+  assert.deepEqual(scenario.evidence.suppressedRawPointIds,
+    [373, 374, 375, 376, 377, 378]);
+  assert.ok(scenario.evidence.detourMeters > 65);
+  assert.ok(scenario.evidence.maxReversalAngleDegrees > 159);
+  assert.ok(scenario.evidence.continuationAngleDeltaDegrees < 6);
+  assert.equal(cleanedDecisions.length, 4);
+  assert.ok(cleanedDecisions.every((decision) =>
+    !decision.entersTrustedGpx
+      && !decision.countsDistance
+      && !decision.countsMovingTime
+      && decision.primaryExplanation?.scenario === 'position_snap_recovery'));
+  assert.ok(recovery);
+  assert.equal(recovery.reason, 'position_snap_recovery_anchor');
+  assert.equal(recovery.distanceDeltaMeters, 0);
+  assert.equal(recovery.movingTimeDeltaSeconds, 0);
+  assert.deepEqual(recovery.suppressedRawPointIds, [373, 374, 375, 376, 377, 378]);
+  assert.equal(continuedTransport.horizontalReason, 'transport_suspected_kept');
+  assert.equal(continuedTransport.entersTrustedGpx, true);
 });
 
 test('real evidence session 5cc key dense rest ranges stay collapsed', (t) => {

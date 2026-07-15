@@ -2,7 +2,8 @@ import {
   buildTargetOutput,
   formatDuration,
   isEvidenceCandidatePath,
-  parseEvidenceJsonl
+  parseEvidenceJsonl,
+  rawDecisionDisplayState
 } from './diagnosticMap.mjs';
 import { buildCleanedLineFeatures, cleanedRouteLinePoints } from './cleanedLineStyles.mjs';
 import {
@@ -313,11 +314,12 @@ function buildRawDecisionIndex(targetProduct) {
   const decisions = new Map();
   for (const decision of targetProduct?.rawPointDecisions || []) {
     if (!Number.isFinite(decision.rawPointId)) continue;
+    const display = rawDecisionDisplayState(decision);
     decisions.set(decision.rawPointId, {
       ...decision,
-      kind: decision.horizontalResult,
-      result: decision.horizontalResult,
-      reason: decision.horizontalReason,
+      kind: display.result,
+      result: display.result,
+      reason: display.reason,
       source: 'targetProduct.rawPointDecisions'
     });
   }
@@ -2024,11 +2026,13 @@ function pointDetailsMarkup(dataset, point) {
     ${!recomputedDecision && point.insights?.length
       ? detailBlock('解释', point.insights.map((item) => item.text))
       : ''}
-	    ${decision.result ? collapsibleDetailBlock('底层判点字段', [
+    ${decision.result ? collapsibleDetailBlock('底层判点字段', [
       `source ${decision.source || 'targetProduct'}`,
+      `horizontalResult ${decision.horizontalResult || '-'}`,
+      `horizontalReason ${decision.horizontalReason || '-'}`,
       `segmentId ${valueOrDash(decision.segmentId)}`,
       `cloudType ${decision.cloudType || '-'}`
-		    ]) : ''}
+    ]) : ''}
 		  `;
 }
 
@@ -2598,6 +2602,7 @@ function addMapLayers() {
         ['==', ['get', 'kind'], 'weak'], '#facc15',
         ['==', ['get', 'kind'], 'reject'], '#fb7185',
         ['==', ['get', 'kind'], 'intake_rejected'], '#fb7185',
+        ['==', ['get', 'kind'], 'cleaned'], '#f97316',
         ['==', ['get', 'kind'], 'raw'], '#94a3b8',
         ['get', 'color']
       ],

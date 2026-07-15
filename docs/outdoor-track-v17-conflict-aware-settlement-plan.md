@@ -19,10 +19,10 @@ GPX 和高度门控仍属于基础安全边界；本阶段只处理 dense forwar
 six-layer-evidence-v16.1
 ```
 
-当前 V17.10 清洗版本：
+当前 V17.10.2 清洗版本：
 
 ```text
-six-layer-evidence-v17.10
+six-layer-evidence-v17.10.2
 ```
 
 V17 工作名：
@@ -349,6 +349,38 @@ V17 启动阶段不做这些事：
 - 真实 watchOS 样本 Raw#661-688 全部连续保留，并新增
   `transport_high_frequency.jsonl` 回归 fixture。
 
+### V17.10.1 Competing Low-Speed Spike Geometry Override
+
+状态：已落盘为 `six-layer-evidence-v17.10.1`。
+
+- `moving_spike_cleanup` 补齐 strict 与 competing reported speed 阈值之间的资格空档。
+- 只有中间点形成单点速度塌陷，即前后相邻点速度都高于 competing 阈值，并同时满足
+  强 detour、强 lateral、短 bridge 和后续前进方向连续，才触发
+  `competing_low_speed_geometry_override`。
+- 覆盖真实样本 `outdoor_track_evidence_v1(3).jsonl` 的 Raw#698：Raw#697 -> Raw#698
+  -> Raw#699 绕行约 `19.60m`，Raw#697 -> Raw#699 直连约 `7.36m`，横向偏离约
+  `6.28m`，后续方向差约 `2.13°`。
+- Raw#698 不进入可信 GPX、不计距离和运动时间；Raw#699 按 Raw#697 -> Raw#699
+  直连重算。Raw#661-688 的连续交通路线保留口径不变。
+
+### V17.10.2 Unstable Transport Prefix Recovery
+
+状态：已落盘为 `six-layer-evidence-v17.10.2`。
+
+- `position_snap_recovery` 增加 `unstable_transport_prefix`，处理弱点与
+  `transport_suspected_kept` 交错、短窗口内先跳远再明显回摆、随后重新接回前进方向的
+  恢复前缀。
+- 资格要求同时成立：至少 2 个 transport kept、至少 2 个允许 weak 点、raw span
+  不超过 8、detour 至少 `20m`、最大回摆至少 `120°`、恢复方向与后续方向差不超过
+  `30°`，且后续可信点距离不超过 `60m`。
+- 覆盖真实样本 `outdoor_track_evidence_v1.jsonl`：Raw#372 -> Raw#379 直连约
+  `182.44m`，经 Raw#375 / Raw#377 的路线多绕约 `65.72m`，最大回摆约 `159.25°`，
+  Raw#379 恢复方向与 Raw#381 后续方向只差约 `5.91°`。
+- Raw#373-378 作为 suppressed / contributing 证据保留，Raw#375-378 不进入可信
+  GPX；Raw#379 成为零距离恢复锚点，Raw#381 的连续交通移动仍保留。
+- 流式 recognizer 使用 open window 延迟提交该短前缀；候选关闭后以 priority `5`
+  覆盖窗口内逐点 transport passthrough。直线连续交通合成反例保持不清洗。
+
 ### V17.11 Crossing And Round-Trip Arbitration
 
 - 对 crossing 候选和往返覆盖主方向做 review-only 到 active 的升级评估。
@@ -448,6 +480,18 @@ V17.10 已完成：
 1. 交通移动进入可信路线与 GPX 形状，批处理和流式局部重建不再删除。
 2. 交通段继续独立诊断，不计入徒步距离、运动时间和爬升。
 3. 覆盖真实 watchOS Raw#661-688 和高频交通 replay fixture。
+
+V17.10.1 已完成：
+
+1. 补齐 competing 低速单点尖刺的强几何覆盖。
+2. 覆盖真实 watchOS Raw#698，保留 Raw#697 -> Raw#699 前向路线。
+3. 加入 batch、streaming recognizer 和真实 evidence 回归。
+
+V17.10.2 已完成：
+
+1. 给 `position_snap_recovery` 增加短窗口多点交通恢复回摆清理。
+2. 覆盖真实 watchOS Raw#375-378，保留 Raw#379 恢复锚点和 Raw#381 后续交通路线。
+3. 加入 batch、streaming open window / local rebuild、真实 evidence 和直线交通反例。
 
 下一步进入 V17.11 前，应继续人工复盘 crossing 和往返覆盖主方向样本；只有真实样本和
 targeted synthetic case 都稳定后，才允许 crossing active 仲裁。
