@@ -425,7 +425,7 @@ SelectedElevationResult:
 产品可以只展示累计爬升，但底层证据和算法结果必须保留累计下降。下降用于路线复盘、
 交通/电梯/缆车污染诊断、闭合路线合理性检查和压力突变排查。
 
-当前 Web 原型已在 `acceptance-web/src/sixLayerTrackProduct.mjs` 接入：
+当前 Web 原型已在 `acceptance-web/src/track-cleaning/sixLayerTrackProduct.mjs` 接入：
 
 - `location_sample` -> 内部 RawPoint，使用 `fixElapsedRealtimeNanos` 做连续性时间。
 - `motion_window` -> 内部 motion summary，参与活动门控。

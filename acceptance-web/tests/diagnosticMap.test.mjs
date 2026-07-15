@@ -8,7 +8,7 @@ import {
   parseEvidenceJsonl,
   projectPoint
 } from '../src/diagnosticMap.mjs';
-import { buildSixLayerTrackProduct } from '../src/sixLayerTrackProduct.mjs';
+import { buildSixLayerTrackProduct } from '../src/track-cleaning/sixLayerTrackProduct.mjs';
 
 test('evidence path detection accepts exported evidence jsonl', () => {
   assert.equal(isEvidenceCandidatePath('/tmp/evidence.jsonl'), true);
@@ -80,6 +80,35 @@ test('buildTargetOutput exposes raw and evidence summaries', () => {
   assert.equal(output.rawTrack.length, 1);
   assert.ok(output.findings.includes('配速不可计算'));
 });
+
+test('buildTargetOutput exposes suspected transport diagnostics separately from hiking truth',
+  () => {
+    const model = parseEvidenceJsonl([
+      '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
+      '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
+      '{"event":"raw_location","rawPointId":1,"provider":"gps","lat":30,"lng":120,"accuracy":5,"elapsedRealtimeNanos":1000000000}',
+      '{"event":"raw_location","rawPointId":2,"provider":"gps","lat":30.001,"lng":120,"accuracy":5,"elapsedRealtimeNanos":4000000000}'
+    ].join('\n'));
+    const product = buildSixLayerTrackProduct(model);
+    const output = buildTargetOutput(model, product);
+
+    assert.equal(output.totalDistanceMeters, 0);
+    assert.equal(output.movingTimeSeconds, 0);
+    assert.equal(output.suspectedTransportPointCount, 1);
+    assert.equal(output.suspectedTransportSegmentCount, 1);
+    assert.equal(output.suspectedTransportDurationSeconds, 3);
+    assert.ok(output.suspectedTransportDistanceMeters > 100);
+    assert.ok(output.suspectedTransportAverageSpeedMetersPerSecond > 30);
+    assert.deepEqual(output.summaries.suspectedTransport, {
+      pointCount: 1,
+      segmentCount: 1,
+      distanceMeters: output.suspectedTransportDistanceMeters,
+      durationSeconds: 3,
+      averageSpeedMetersPerSecond:
+        output.suspectedTransportAverageSpeedMetersPerSecond,
+      diagnosticOnly: true
+    });
+  });
 
 test('buildTargetOutput uses recomputed target product instead of recorded decisions', () => {
   const model = parseEvidenceJsonl([

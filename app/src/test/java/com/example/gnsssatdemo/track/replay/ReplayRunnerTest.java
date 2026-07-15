@@ -24,6 +24,15 @@ public class ReplayRunnerTest {
     }
 
     @Test
+    public void run_returnsExactForHighFrequencyTransportFixture() throws IOException {
+        ReplayReport report = fixture("transport_high_frequency.jsonl");
+
+        assertEquals(ReplayReport.EXACT, report.status);
+        assertEquals(0, report.mismatchCount());
+        assertEquals(4, report.decisions.size());
+    }
+
+    @Test
     public void run_reportsBestEffortWhenExpectationDiffers() {
         ReplayReport report = runner.run(baseHeader()
                 + raw(1, 45, 29.0, 106.0, 2_000_000_000L,

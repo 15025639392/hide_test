@@ -37,7 +37,8 @@ const MAP_REVIEW_ACTIONS = new Set([
   'simplify_micro_move_shape',
   'collapse_micro_move_to_rest_anchor',
   'reset_segment_zero_delta',
-  'exclude_from_hiking_truth'
+  'exclude_from_hiking_truth',
+  'preserve_route_exclude_hiking_metrics'
 ]);
 
 const MAP_REVIEW_REBUILDS = new Set([
@@ -55,7 +56,8 @@ const MAP_REVIEW_REBUILDS = new Set([
   'rest_photo_micro_move_simplifier',
   'rest_photo_micro_move_anchor',
   'gap_recovery_anchor',
-  'transport_diagnostic_continuity'
+  'transport_diagnostic_continuity',
+  'transport_route_passthrough'
 ]);
 
 export function buildScenarioPolygonFeatureCollection(datasets, options = {}) {

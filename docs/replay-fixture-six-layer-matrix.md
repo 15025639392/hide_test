@@ -178,7 +178,8 @@ Web regression 已把本机可用的真实 session 纳入六层验收：
 | `weak_start_cloud.jsonl` | 起点弱定位 | 不进入可信轨迹；不计距、不计运动时间 |
 | `gap_recovery_after_stationary_gap.jsonl` | 长 GAP 后恢复 | `gap_recovery` 开新 segment；distance / moving time delta 为 0 |
 | `stationary_recovery_after_gap.jsonl` | 静止 GAP 后恢复等待 | 恢复点保持 weak pending；不产生成品距离或运动时间 |
-| `transport_mode.jsonl` | 疑似交通工具混入后恢复 | transport raw 被 reject；徒步距离/运动时间不累计；恢复点作为 GAP boundary 归零 |
+| `transport_mode.jsonl` | 疑似交通工具混入后恢复 | transport raw 保留在可信路线；徒步距离/运动时间不累计 |
+| `transport_high_frequency.jsonl` | 每秒约 19m 的连续车辆移动 | 每个 transport raw 都保留，不能因单步不足 20m 被洗掉 |
 | `stationary_recovery_with_motion.jsonl` | 有运动证据的慢恢复 | 保留移动点并正常计距、计运动时间 |
 
 这些真实样本不是 replay 的全部覆盖。下一批仍需补齐：

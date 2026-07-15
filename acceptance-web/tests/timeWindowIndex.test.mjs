@@ -5,7 +5,7 @@ import {
   createNearestWindowLookup,
   createRecentMotionSummaryIndex,
   recentMotionStats
-} from '../src/timeWindowIndex.mjs';
+} from '../src/track-cleaning/timeWindowIndex.mjs';
 
 test('nearest window lookup preserves overlap and tie behavior', () => {
   const windows = [

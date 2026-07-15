@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   advanceStreamingScenarioSettlementSession,
   createStreamingScenarioSettlementSession
-} from '../src/streamingScenarioSettlementSession.mjs';
+} from '../src/track-cleaning/streamingScenarioSettlementSession.mjs';
 
 test('streaming scenario session commits normal batches incrementally', () => {
   const session = advanceStreamingScenarioSettlementSession(

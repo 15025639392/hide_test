@@ -19,10 +19,10 @@ GPX 和高度门控仍属于基础安全边界；本阶段只处理 dense forwar
 six-layer-evidence-v16.1
 ```
 
-当前 V17.9 清洗版本：
+当前 V17.10 清洗版本：
 
 ```text
-six-layer-evidence-v17.9
+six-layer-evidence-v17.10
 ```
 
 V17 工作名：
@@ -337,7 +337,19 @@ V17 启动阶段不做这些事：
   Raw#5015-5018 和 Raw#5039-5042 继续进入清洗线；Raw#5023 仍是代表证据，
   但只作为 suppressed raw，不再作为清洗线顶点。
 
-### V17.10 Crossing And Round-Trip Arbitration
+### V17.10 Transport Route Preservation
+
+状态：已落盘为 `six-layer-evidence-v17.10`。
+
+- `transport_suspected_kept` 和 `recovery_transport_suspected_kept` 进入可信路线与 GPX
+  形状，不再被 batch 或 streaming local rebuild 删除。
+- 交通场景只关闭 distance、moving time 和 elevation，不关闭 route。
+- reported speed 达到交通阈值且位移走出 stationary threshold 时，即使单步不足 20m
+  也保留为交通点；低 reported speed 的大跳点仍交给 position snap 恢复。
+- 真实 watchOS 样本 Raw#661-688 全部连续保留，并新增
+  `transport_high_frequency.jsonl` 回归 fixture。
+
+### V17.11 Crossing And Round-Trip Arbitration
 
 - 对 crossing 候选和往返覆盖主方向做 review-only 到 active 的升级评估。
 - 只有真实样本和 targeted synthetic case 都稳定后，才允许 active。
@@ -431,5 +443,11 @@ V17.9 已完成：
 3. 覆盖真实 `Raw#5015-5042`，保留 Raw#5015-5018 和 Raw#5039-5042，
    Raw#5023 只作为代表证据和 suppressed raw。
 
-下一步进入 V17.10 前，应继续人工复盘 crossing 和往返覆盖主方向样本；只有真实样本和
+V17.10 已完成：
+
+1. 交通移动进入可信路线与 GPX 形状，批处理和流式局部重建不再删除。
+2. 交通段继续独立诊断，不计入徒步距离、运动时间和爬升。
+3. 覆盖真实 watchOS Raw#661-688 和高频交通 replay fixture。
+
+下一步进入 V17.11 前，应继续人工复盘 crossing 和往返覆盖主方向样本；只有真实样本和
 targeted synthetic case 都稳定后，才允许 crossing active 仲裁。

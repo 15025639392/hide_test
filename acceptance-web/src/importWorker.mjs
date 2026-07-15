@@ -2,7 +2,7 @@ import {
   buildTargetOutput,
   parseEvidenceJsonl
 } from './diagnosticMap.mjs';
-import { buildSixLayerTrackProduct } from './sixLayerTrackProduct.mjs';
+import { buildSixLayerTrackProduct } from './track-cleaning/index.mjs';
 
 self.onmessage = async (event) => {
   const { file, fileName, filePath, config, scenarioConfig, mode, model } = event.data || {};
@@ -55,6 +55,7 @@ function compactTargetOutput(output) {
       output?.summaries?.pressure?.locationAltitudeTotalAscentMeters ?? null,
     locationAltitudeTotalDescentMeters:
       output?.summaries?.pressure?.locationAltitudeTotalDescentMeters ?? null,
+    suspectedTransport: output?.summaries?.suspectedTransport || null,
     scenarioSettlementPlan: output?.scenarioSettlementPlan || null,
     streamingSettlementState: output?.streamingSettlementState || null,
     streamingDiagnosticContexts: output?.streamingDiagnosticContexts || null,

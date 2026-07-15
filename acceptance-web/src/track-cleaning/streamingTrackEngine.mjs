@@ -121,6 +121,7 @@ export function advanceStreamingTrackEngine(previousState = {}, input = {}) {
         proposalCount: scenarioRecognizer.proposals?.length || 0,
         openWindowCount: scenarioRecognizer.openWindows?.length || 0
       },
+      suspectedTransport: suspectedTransportSnapshot(baseKernel.stats),
       metrics: streamingMetricSnapshot(
         metricAccumulator,
         scenarioSettlementSession.settlementState,
@@ -219,4 +220,18 @@ function cloneObject(value) {
   return value && typeof value === 'object'
     ? JSON.parse(JSON.stringify(value))
     : null;
+}
+
+function suspectedTransportSnapshot(stats = {}) {
+  return {
+    pointCount: finiteNumber(stats.suspectedTransportPointCount)
+      ?? finiteNumber(stats.transportCount)
+      ?? 0,
+    segmentCount: finiteNumber(stats.suspectedTransportSegmentCount) ?? 0,
+    distanceMeters: finiteNumber(stats.suspectedTransportDistanceMeters) ?? 0,
+    durationSeconds: finiteNumber(stats.suspectedTransportDurationSeconds) ?? 0,
+    averageSpeedMetersPerSecond:
+      finiteNumber(stats.suspectedTransportAverageSpeedMetersPerSecond),
+    diagnosticOnly: true
+  };
 }

@@ -122,7 +122,15 @@ function rebuildOwnershipRange(ownership, range, proposal, baseKernel, rawPoints
     };
   }
   if (proposal.scenario === 'transport_contamination') {
-    return { points: [], unsupported: false };
+    return {
+      points: baseTrackPointsInRange(baseKernel.track, range).map((point) => ({
+        ...point,
+        localRebuildApplied: false,
+        localRebuildFallback: 'transport_route_passthrough',
+        localRebuildScenario: proposal.scenario
+      })),
+      unsupported: false
+    };
   }
   if (proposal.scenario === 'gap_recovery_boundary'
       || proposal.scenario === 'pressure_jump') {

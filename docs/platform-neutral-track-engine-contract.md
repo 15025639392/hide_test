@@ -513,10 +513,19 @@ SessionSummary:
   totalDistanceMeters
   movingTimeSeconds
   paceSecondsPerKm optional
+  suspectedTransportPointCount optional
+  suspectedTransportSegmentCount optional
+  suspectedTransportDistanceMeters optional
+  suspectedTransportDurationSeconds optional
+  suspectedTransportAverageSpeedMetersPerSecond optional
   selectedTotalAscentMeters optional
   selectedTotalDescentMeters optional
   selectedAscentSource
 ```
+
+`suspectedTransport*` 只表示高速交通污染诊断。当前证据不能可靠区分私家车、公交、
+火车或其他交通方式；这些字段不能并入徒步 `totalDistanceMeters`、
+`movingTimeSeconds`、`paceSecondsPerKm` 或 elevation 真值。
 
 ## 处理顺序
 
@@ -577,7 +586,7 @@ StreamingEvidenceIntakeState:
 当前 Web 原型落地在：
 
 ```text
-acceptance-web/src/streamingEvidenceIntake.mjs
+acceptance-web/src/track-cleaning/streamingEvidenceIntake.mjs
 ```
 
 ### Streaming State
@@ -641,7 +650,7 @@ localRebuild
 当前 Web v0 原型落地在：
 
 ```text
-acceptance-web/src/streamingScenarioRecognizer.mjs
+acceptance-web/src/track-cleaning/streamingScenarioRecognizer.mjs
 ```
 
 ```text
@@ -657,9 +666,9 @@ v0 覆盖：
 
 - `gap_recovery_boundary` proposal：来自 base kernel 的 `gap_recovery` 可信恢复点，
   作为零 distance / 零 moving time / elevation reset 的硬边界。
-- `transport_contamination` proposal：来自 base kernel 的 `transport_risk` rejected
-  点、`transport_recovery_pending` weak 点，以及
+- `transport_contamination` proposal：主要来自 base kernel 保留的
   `recovery_transport_suspected_kept` / `transport_suspected_kept` kept 诊断点；
+  同时兼容历史 `transport_risk` rejected 点和 `transport_recovery_pending` weak 点；
   实时流式原型按单 raw point 生成稳定边界，避免后续连续污染点扩容导致已提交前缀改写。
   proposal evidence 必须区分 `rejectedRawPointIds`、`pendingRawPointIds` 和
   `keptRawPointIds`。
@@ -736,7 +745,7 @@ v0 只输出 proposal：`moving_spike_cleanup` 使用
 指标累计层只处理不需要长情景窗口的基础 metric evidence。当前 Web v0 原型落地在：
 
 ```text
-acceptance-web/src/streamingMetricAccumulator.mjs
+acceptance-web/src/track-cleaning/streamingMetricAccumulator.mjs
 ```
 
 ```text
@@ -841,7 +850,7 @@ committed GNSS altitude 也是增量状态：每次只消费
 当前 Web v0 原型落地在：
 
 ```text
-acceptance-web/src/streamingDiagnosticContextReport.mjs
+acceptance-web/src/track-cleaning/streamingDiagnosticContextReport.mjs
 ```
 
 输出约束：
@@ -859,7 +868,7 @@ local rebuild 层消费 settlement 刚提交的
 v0 原型落地在：
 
 ```text
-acceptance-web/src/streamingLocalRebuild.mjs
+acceptance-web/src/track-cleaning/streamingLocalRebuild.mjs
 ```
 
 ```text
@@ -899,10 +908,10 @@ StreamingLocalRebuildState:
 10. `same_road_round_trip` 生成 `same_road_centerline` 产品视图：沿去程和返程按路径比例
    采样中心线，非折返点使用 `same_road_corridor_center` 虚拟坐标，折返点保留原始或弱恢复
    endpoint 坐标。
-11. `transport_contamination` 不产出徒步产品点；即使 base kernel 为诊断连续性保留了
-   `recovery_transport_suspected_kept` / `transport_suspected_kept` TrackPoint，
-   local rebuild 也必须把它们排除在 hiking product track、distance 和 moving time
-   之外。`gap_recovery_boundary` 和 `pressure_jump` 作为已知边界 passthrough，
+11. `transport_contamination` 使用 `transport_route_passthrough` 原样产出
+   `recovery_transport_suspected_kept` / `transport_suspected_kept` TrackPoint；
+   它们进入 product track 和可信 GPX 形状，但不进入 hiking distance、moving time
+   或 elevation。`gap_recovery_boundary` 和 `pressure_jump` 作为已知边界 passthrough，
    不计入 unsupported。
 12. 尚未实现 local rebuild 的 scenario 走 base passthrough fallback，并增加
    `unsupportedScenarioCount`，不能静默丢点。
@@ -916,7 +925,7 @@ fallback 已接在 settlement / metric / local rebuild 层级，不回到采样�
 当前 Web 串联原型：
 
 ```text
-acceptance-web/src/streamingTrackEngine.mjs
+acceptance-web/src/track-cleaning/streamingTrackEngine.mjs
 ```
 
 职责：
@@ -942,8 +951,8 @@ v0 仍不包含完整六层 local rebuild。它已证明：
   `round_trip_line` / `same_road_round_trip` 应用最小 local rebuild。
 - same-road / round-trip 基础几何可以在 finish 或窗口退出时自动生成 route proposal；
   候选仍贴着最新点时只作为 open window 阻塞安全前缀。
-- GAP 后疑似交通工具连续污染可以保留诊断连续性，但不进入 trusted GPX、
-  hiking product track、distance 或 moving time。
+- GAP 后疑似交通工具连续移动进入 trusted GPX 和 hiking product track 的路线形状，
+  但不进入 distance、moving time 或 elevation。
 
 ### Streaming Base Kernel
 
@@ -975,7 +984,7 @@ StreamingBaseTrackKernelState:
 当前 Web v0 原型落地在：
 
 ```text
-acceptance-web/src/streamingBaseTrackKernel.mjs
+acceptance-web/src/track-cleaning/streamingBaseTrackKernel.mjs
 ```
 
 v0 覆盖：
@@ -988,17 +997,19 @@ v0 覆盖：
   低速小位移在 active motion 支撑下可输出 `motion_supported_low_speed`。
 - 长 GAP fast-path 恢复：`gap_recovery`，零 distance / 零 moving time，并开启新 segment。
 - GAP 后若先出现 `gap_recovery_pending`，随后出现连续疑似交通工具移动，base kernel
-  为诊断连续性保留 `recovery_transport_suspected_kept` 和
-  `transport_suspected_kept` TrackPoint，但这些点 `entersTrustedGpx=false`、
+  为路线连续性保留 `recovery_transport_suspected_kept` 和
+  `transport_suspected_kept` TrackPoint，这些点 `entersTrustedGpx=true`、
   `countsDistance=false`、`countsMovingTime=false`。
-- 直接交通风险点输出 `transport_risk` rejected；交通风险后的弱恢复点可输出
-  `transport_recovery_pending`，用于 recognizer 生成 transport contamination 边界。
+- 直接交通风险点输出 `accept / transport_suspected_kept`；上报速度达到交通阈值时，
+  单步位移只需走出 accuracy 派生的 stationary threshold，不再强制达到 20m。
+- 系统明确上报低于交通阈值的跳点仍输出
+  `implied_speed_unconfirmed_by_reported_speed`，供 position snap 恢复处理。
 - intake rejected / weak / reject raw point decision 的诊断保留。
 
 v0 暂不覆盖完整六层 settlement、dense intent / closed-loop context 等复杂情景识别，也不替代
 `buildSixLayerTrackProduct()`。验收方式是：在基础样本上，分批推进的 base kernel 与
 完整 product 的 raw decisions、track point、distance、moving time 和 GAP 计数一致。
-transport continuity 还必须验证 kept 诊断点不进入 trusted GPX 或徒步指标。
+transport continuity 还必须验证 kept 点进入 trusted GPX 路线，但不进入徒步指标。
 
 ### Safe Commit Rule
 

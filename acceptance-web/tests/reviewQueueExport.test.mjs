@@ -332,7 +332,7 @@ test('android replay fixture directory exports high-risk review batch', async ()
     ['gap_recovery_boundary']);
   assert.deepEqual(
     byName.get('transport_mode.jsonl').tasks.map((task) => task.scenario),
-    ['transport_contamination', 'gap_recovery_boundary']);
+    ['transport_contamination']);
   assert.equal(byName.get('good_walk.jsonl').taskCount, 0);
 });
 

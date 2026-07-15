@@ -2,7 +2,7 @@
 
 本文记录六层 Web 目标算法中的“场景识别器 + 局部重建器 + 可解释诊断”设计。
 它是 `docs/outdoor-track-six-layer-model.md` 的场景层落地版本，当前只约束
-`acceptance-web/src/sixLayerTrackProduct.mjs`，不改变 Android Java 策略、
+`acceptance-web/src/track-cleaning/sixLayerTrackProduct.mjs`，不改变 Android Java 策略、
 `evidence.jsonl` schema 或 replay fixture 期望。
 
 实时流式场景窗口、窗口重叠和唯一指标 owner 的结算协议见
@@ -139,7 +139,7 @@ primitiveFacts:
 | `rest_photo_micro_move` | 休息、拍照、找路时在小范围内来回挪动。 | `rest_photo_micro_move_diagnostic` / `rest_photo_micro_move_shape_filter` / `rest_photo_micro_move_simplifier` / `rest_photo_micro_move_anchor` | 默认作为已沉淀清洗策略：强休息折返压成休息锚点，弱微移动优先保留移动形状，其他小移动保留少数形状锚点；只有显式关闭重建时才退回诊断。 |
 | `moving_spike_cleanup` | 连续移动中的单个侧向回跳点；高 reported speed 只有在强几何和前向接线同时成立时才可覆盖。 | `moving_spike_line_bridge` | 默认作为已沉淀清洗策略：删除单点尖刺，用前后可信移动点直连；尖刺 raw 作为 suppressed 诊断证据保留，不再作为后续情景贡献输入或常规复核任务列出。 |
 | `gap_recovery_boundary` | GAP 后恢复点可能进入 GPX，但不能跨 GAP 计距。 | `gap_recovery_anchor` | 恢复点开启/重置 segment；距离、运动时间、GNSS/气压爬升 delta 为 0。 |
-| `transport_contamination` | 景区车、缆车、电梯、骑行或高速移动混入徒步记录。 | `transport_diagnostic_continuity` | 可以保留诊断连续性；不进入徒步距离、运动时间、可信 GPX 或徒步爬升。 |
+| `transport_contamination` | 景区车、缆车、电梯、骑行或高速移动混入徒步记录。 | `transport_route_passthrough` | 交通移动保留在可信路线和 GPX 形状中并标注风险；不进入徒步距离、运动时间或徒步爬升。 |
 
 ## 场景细则
 
@@ -526,7 +526,7 @@ V16.1 行为：
 
 识别证据：
 
-- 存在 `transport_risk` rejected 点，或被保留为诊断连续性的
+- 存在历史 `transport_risk` rejected 点，或当前保留路线使用的
   `recovery_transport_suspected_kept` / `transport_suspected_kept` TrackPoint。
 - 可观测证据来自距离、dt、reported speed 和恢复边界。
 - 当系统已给出低于交通阈值的 `reported speed` 时，不只凭短 dt 的隐含速度标记交通；
@@ -535,14 +535,14 @@ V16.1 行为：
 
 重建动作：
 
-- 输出 `transport_diagnostic_continuity`。
-- 被保留的疑似交通点可以帮助展示“这里发生了污染”，但 `entersTrustedGpx`
-  必须为 false。
+- 输出 `transport_route_passthrough`。
+- 被保留的疑似交通点必须进入可信路线，`entersTrustedGpx=true`，并保持原始坐标顺序。
+- 场景 action 为 `preserve_route_exclude_hiking_metrics`，只关闭徒步指标门控。
 
 不能做：
 
 - 不能把交通污染计入徒步距离、运动时间或徒步爬升。
-- 不能为了让路线连续而把交通点混进 trusted GPX。
+- 不能因为交通分类而删除、压缩或桥接掉真实移动路线。
 
 ## 待扩散场景
 

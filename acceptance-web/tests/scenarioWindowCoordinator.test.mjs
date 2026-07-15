@@ -6,7 +6,7 @@ import {
   coordinateScenarioProposals,
   normalizeScenarioProposal,
   rangesOverlap
-} from '../src/scenarioWindowCoordinator.mjs';
+} from '../src/track-cleaning/scenarioWindowCoordinator.mjs';
 
 function proposal(id, scenario, start, end, overrides = {}) {
   return {

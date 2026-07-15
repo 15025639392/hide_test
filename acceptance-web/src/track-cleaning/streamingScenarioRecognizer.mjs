@@ -284,15 +284,16 @@ function transportContaminationProposals(baseKernel = {}) {
         metricRange: rawRange,
         metricOwner: true,
         hardBoundary: true,
-        affectedMetricGates: ['route', 'distance', 'moving_time', 'elevation'],
-        action: 'exclude_from_hiking_truth',
-        localRebuild: 'transport_diagnostic_continuity',
+        affectedMetricGates: ['distance', 'moving_time', 'elevation'],
+        action: 'preserve_route_exclude_hiking_metrics',
+        localRebuild: 'transport_route_passthrough',
         evidence: {
           rejectedRawPointIds: point.transportSource === 'rejected' ? [rawPointId] : [],
           keptRawPointIds: point.transportSource === 'kept' ? [rawPointId] : [],
           pendingRawPointIds: point.transportSource === 'pending' ? [rawPointId] : [],
           suspectedDistanceMeters: rounded(finiteNumber(point.distanceDeltaMeters) ?? 0),
           suspectedMovingTimeSeconds: rounded(finiteNumber(point.movingTimeDeltaSeconds) ?? 0),
+          routePreserved: true,
           countsDistance: false,
           countsMovingTime: false
         }

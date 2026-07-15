@@ -7,15 +7,13 @@ import {
 import { buildCleanedLineFeatures, cleanedRouteLinePoints } from './cleanedLineStyles.mjs';
 import {
   buildSixLayerTrackProduct,
+  DEFAULT_SCENARIO_REPAIR_IDS,
+  fullScenarioRepairConfig,
   reviewTrackPointScenarioCoverage
-} from './sixLayerTrackProduct.mjs';
+} from './track-cleaning/index.mjs';
 import {
   buildScenarioPolygonFeatures
 } from './scenarioPolygons.mjs';
-import {
-  DEFAULT_SCENARIO_REPAIR_IDS,
-  fullScenarioRepairConfig,
-} from './scenarioRepairConfig.mjs';
 import {
   REVIEW_QUEUE_FILTERS,
   buildReviewQueueExport,
@@ -273,6 +271,7 @@ function compactTargetOutput(output) {
       output?.summaries?.pressure?.locationAltitudeTotalAscentMeters ?? null,
     locationAltitudeTotalDescentMeters:
       output?.summaries?.pressure?.locationAltitudeTotalDescentMeters ?? null,
+    suspectedTransport: output?.summaries?.suspectedTransport || null,
     scenarioSettlementPlan: output?.scenarioSettlementPlan || null,
     streamingSettlementState: output?.streamingSettlementState || null,
     streamingDiagnosticContexts: output?.streamingDiagnosticContexts || null,
@@ -500,6 +499,13 @@ function datasetSummaryMarkup(dataset) {
         ${metricCellMarkup('运动里程', formatMeters(stats.totalDistanceMeters))}
         ${metricCellMarkup('运动耗时', formatDuration(stats.movingTimeSeconds))}
         ${metricCellMarkup('累计爬升', formatAscent(stats.selectedTotalAscentMeters))}
+        ${metricCellMarkup('疑似交通', suspectedTransportCountLabel(stats))}
+        ${metricCellMarkup('疑似交通里程',
+          formatMeters(stats.suspectedTransportDistanceMeters))}
+        ${metricCellMarkup('疑似交通耗时',
+          formatDuration(stats.suspectedTransportDurationSeconds))}
+        ${metricCellMarkup('疑似交通均速',
+          formatTransportSpeed(stats.suspectedTransportAverageSpeedMetersPerSecond))}
       </div>
       <span>${escapeHtml(dataset?.filePath || '-')}</span>
     </section>
@@ -1970,7 +1976,10 @@ function cleanedPointDetailsMarkup(dataset, point) {
       `目标总点数 ${dataset.targetProduct.stats.trustedPointCount}`,
       `里程 ${formatMeters(dataset.targetProduct.stats.routeDistanceMeters)}`,
       `运动里程 ${formatMeters(dataset.targetProduct.stats.totalDistanceMeters)}`,
-      `疑似交通里程 ${formatMeters(dataset.targetProduct.stats.suspectedDistanceMeters)}`,
+      `疑似交通 ${suspectedTransportCountLabel(dataset.targetProduct.stats)}`,
+      `疑似交通里程 ${formatMeters(dataset.targetProduct.stats.suspectedTransportDistanceMeters)}`,
+      `疑似交通耗时 ${formatDuration(dataset.targetProduct.stats.suspectedTransportDurationSeconds)}`,
+      `疑似交通均速 ${formatTransportSpeed(dataset.targetProduct.stats.suspectedTransportAverageSpeedMetersPerSecond)}`,
       ...ascentSummaryRows(dataset)
 	    ])}
 	  `;
@@ -3377,6 +3386,20 @@ function paceSecondsPerKm(distanceMeters, movingTimeSeconds) {
 
 function formatSpeed(value) {
   return Number.isFinite(value) ? `${value.toFixed(2)} m/s` : '-';
+}
+
+function formatTransportSpeed(value) {
+  return Number.isFinite(value) ? `${(value * 3.6).toFixed(1)} km/h` : '-';
+}
+
+function suspectedTransportCountLabel(stats = {}) {
+  const segmentCount = Number.isFinite(stats.suspectedTransportSegmentCount)
+    ? stats.suspectedTransportSegmentCount
+    : 0;
+  const pointCount = Number.isFinite(stats.suspectedTransportPointCount)
+    ? stats.suspectedTransportPointCount
+    : Number.isFinite(stats.transportCount) ? stats.transportCount : 0;
+  return `${segmentCount}段 / ${pointCount}点`;
 }
 
 function formatOneDecimal(value) {

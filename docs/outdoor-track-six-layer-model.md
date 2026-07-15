@@ -100,10 +100,10 @@ barometerAscentGate  -> 是否累计 pressure altitude 爬升
 | `gap_recovery` | recovery | yes | no | no | reset | reset |
 | `weak` | any | no | no | no | no | no/hold |
 | `reject` | any | no | no | no | no | no/hold |
-| `transport_risk` | transport | risk/diagnostic | no | no | suspended | suspended |
+| `transport_suspected_kept` | transport | yes | no | no | suspended | suspended |
 
 GAP recovery 可以保持产品轨迹视觉连续，但它的 `distanceDeltaMeters`、`movingTimeDeltaSeconds` 和跨边界 ascent delta 必须为 0。
-transport risk 是否保留在展示连续线或导出诊断线中，由产品/export 策略决定；
+transport risk 必须保留在展示连续线和可信 GPX 形状中，并通过 reason / scenario 标注；
 它不能进入徒步距离、运动时间或徒步爬升真值。
 
 ## Reason 命名原则
@@ -156,7 +156,7 @@ Web 六层算法会将主场景解释写入 `primaryExplanation`，把同一点�
 | `rest_photo_micro_move` | 清洗拍照、休息、找路时的小范围来回挪动：强休息折返压成休息锚点，弱微移动保留移动形状并过滤停留锚点，其余微移动简化为少量形状锚点。 |
 | `moving_spike_cleanup` | 清洗连续移动中的单点尖刺：删除侧向回跳点，用前后可信移动点桥接；高 reported speed 仅在强几何和前向接线同时成立时覆盖。 |
 | `gap_recovery_boundary` | 解释 GAP 恢复点是零距离、零运动时间的边界重置。 |
-| `transport_contamination` | 标注交通工具或高速移动混入，不计入徒步真值。 |
+| `transport_contamination` | 保留交通工具或高速移动路线并标注风险，不计入徒步真值。 |
 
 V16.1 中 `dense_area_intent` 是上层调度诊断：`forward_motion` 已用于约束
 `dense_main_route_settlement`；`stationary` 和 `round_trip` 会写入对应停留/往返

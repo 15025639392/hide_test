@@ -61,9 +61,12 @@ https://tiles.mapterhorn.com/tilejson.json
 - 点类型区分 `weak / reject / intake_rejected / raw` 等诊断状态。
 - 文件列表展示：文件名、设备、轨迹点数、里程、运动耗时、配速、气压累计爬升和
   Location 海拔累计爬升。
+- 当前样本汇总单独展示疑似交通工具的风险点/区段、诊断里程、诊断耗时和平均速度；
+  这些数据不进入徒步里程、运动耗时、配速或爬升真值。
 - 选中文件后展示 Web 清洗结果、raw、pressure、motion 摘要。
 - 点击地图点后展示 raw 证据或 Web 清洗点详情。
-- 当前 Web 清洗入口只使用 `src/sixLayerTrackProduct.mjs` 六层算法。
+- 当前 Web 清洗统一入口是 `src/track-cleaning/index.mjs`，批处理实现位于
+  `src/track-cleaning/sixLayerTrackProduct.mjs`。
 - 六层算法输出 `scenarios[]`，用于解释弱恢复端点、同路往返、整段静止、停留漂移、
   GAP 恢复边界和交通混入等局部重建；文档见
   `../docs/outdoor-track-scenario-recognizers.md`。
@@ -87,7 +90,8 @@ https://tiles.mapterhorn.com/tilejson.json
 - `primaryExplanation`、`scenarioContexts[]` 和 `scenarioCoverage[]` 都包含中文
   `scenarioLabel`、`actionLabel`、`localRebuildLabel`，UI 优先展示中文解释，英文标识只作
   复测索引。
-- 疑似交通工具标记为 `transport_risk` 诊断证据，不计入徒步距离、运动时间或爬升真值。
+- 疑似交通工具标记为 `transport_suspected_kept` 并保留在清洗路线中，不计入徒步距离、
+  运动时间或爬升真值。
 - `Location.altitude` 和气压计高度是两条独立高度线，最终只在 selected ascent 选择层汇合。
 
 ## 导出 AI 对齐包

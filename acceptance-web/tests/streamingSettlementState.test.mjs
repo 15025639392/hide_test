@@ -6,7 +6,7 @@ import {
   createStreamingSettlementState,
   exportStreamingSettlementStateContract,
   streamingSettlementSnapshot
-} from '../src/streamingSettlementState.mjs';
+} from '../src/track-cleaning/streamingSettlementState.mjs';
 
 test('applyCommitPlanToStreamingState advances cursor through normal and hard-boundary ranges', () => {
   const state = applyCommitPlanToStreamingState(createStreamingSettlementState(), {

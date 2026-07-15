@@ -85,7 +85,7 @@ Android、watchOS / iOS、鸿蒙的原生字段名不应穿透到 Core。
 | `same_road_round_trip` | 强同路证据的往返收成稳定中心线。 |
 | `composite_gap_local_settlement` | 长 GAP 复合段不跨整段改线，只作为局部策略上下文。 |
 | `enclosed_loop_cluster_settlement` | 遮挡回环压成锚点或短连接。 |
-| `transport_contamination` | 排除非徒步移动。 |
+| `transport_contamination` | 保留非徒步移动路线，但排除其徒步距离、时间和爬升指标。 |
 
 普通 App 默认只关心：
 

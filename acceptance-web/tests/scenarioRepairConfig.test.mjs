@@ -9,7 +9,7 @@ import {
   scenarioRepairConfigFromIds,
   scenarioRepairOption,
   scenarioRepairSummary
-} from '../src/scenarioRepairConfig.mjs';
+} from '../src/track-cleaning/scenarioRepairConfig.mjs';
 
 test('scenario repair config enables all repair modules by default', () => {
   const config = scenarioRepairConfigFromIds(DEFAULT_SCENARIO_REPAIR_IDS);

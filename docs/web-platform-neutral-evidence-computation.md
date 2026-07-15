@@ -61,12 +61,13 @@ parseEvidenceJsonl(await file.text(), filePath)
 | Area | File |
 | --- | --- |
 | JSONL 解析、诊断模型和最终输出 | `acceptance-web/src/diagnosticMap.mjs` |
-| 六层轨迹产品、基础安全内核、距离/时间/高度累计 | `acceptance-web/src/sixLayerTrackProduct.mjs` |
-| 流式 evidence 分片 intake | `acceptance-web/src/streamingEvidenceIntake.mjs` |
-| 流式基础安全内核 | `acceptance-web/src/streamingBaseTrackKernel.mjs` |
-| 流式指标累计 | `acceptance-web/src/streamingMetricAccumulator.mjs` |
-| 流式情景识别 | `acceptance-web/src/streamingScenarioRecognizer.mjs` |
-| 流式引擎串联 | `acceptance-web/src/streamingTrackEngine.mjs` |
+| Web 轨迹清洗算法统一入口 | `acceptance-web/src/track-cleaning/index.mjs` |
+| 六层轨迹产品、基础安全内核、距离/时间/高度累计 | `acceptance-web/src/track-cleaning/sixLayerTrackProduct.mjs` |
+| 流式 evidence 分片 intake | `acceptance-web/src/track-cleaning/streamingEvidenceIntake.mjs` |
+| 流式基础安全内核 | `acceptance-web/src/track-cleaning/streamingBaseTrackKernel.mjs` |
+| 流式指标累计 | `acceptance-web/src/track-cleaning/streamingMetricAccumulator.mjs` |
+| 流式情景识别 | `acceptance-web/src/track-cleaning/streamingScenarioRecognizer.mjs` |
+| 流式引擎串联 | `acceptance-web/src/track-cleaning/streamingTrackEngine.mjs` |
 
 ## 输入事件
 
@@ -149,10 +150,10 @@ motion_window
 当前 Web 默认策略版本：
 
 ```text
-six-layer-evidence-v17.9
+six-layer-evidence-v17.10
 ```
 
-以下参数来自 `acceptance-web/src/sixLayerTrackProduct.mjs` 的
+以下参数来自 `acceptance-web/src/track-cleaning/sixLayerTrackProduct.mjs` 的
 `DEFAULT_SIX_LAYER_TRACK_CONFIG`。它们是 Web 当前实现快照；跨端迁移时应通过契约或
 SDK 配置统一下发，避免各端硬编码出不同策略。
 
@@ -287,9 +288,9 @@ stationaryThreshold = max(stationaryDistanceMeters, accuracy * stationaryAccurac
 | ---: | --- | --- | --- | --- |
 | 1 | 当前处于 transport recovery 状态 | 进入 transport recovery 子策略 | 见下文 | 见下文 |
 | 2 | `dtSeconds > 120` | 进入 GAP recovery 子策略 | 见下文 | GAP 首个恢复点不回填距离/时间 |
-| 3 | `distance >= 20m` 且 reported speed `>= 3.5m/s` | `reject` | `transport_risk` | 不入可信指标 |
-| 4 | `distance >= 20m` 且无 reported speed 且 `impliedSpeed >= 3.5m/s` | `reject` | `transport_risk` | 不入可信指标 |
-| 5 | `distance >= 20m` 且 `impliedSpeed >= 3.5m/s` 但 reported speed `< 3.5m/s` | `weak` | `implied_speed_unconfirmed_by_reported_speed` | 只诊断 |
+| 3 | reported speed `>= 4.5m/s` 且 `distance >= stationaryThreshold` | `accept` | `transport_suspected_kept` | 保留路线；不计徒步指标 |
+| 4 | 无 reported speed，`distance >= 20m` 且 `impliedSpeed >= 4.5m/s` | `accept` | `transport_suspected_kept` | 保留路线；不计徒步指标 |
+| 5 | `distance >= 20m` 且 `impliedSpeed >= 4.5m/s` 但 reported speed `< 4.5m/s` | `weak` | `implied_speed_unconfirmed_by_reported_speed` | 只诊断 |
 | 6 | `impliedSpeed > 12m/s` | `weak` | `implied_speed_too_high` | 只诊断 |
 | 7 | `accuracy > 30m` 且不满足低精度救援 | `weak` | `weak_horizontal_accuracy` | 只诊断 |
 | 8 | `accuracy > 30m` 且满足低精度救援 | `accept` | `continuity_rescue_low_accuracy` | 累计距离/时间 |
@@ -362,7 +363,7 @@ cloudRadiusMeters <= stationaryThreshold
 
 | Condition | Result | Reason | Metric |
 | --- | --- | --- | --- |
-| 相对参考点仍满足交通风险 | `reject` | `transport_risk` | 继续拒绝。 |
+| 相对参考点仍满足交通风险 | `accept` | `transport_suspected_kept` | 保留路线，不计徒步指标。 |
 | `accuracy > 30m` | `weak` | `transport_recovery_pending` | 等待恢复。 |
 | 其他 | `accept` | `gap_recovery` | 开启新 segment，距离/时间为 0。 |
 
@@ -441,6 +442,29 @@ countsMovingTime =
 
 也就是说，运动时间跟随有效位移计量。静止 anchor、GAP 恢复起点、交通风险、弱点和拒绝点
 都不贡献运动时间。
+
+## 疑似交通工具诊断汇总
+
+交通风险点继续排除在徒步真值之外，但 Web 会单独汇总：
+
+```text
+suspectedTransportDistanceMeters =
+  sum(transport risk point distanceDeltaMeters)
+
+suspectedTransportDurationSeconds =
+  sum(transport risk point movingTimeDeltaSeconds)
+
+suspectedTransportAverageSpeedMetersPerSecond =
+  suspectedTransportDistanceMeters / suspectedTransportDurationSeconds
+```
+
+`suspectedTransportSegmentCount` 按 raw decision 时间序列中的连续交通风险区间计数。
+`transport_recovery_pending` 可以维持区段连续性，但自身没有可靠位移/耗时增量时不会凭空
+补值。旧字段 `suspectedDistanceMeters` 暂时保留为
+`suspectedTransportDistanceMeters` 的兼容别名。
+
+这些数据是诊断估计，不能用于修改徒步总里程、运动耗时、配速、累计爬升或可信 GPX。
+当前规则只能识别疑似交通工具/高速污染，不能进一步断言具体是驾车、公交或火车。
 
 ## 配速
 
@@ -985,14 +1009,15 @@ mixed
 
 处理方式：
 
-- 作为 reject / diagnostic continuity 保留。
-- 必要时进入 transport recovery，直到重新稳定。
+- 作为 `accept / transport_suspected_kept` 保留原始路线。
+- 输出 `transport_route_passthrough`，不删除、不压缩交通移动。
+- 兼容历史 reject / recovery 诊断输入。
 
 指标影响：
 
 - 不进入徒步距离。
 - 不进入徒步运动时间。
-- 不进入可信 GPX。
+- 进入可信 GPX 路线形状，并保留原始移动顺序。
 - 不进入徒步爬升/下降。
 
 ### 复合 GAP 局部结算
@@ -1153,7 +1178,7 @@ elevation
 | Scenario | Affected gates |
 | --- | --- |
 | `gap_recovery_boundary` | `route`, `distance`, `moving_time`, `elevation` |
-| `transport_contamination` | `route`, `distance`, `moving_time`, `elevation` |
+| `transport_contamination` | `distance`, `moving_time`, `elevation` |
 | `position_snap_recovery` | `route`, `distance`, `moving_time`, `elevation` |
 | `moving_spike_cleanup` | `route`, `distance`, `moving_time` |
 | `stationary_session_collapse` | `route`, `distance`, `moving_time` |
@@ -1461,6 +1486,10 @@ acceptance-web/tests/diagnosticMap.test.mjs
 - 目标产物能输出：
   - `totalDistanceMeters`
   - `movingTimeSeconds`
+  - `suspectedTransportDistanceMeters`
+  - `suspectedTransportDurationSeconds`
+  - `suspectedTransportSegmentCount`
+  - `suspectedTransportAverageSpeedMetersPerSecond`
   - `locationAltitudeTotalAscentMeters`
   - `locationAltitudeTotalDescentMeters`
   - `barometerTotalAscentMeters`

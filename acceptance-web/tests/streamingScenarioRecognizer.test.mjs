@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   advanceStreamingScenarioRecognizer,
   createStreamingScenarioRecognizerState
-} from '../src/streamingScenarioRecognizer.mjs';
+} from '../src/track-cleaning/streamingScenarioRecognizer.mjs';
 
 test('streaming scenario recognizer emits moving spike cleanup proposal', () => {
   const state = advanceStreamingScenarioRecognizer(createStreamingScenarioRecognizerState(), {
@@ -333,15 +333,16 @@ test('streaming scenario recognizer emits transport contamination hard boundary 
     metricRange: range(2, 2),
     metricOwner: true,
     hardBoundary: true,
-    affectedMetricGates: ['route', 'distance', 'moving_time', 'elevation'],
-    action: 'exclude_from_hiking_truth',
-    localRebuild: 'transport_diagnostic_continuity',
+    affectedMetricGates: ['distance', 'moving_time', 'elevation'],
+    action: 'preserve_route_exclude_hiking_metrics',
+    localRebuild: 'transport_route_passthrough',
     evidence: {
       rejectedRawPointIds: [2],
       keptRawPointIds: [],
       pendingRawPointIds: [],
       suspectedDistanceMeters: 111.2,
       suspectedMovingTimeSeconds: 3,
+      routePreserved: true,
       countsDistance: false,
       countsMovingTime: false
     }

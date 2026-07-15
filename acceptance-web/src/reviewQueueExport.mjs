@@ -1,7 +1,9 @@
 import { buildTargetOutput, parseEvidenceJsonl } from './diagnosticMap.mjs';
 import { buildReviewQueueExport } from './reviewQueue.mjs';
-import { fullScenarioRepairConfig } from './scenarioRepairConfig.mjs';
-import { buildSixLayerTrackProduct } from './sixLayerTrackProduct.mjs';
+import {
+  buildSixLayerTrackProduct,
+  fullScenarioRepairConfig
+} from './track-cleaning/index.mjs';
 
 export function buildReviewQueueExportFromEvidenceText(text, options = {}) {
   const filePath = options.filePath || 'evidence.jsonl';

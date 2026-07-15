@@ -4,7 +4,7 @@
 目标是让实时记录和离线 replay 使用同一套 streaming engine：同一份
 platform-neutral evidence 输入，应得到同一份最终结果。
 
-本文是设计和落地计划，不改变当前 Android v3 策略阈值、Web V17.9 输出、
+本文是设计和落地计划，不改变当前 Android v3 策略阈值、Web V17.10 输出、
 replay fixture 期望或诊断 schema。第一步落地在 acceptance-web 的纯函数
 coordinator，用于固化 overlap / conflict 规则，再逐步接入现有 recognizer。
 
@@ -348,9 +348,9 @@ advanceStreamingScenarioSettlementSession(previousSession, input)
 当前 Web 原型落地文件：
 
 ```text
-acceptance-web/src/scenarioWindowCoordinator.mjs
-acceptance-web/src/streamingSettlementState.mjs
-acceptance-web/src/streamingScenarioSettlementSession.mjs
+acceptance-web/src/track-cleaning/scenarioWindowCoordinator.mjs
+acceptance-web/src/track-cleaning/streamingSettlementState.mjs
+acceptance-web/src/track-cleaning/streamingScenarioSettlementSession.mjs
 ```
 
 ## Resource Cap 和 Conservative Settlement
@@ -371,12 +371,14 @@ cap fallback 也是最终结算结果，replay 必须一致。
 
 ## 第一阶段落地
 
-1. 新增 acceptance-web 纯函数 `scenarioWindowCoordinator.mjs`。
+1. 在 `acceptance-web/src/track-cleaning/` 新增纯函数
+   `scenarioWindowCoordinator.mjs`。
 2. 覆盖 hard boundary、nested cleanup、equal conflict、diagnostic overlap、
    partial conflict fallback。
 3. 从现有 `scenarios[]` 旁路生成 `scenarioSettlementPlan`，输出 proposal 仲裁、
-   metric ownership 和 `commitPlan`，但不改变 V17.9 轨迹、距离、运动时间和场景解释。
-4. 新增 `streamingSettlementState.mjs`，把 `commitPlan` 应用为
+   metric ownership 和 `commitPlan`，但不改变 V17.10 轨迹、距离、运动时间和场景解释。
+4. 在 `acceptance-web/src/track-cleaning/` 新增 `streamingSettlementState.mjs`，
+   把 `commitPlan` 应用为
    `committedCursorRawPointId`、`committedRanges[]`、`hardBoundaryCheckpoints[]`
    和 `blockingRanges[]`。
 5. 后续把现有 `forwardSpineDecisions[]`、`denseIntentConflicts[]` 和场景 settlement
@@ -384,7 +386,8 @@ cap fallback 也是最终结算结果，replay 必须一致。
 
 ## 第二阶段落地
 
-1. 新增 `streamingScenarioSettlementSession.mjs`。
+1. 在 `acceptance-web/src/track-cleaning/` 新增
+   `streamingScenarioSettlementSession.mjs`。
 2. 支持多批次输入：正常批次直接推进 cursor；open metric window 只提交安全前缀；
    window 关闭后从 cursor 后继续提交。
 3. 支持 hard boundary checkpoint 跨批次持久化。
@@ -399,13 +402,14 @@ cap fallback 也是最终结算结果，replay 必须一致。
 
 ## 第三阶段落地
 
-1. 新增 `streamingEvidenceIntake.mjs`，支持平台中立 JSONL 分片、尾行缓存、
+1. 在 `acceptance-web/src/track-cleaning/` 新增 `streamingEvidenceIntake.mjs`，
+   支持平台中立 JSONL 分片、尾行缓存、
    `sessionId + eventSeq` 去重和乱序计数。
-2. 新增 `streamingBaseTrackKernel.mjs`，覆盖基础 intake、首点 anchor、普通移动、
+2. 在同一目录新增 `streamingBaseTrackKernel.mjs`，覆盖基础 intake、首点 anchor、普通移动、
    GAP fast-path 恢复和 raw decision 诊断保留。
 3. base kernel 接入有界最近 `motion_window` / `device_motion_window` 活动摘要，
    支持 `motion_supported_low_speed` 这类不需要长情景窗口的活动门控。
-4. 新增 `streamingMetricAccumulator.mjs`，把 `barometer_window` 作为流式 metric
+4. 在同一目录新增 `streamingMetricAccumulator.mjs`，把 `barometer_window` 作为流式 metric
    evidence 累计，优先使用 `windowAscentMeters` / `windowDescentMeters`，并保留累计下降。
 5. commit plan 新增 `metricOwnershipRanges[]`，把安全前缀内的指标 range 分配给
    `base_kernel`、具体 scenario owner 或 hard boundary；相邻同 owner range 合并。
@@ -417,19 +421,20 @@ cap fallback 也是最终结算结果，replay 必须一致。
 8. committed barometer metric 改为增量状态：每批只消费
    `lastAppliedMetricOwnershipRanges[]`，随后裁剪已安全提交之前的 `rawPointTimeline`
    和 barometer diagnostic buffer。
-9. 新增 `streamingScenarioRecognizer.mjs`，先接入 `gap_recovery_boundary`、
+9. 在同一目录新增 `streamingScenarioRecognizer.mjs`，先接入 `gap_recovery_boundary`、
    `transport_contamination`、`pressure_jump`、`moving_spike_cleanup`、
    `position_snap_recovery`、`stationary_drift_collapse` 和
    `rest_photo_micro_move` 的 proposal 生成；随后接入
    `dense_main_route_settlement`、`round_trip_line` 和 `same_road_round_trip` 的有界窗口
    proposal。recognizer 只生成 proposal / open window，不直接改写 track。
-10. 新增 `streamingTrackEngine.mjs`，把 evidence intake、base kernel、
+10. 在同一目录新增 `streamingTrackEngine.mjs`，把 evidence intake、base kernel、
    metric accumulator 和 scenario settlement session 串成同一流式状态推进。
 11. `transport_contamination` 在实时流式原型中按单个 transport raw point 生成稳定
-    硬边界，来源包括 `transport_risk` rejected、`transport_recovery_pending` weak，
-    以及为诊断连续性保留的 `recovery_transport_suspected_kept` /
+    硬边界，主要来源是为路线连续性保留的 `recovery_transport_suspected_kept` /
     `transport_suspected_kept` kept TrackPoint；proposal evidence 区分 rejected /
-    pending / kept raw ids，避免后续连续污染点扩容同一 proposal 导致已提交前缀被改写。
+    pending / kept raw ids，并兼容历史 rejected / pending 输入，避免后续连续污染点扩容
+    同一 proposal 导致已提交前缀被改写。交通边界只关闭 distance / moving time /
+    elevation，不关闭 route。
 12. `pressure_jump` 从 `pressure_jump_detected` barometer window 映射到最近 raw
     timeline 边界点，只关闭 elevation gate，不影响水平 route / distance /
     moving time 的基础提交。
@@ -439,7 +444,7 @@ cap fallback 也是最终结算结果，replay 必须一致。
 14. `rest_photo_micro_move` 在实时流式原型中来自可信 track 的小范围折返窗口；
     为了避免窗口继续扩容后改写已提交前缀，默认等达到
     `restPhotoMicroMoveMaxTrackPoints` 或 finish 后才关闭，未闭合时只阻塞安全前缀。
-15. 新增 `streamingLocalRebuild.mjs`，消费
+15. 在同一目录新增 `streamingLocalRebuild.mjs`，消费
     `lastAppliedMetricOwnershipRanges[]` 生成只追加的 committed product track view；
     当前覆盖 `stationary_drift_anchor`、`rest_photo_micro_move_anchor` 和
     `rest_photo_micro_move_simplifier`，未覆盖场景走 base passthrough fallback 并计入
@@ -447,11 +452,12 @@ cap fallback 也是最终结算结果，replay 必须一致。
 16. `streamingLocalRebuild.mjs` 继续接入 `moving_spike_line_bridge` 和
     `position_snap_recovery_anchor`：前者把尖刺 raw 放入 `suppressedRawPointIds` 并桥接
     next 点距离/时间；后者把恢复点置零并吸收前序弱点 raw。`transport_contamination`
-    不产出徒步产品点，GAP / pressure 已知边界不计入 unsupported。
+    使用 `transport_route_passthrough` 保留产品路线，GAP / pressure 已知边界不计入
+    unsupported。
 17. base kernel / recognizer / local rebuild 已覆盖 GAP 后 recovery transport continuity：
     `gap_recovery_pending` 后的连续疑似交通工具点可作为 kept 诊断点保留，
-    recognizer 为每个 kept transport raw point 生成硬边界，local rebuild 只保留
-    徒步产品点，不把该段计入 trusted GPX、distance 或 moving time。
+    recognizer 为每个 kept transport raw point 生成硬边界，local rebuild 原样保留
+    交通路线并进入 trusted GPX，但不把该段计入 distance、moving time 或 elevation。
 18. `dense_main_route_settlement` 已接入实时流式原型：连续可信移动点在窗口退出或
     finish 后生成 `dense_main_route_skeleton` proposal；local rebuild 只消费已提交
     ownership，把 kept raw point 输出为主路线骨架，并按骨架重算 distance、按压缩组累加

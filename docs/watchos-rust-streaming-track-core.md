@@ -170,7 +170,7 @@ committed cursor
 
 - 不要让 watchOS 输出 `raw_location` 私有格式。
 - 不要让 Watch 使用 Web 内部 `rawPointId/rawRange` 作为长期契约。
-- 不要在 Swift 里重新实现 Web V17.9 情景策略。
+- 不要在 Swift 里重新实现 Web V17.10 情景策略。
 - 不要把 Rust snapshot 结果立即覆盖现有 UI 指标，先并行展示或写 debug。
 
 ## 推荐接入顺序

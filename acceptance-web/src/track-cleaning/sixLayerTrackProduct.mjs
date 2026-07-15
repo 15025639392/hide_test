@@ -23,7 +23,7 @@ function safeMax(values) {
   return result;
 }
 
-export const SIX_LAYER_TRACK_ALGORITHM_VERSION = 'six-layer-evidence-v17.9';
+export const SIX_LAYER_TRACK_ALGORITHM_VERSION = 'six-layer-evidence-v17.10';
 
 export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   maxIntakeAccuracyMeters: 80,
@@ -593,12 +593,17 @@ function emptyProduct(strategyVersion, sourceFilePath, recordStart, recordEnd) {
       routeDistanceMeters: 0,
       totalDistanceMeters: 0,
       suspectedDistanceMeters: 0,
+      suspectedTransportDistanceMeters: 0,
+      suspectedTransportDurationSeconds: 0,
+      suspectedTransportSegmentCount: 0,
+      suspectedTransportAverageSpeedMetersPerSecond: null,
       movingTimeSeconds: 0,
       recordStartElapsedRealtimeNanos: recordStart,
       recordEndElapsedRealtimeNanos: recordEnd,
       segmentCount: 0,
       gapCount: 0,
       transportCount: 0,
+      suspectedTransportPointCount: 0,
       rawPointCount: 0,
       trustedPointCount: 0,
       weakPointCount: 0,
@@ -704,22 +709,15 @@ function decideHorizontal(rawPoint, epoch, motion, state, config) {
     return decideTransportRecovery(rawPoint, motion, state, config);
   }
 
-  const transportRisk = isTransportRiskDistance(distance, impliedSpeed, reportedSpeed, config);
+  const transportRisk = isTransportRiskDistance(distance, impliedSpeed, reportedSpeed, config,
+    stationaryThreshold(rawPoint, config));
 
   if (isGap) {
     return decideGapRecovery(rawPoint, previous, motion, state, distance, config);
   }
 
   if (transportRisk) {
-    if (isTransportTrackReason(previous.reason)) {
-      return trustedDecision(rawPoint, 'accept', 'transport_suspected_kept', motion, {
-        boundaryState: 'transport_risk',
-        cloudType: 'TRANSPORT_RISK_CLOUD',
-        distanceDeltaMeters: distance,
-        movingTimeDeltaSeconds: Math.max(0, dtSeconds)
-      });
-    }
-    return diagnosticDecision(rawPoint, 'reject', 'transport_risk', motion, {
+    return trustedDecision(rawPoint, 'accept', 'transport_suspected_kept', motion, {
       boundaryState: 'transport_risk',
       cloudType: 'TRANSPORT_RISK_CLOUD',
       distanceDeltaMeters: distance,
@@ -847,7 +845,8 @@ function isRecoveryTransportPoint(rawPoint, previousRawPoint, config) {
   const distance = distanceMeters(previousRawPoint.lat, previousRawPoint.lng,
     rawPoint.lat, rawPoint.lng);
   const reportedSpeed = Number.isFinite(rawPoint.speed) ? rawPoint.speed : null;
-  return isTransportRiskDistance(distance, distance / dtSeconds, reportedSpeed, config);
+  return isTransportRiskDistance(distance, distance / dtSeconds, reportedSpeed, config,
+    stationaryThreshold(rawPoint, config));
 }
 
 function decideStationaryCloud(rawPoint, previous, motion, state, config,
@@ -886,10 +885,11 @@ function decideTransportRecovery(rawPoint, motion, state, config) {
   const dtSeconds = elapsedSeconds(reference.elapsedRealtimeNanos, rawPoint.elapsedRealtimeNanos);
   const impliedSpeed = dtSeconds > 0 ? distance / dtSeconds : Infinity;
   const reportedSpeed = Number.isFinite(rawPoint.speed) ? rawPoint.speed : null;
-  const stillTransport = isTransportRiskDistance(distance, impliedSpeed, reportedSpeed, config);
+  const stillTransport = isTransportRiskDistance(distance, impliedSpeed, reportedSpeed, config,
+    stationaryThreshold(rawPoint, config));
 
   if (stillTransport) {
-    return diagnosticDecision(rawPoint, 'reject', 'transport_risk', motion, {
+    return trustedDecision(rawPoint, 'accept', 'transport_suspected_kept', motion, {
       boundaryState: 'transport_risk',
       cloudType: 'TRANSPORT_RISK_CLOUD',
       distanceDeltaMeters: distance,
@@ -911,12 +911,15 @@ function decideTransportRecovery(rawPoint, motion, state, config) {
   });
 }
 
-function isTransportRiskDistance(distance, impliedSpeed, reportedSpeed, config) {
-  if (distance < config.transportMinDistanceMeters) return false;
+function isTransportRiskDistance(distance, impliedSpeed, reportedSpeed, config,
+  reportedSpeedMinDistance = config.stationaryDistanceMeters) {
   if (reportedSpeed !== null) {
-    return reportedSpeed >= config.transportSpeedMetersPerSecond;
+    if (reportedSpeed < config.transportSpeedMetersPerSecond) return false;
+    return distance >= config.transportMinDistanceMeters
+      || distance >= reportedSpeedMinDistance;
   }
-  return impliedSpeed >= config.transportSpeedMetersPerSecond;
+  return distance >= config.transportMinDistanceMeters
+    && impliedSpeed >= config.transportSpeedMetersPerSecond;
 }
 
 function isImpliedTransportUnconfirmedByReportedSpeed(distance, impliedSpeed, reportedSpeed,
@@ -4607,6 +4610,45 @@ function isTransportTrackReason(reason) {
     || reason === 'transport_suspected_kept';
 }
 
+function isSuspectedTransportReason(reason) {
+  return reason === 'transport_risk'
+    || reason === 'transport_recovery_pending'
+    || isTransportTrackReason(reason);
+}
+
+function suspectedTransportSummary(product) {
+  const rejected = product.excluded.rejected
+    .filter((point) => point.reason === 'transport_risk');
+  const kept = product.track.filter((point) => isTransportTrackReason(point.reason));
+  const countedPoints = [...rejected, ...kept];
+  const distanceMeters = countedPoints.reduce((sum, point) =>
+    sum + Math.max(0, Number(point.distanceDeltaMeters) || 0), 0);
+  const durationSeconds = countedPoints.reduce((sum, point) =>
+    sum + Math.max(0, Number(point.movingTimeDeltaSeconds) || 0), 0);
+  return {
+    pointCount: countedPoints.length,
+    segmentCount: countSuspectedTransportSegments(product.rawPointDecisions),
+    distanceMeters,
+    durationSeconds,
+    averageSpeedMetersPerSecond: durationSeconds > 0
+      ? distanceMeters / durationSeconds
+      : null
+  };
+}
+
+function countSuspectedTransportSegments(rawPointDecisions) {
+  let segmentCount = 0;
+  let inTransportSegment = false;
+  const decisions = [...(rawPointDecisions || [])]
+    .sort((left, right) => left.rawPointId - right.rawPointId);
+  for (const decision of decisions) {
+    const suspectedTransport = isSuspectedTransportReason(decision.horizontalReason);
+    if (suspectedTransport && !inTransportSegment) segmentCount++;
+    inTransportSegment = suspectedTransport;
+  }
+  return segmentCount;
+}
+
 function boundaryCloudDecisionFields(cloud) {
   return {
     cloudId: cloud.cloudId,
@@ -4887,7 +4929,7 @@ function settleDecision(decision, gnssAltitude) {
     && !transport;
   const countsMovingTime = countsDistance && decision.movingTimeDeltaSeconds > 0;
   return {
-    entersTrustedGpx: trusted && !transport,
+    entersTrustedGpx: trusted,
     countsDistance,
     countsMovingTime,
     countsAscentWindow: countsDistance && gnssAltitude.result === 'accepted'
@@ -4899,19 +4941,21 @@ function finalizeStats(product) {
   product.stats.weakPointCount = product.excluded.weak.length;
   product.stats.rejectedPointCount = product.excluded.rejected.length;
   product.stats.intakeRejectedPointCount = product.excluded.intakeRejected.length;
-  product.stats.transportCount = product.excluded.rejected
-    .filter((point) => point.reason === 'transport_risk').length
-    + product.track.filter((point) => isTransportTrackReason(point.reason)).length;
+  const transportSummary = suspectedTransportSummary(product);
+  product.stats.transportCount = transportSummary.pointCount;
+  product.stats.suspectedTransportPointCount = transportSummary.pointCount;
   product.stats.segmentCount = product.track.length === 0
     ? 0
     : new Set(product.track.map((point) => point.segmentId)).size;
   product.stats.totalDistanceMeters = product.track.reduce((sum, point) =>
     sum + (point.countsDistance ? point.distanceDeltaMeters : 0), 0);
   product.stats.routeDistanceMeters = product.stats.totalDistanceMeters;
-  product.stats.suspectedDistanceMeters = product.excluded.rejected.reduce((sum, point) =>
-    sum + (point.reason === 'transport_risk' ? point.distanceDeltaMeters || 0 : 0), 0);
-  product.stats.suspectedDistanceMeters += product.track.reduce((sum, point) =>
-    sum + (isTransportTrackReason(point.reason) ? point.distanceDeltaMeters || 0 : 0), 0);
+  product.stats.suspectedDistanceMeters = transportSummary.distanceMeters;
+  product.stats.suspectedTransportDistanceMeters = transportSummary.distanceMeters;
+  product.stats.suspectedTransportDurationSeconds = transportSummary.durationSeconds;
+  product.stats.suspectedTransportSegmentCount = transportSummary.segmentCount;
+  product.stats.suspectedTransportAverageSpeedMetersPerSecond =
+    transportSummary.averageSpeedMetersPerSecond;
   product.stats.movingTimeSeconds = product.track.reduce((sum, point) =>
     sum + (point.countsMovingTime ? point.movingTimeDeltaSeconds : 0), 0);
   if (product.stats.locationAltitudeAscentSampleCount >= 2
@@ -5031,9 +5075,10 @@ function scenarioHardBoundary(scenario) {
 function scenarioAffectedMetricGates(scenario) {
   switch (scenario) {
     case 'gap_recovery_boundary':
-    case 'transport_contamination':
     case 'position_snap_recovery':
       return ['route', 'distance', 'moving_time', 'elevation'];
+    case 'transport_contamination':
+      return ['distance', 'moving_time', 'elevation'];
     case 'moving_spike_cleanup':
     case 'stationary_session_collapse':
     case 'stationary_drift_collapse':
@@ -5065,7 +5110,7 @@ function scenarioCompatibilityTags(scenario) {
 function scenarioConservativeFallback(scenario) {
   switch (scenario) {
     case 'transport_contamination':
-      return 'exclude_from_hiking_truth';
+      return 'keep_route_exclude_hiking_metrics';
     case 'gap_recovery_boundary':
     case 'position_snap_recovery':
       return 'zero_delta_boundary';
@@ -5141,13 +5186,19 @@ function addTransportContaminationScenario(product) {
     confidence: 0.8,
     rawRange: rawPointRange(allRawPointIds),
     anchorRawPointIds: keptTransport.map((point) => point.sourceRawPointId),
-    action: 'exclude_from_hiking_truth',
-    localRebuild: 'transport_diagnostic_continuity',
+    action: 'preserve_route_exclude_hiking_metrics',
+    localRebuild: 'transport_route_passthrough',
     evidence: {
       rejectedRawPointIds: rejectedTransport.map((point) => point.rawPointId),
       keptRawPointIds: keptTransport.map((point) => point.sourceRawPointId),
       pendingRawPointIds: pendingTransport.map((point) => point.rawPointId),
       suspectedDistanceMeters: scenarioNumber(product.stats.suspectedDistanceMeters),
+      suspectedDurationSeconds:
+        scenarioNumber(product.stats.suspectedTransportDurationSeconds),
+      suspectedSegmentCount: product.stats.suspectedTransportSegmentCount,
+      suspectedAverageSpeedMetersPerSecond:
+        scenarioNumber(product.stats.suspectedTransportAverageSpeedMetersPerSecond),
+      routePreserved: true,
       countsDistance: false,
       countsMovingTime: false
     }
@@ -5913,6 +5964,7 @@ function scenarioActionChineseLabel(action) {
     case 'remove_single_point_spike': return '移除单点尖刺';
     case 'reset_segment_zero_delta': return '边界重置，距离和运动时间置零';
     case 'exclude_from_hiking_truth': return '排除出徒步真值';
+    case 'preserve_route_exclude_hiking_metrics': return '保留路线，不计入徒步指标';
     default: return action || '无动作';
   }
 }
@@ -5939,6 +5991,7 @@ function localRebuildChineseLabel(localRebuild) {
     case 'moving_spike_line_bridge': return '移动尖刺桥接';
     case 'gap_recovery_anchor': return 'GAP 恢复锚点';
     case 'transport_diagnostic_continuity': return '交通污染诊断连续性';
+    case 'transport_route_passthrough': return '交通路线原样保留';
     default: return localRebuild || '无局部重建';
   }
 }
@@ -6249,7 +6302,13 @@ function buildFindings(product, evidence) {
     findings.push(`GAP recovery ${product.stats.gapCount} 次，已阻止跨 GAP 计距和计爬升`);
   }
   if (product.stats.transportCount > 0) {
-    findings.push(`transport risk ${product.stats.transportCount} 个，未计入徒步距离/运动时间/爬升`);
+    findings.push(
+      `transport risk ${product.stats.transportCount} 个 / `
+      + `${product.stats.suspectedTransportSegmentCount} 段，`
+      + `疑似 ${product.stats.suspectedTransportDistanceMeters.toFixed(1)}m / `
+      + `${product.stats.suspectedTransportDurationSeconds.toFixed(1)}s，`
+      + '路线已保留，未计入徒步距离/运动时间/爬升'
+    );
   }
   if (product.stationarySessionCollapsed) {
     findings.push(`stationary session collapse，代表点 Raw#${product.stationarySessionCollapse?.representativeRawPointId ?? '-'}`);

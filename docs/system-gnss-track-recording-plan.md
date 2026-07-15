@@ -306,13 +306,13 @@ GAP 两端直线不计入可信距离
 
 ```text
 明显超过徒步范围，或系统上报速度显示为合理车辆速度:
-  decisionResult = reject
+  decisionResult = accept
   decisionReason = transport_suspected_kept
-  进入内部 transport mode
+  保留连续 TrackPoint 并标注交通风险
 
-transport mode 中:
+交通工具段中:
   RawPoint 继续记录
-  非恢复阶段不生成可信 TrackPoint
+  生成可信路线 TrackPoint
   不累计 totalDistanceMeters
   地图使用红色轨迹线连接交通工具混入段
 

@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildSixLayerTrackProduct } from '../src/sixLayerTrackProduct.mjs';
+import { buildSixLayerTrackProduct } from '../src/track-cleaning/sixLayerTrackProduct.mjs';
 import {
   applyStreamingMetricSettlement,
   advanceStreamingMetricAccumulator,
   createStreamingMetricAccumulatorState,
   streamingMetricSnapshot
-} from '../src/streamingMetricAccumulator.mjs';
+} from '../src/track-cleaning/streamingMetricAccumulator.mjs';
 
 test('streaming metric accumulator matches full product for window ascent and descent', () => {
   const events = [

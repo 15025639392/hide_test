@@ -6,7 +6,7 @@ import {
   SIX_LAYER_TRACK_ALGORITHM_VERSION,
   buildSixLayerTrackProduct,
   reviewTrackPointScenarioCoverage
-} from '../src/sixLayerTrackProduct.mjs';
+} from '../src/track-cleaning/sixLayerTrackProduct.mjs';
 
 function scenarioByName(product, name) {
   return product.scenarios.find((scenario) => scenario.scenario === name);
@@ -1281,7 +1281,7 @@ test('buildSixLayerTrackProduct does not bridge a moving spike into a gap recove
   assert.equal(gap.movingTimeDeltaSeconds, 0);
 });
 
-test('buildSixLayerTrackProduct keeps transport risk out of hiking truth', () => {
+test('buildSixLayerTrackProduct preserves transport route outside hiking metrics', () => {
   const model = parseEvidenceJsonl([
     '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
     '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
@@ -1291,24 +1291,40 @@ test('buildSixLayerTrackProduct keeps transport risk out of hiking truth', () =>
 
   const product = buildSixLayerTrackProduct(model);
 
-  assert.equal(product.track.length, 1);
-  assert.equal(product.excluded.rejected.length, 1);
-  assert.equal(product.excluded.rejected[0].reason, 'transport_risk');
+  assert.equal(product.track.length, 2);
+  assert.equal(product.excluded.rejected.length, 0);
+  assert.equal(product.track[1].reason, 'transport_suspected_kept');
+  assert.equal(product.track[1].entersTrustedGpx, true);
+  assert.equal(product.track[1].countsDistance, false);
+  assert.equal(product.track[1].countsMovingTime, false);
   assert.equal(product.stats.transportCount, 1);
+  assert.equal(product.stats.suspectedTransportPointCount, 1);
   assert.ok(product.stats.suspectedDistanceMeters > 100);
+  assert.equal(product.stats.suspectedTransportDistanceMeters,
+    product.stats.suspectedDistanceMeters);
+  assert.equal(product.stats.suspectedTransportDurationSeconds, 3);
+  assert.equal(product.stats.suspectedTransportSegmentCount, 1);
+  assert.equal(product.stats.suspectedTransportAverageSpeedMetersPerSecond,
+    product.stats.suspectedTransportDistanceMeters / 3);
   assert.equal(product.stats.totalDistanceMeters, 0);
   assert.equal(product.stats.movingTimeSeconds, 0);
   const transportScenario = scenarioByName(product, 'transport_contamination');
   assert.ok(transportScenario);
-  assert.equal(product.excluded.rejected[0].primaryExplanation.scenario,
+  assert.equal(product.track[1].primaryExplanation.scenario,
     'transport_contamination');
-  assert.equal(transportScenario.action, 'exclude_from_hiking_truth');
-  assert.equal(transportScenario.localRebuild, 'transport_diagnostic_continuity');
+  assert.equal(transportScenario.action, 'preserve_route_exclude_hiking_metrics');
+  assert.equal(transportScenario.localRebuild, 'transport_route_passthrough');
   assert.deepEqual(transportScenario.rawRange, {
     startRawPointId: 2,
     endRawPointId: 2
   });
-  assert.deepEqual(transportScenario.evidence.rejectedRawPointIds, [2]);
+  assert.deepEqual(transportScenario.evidence.rejectedRawPointIds, []);
+  assert.deepEqual(transportScenario.evidence.keptRawPointIds, [2]);
+  assert.equal(transportScenario.evidence.routePreserved, true);
+  assert.equal(transportScenario.evidence.suspectedSegmentCount, 1);
+  assert.equal(transportScenario.evidence.suspectedDurationSeconds, 3);
+  assert.equal(transportScenario.evidence.suspectedAverageSpeedMetersPerSecond,
+    Math.round(product.stats.suspectedTransportAverageSpeedMetersPerSecond * 1000) / 1000);
   assert.equal(transportScenario.evidence.countsDistance, false);
   assert.equal(transportScenario.evidence.countsMovingTime, false);
 });
@@ -1379,12 +1395,16 @@ test('buildSixLayerTrackProduct keeps recovery transport continuity without hiki
   assert.equal(product.excluded.weak[0].rawPointId, 2);
   assert.equal(product.track[1].reason, 'recovery_transport_suspected_kept');
   assert.equal(product.track[2].reason, 'transport_suspected_kept');
-  assert.equal(product.track[1].entersTrustedGpx, false);
-  assert.equal(product.track[2].entersTrustedGpx, false);
+  assert.equal(product.track[1].entersTrustedGpx, true);
+  assert.equal(product.track[2].entersTrustedGpx, true);
   assert.equal(product.stats.totalDistanceMeters, 0);
   assert.equal(product.stats.movingTimeSeconds, 0);
   assert.equal(product.stats.transportCount, 2);
+  assert.equal(product.stats.suspectedTransportPointCount, 2);
   assert.ok(product.stats.suspectedDistanceMeters > 20);
+  assert.equal(product.stats.suspectedTransportDurationSeconds, 1);
+  assert.equal(product.stats.suspectedTransportSegmentCount, 1);
+  assert.ok(product.stats.suspectedTransportAverageSpeedMetersPerSecond > 20);
   const transportScenario = scenarioByName(product, 'transport_contamination');
   assert.ok(transportScenario);
   assert.deepEqual(transportScenario.anchorRawPointIds, [3, 4]);
@@ -1411,7 +1431,7 @@ test('buildSixLayerTrackProduct rescues continuous low-accuracy hiking points', 
   assert.deepEqual(product.excluded.weak.map((point) => point.rawPointId), [4]);
 });
 
-test('buildSixLayerTrackProduct can recover after excluded transport risk', () => {
+test('buildSixLayerTrackProduct keeps transport and resumes hiking metrics', () => {
   const model = parseEvidenceJsonl([
     '{"event":"session_metadata","sessionId":"S1","recordStartElapsedRealtimeNanos":1000000000}',
     '{"event":"sampling_policy","samplingEpochId":1,"state":"MOVING","eventElapsedRealtimeNanos":1000000000}',
@@ -1425,41 +1445,30 @@ test('buildSixLayerTrackProduct can recover after excluded transport risk', () =
 
   const product = buildSixLayerTrackProduct(model);
 
-  assert.deepEqual(product.track.map((point) => point.sourceRawPointId), [1, 4, 5]);
-  assert.equal(product.track[1].reason, 'gap_recovery');
-  assert.equal(product.track[1].distanceDeltaMeters, 0);
-  assert.equal(product.track[2].reason, 'motion_supported_low_speed');
+  assert.deepEqual(product.track.map((point) => point.sourceRawPointId), [1, 2, 3, 5]);
+  assert.equal(product.track[1].reason, 'transport_suspected_kept');
+  assert.equal(product.track[2].reason, 'transport_suspected_kept');
+  assert.equal(product.track[3].reason, 'moving_good_fix');
+  assert.ok(product.track[3].countsDistance);
   assert.equal(product.stats.transportCount, 2);
   assert.ok(product.stats.totalDistanceMeters > 6);
   assert.ok(scenarioByName(product, 'transport_contamination'));
-  assert.ok(scenarioByName(product, 'gap_recovery_boundary'));
   const activeHardBoundaries = product.scenarioSettlementPlan.activeProposals
     .filter((proposal) => proposal.hardBoundary)
     .map((proposal) => proposal.scenario)
     .sort();
-  assert.deepEqual(activeHardBoundaries, [
-    'gap_recovery_boundary',
-    'transport_contamination'
-  ]);
+  assert.deepEqual(activeHardBoundaries, ['transport_contamination']);
   assert.equal(product.scenarioSettlementPlan.ownership.length,
     product.scenarioSettlementPlan.activeProposals.length);
   assert.equal(product.scenarioSettlementPlan.commitPlan.status, 'committable');
   assert.equal(product.scenarioSettlementPlan.commitPlan.commitWatermark, 5);
   assert.deepEqual(product.scenarioSettlementPlan.commitPlan.hardBoundaries
-    .map((boundary) => boundary.scenario)
-    .sort(), [
-    'gap_recovery_boundary',
-    'transport_contamination'
-  ]);
+    .map((boundary) => boundary.scenario), ['transport_contamination']);
   assert.ok(product.scenarioSettlementPlan.commitPlan.committableRanges.some((item) =>
     item.type === 'hard_boundary' && item.scenario === 'transport_contamination'));
   assert.equal(product.streamingSettlementState.committedCursorRawPointId, 5);
   assert.deepEqual(product.streamingSettlementState.hardBoundaryCheckpoints
-    .map((checkpoint) => checkpoint.scenario)
-    .sort(), [
-    'gap_recovery_boundary',
-    'transport_contamination'
-  ]);
+    .map((checkpoint) => checkpoint.scenario), ['transport_contamination']);
 });
 
 test('buildSixLayerTrackProduct collapses a marked dwell drift cloud into one anchor', () => {

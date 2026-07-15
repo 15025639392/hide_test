@@ -9,8 +9,8 @@ import {
   evidenceIntakeJsonl,
   evidenceIntakeSummary,
   finishEvidenceIntake
-} from '../src/streamingEvidenceIntake.mjs';
-import { buildSixLayerTrackProduct } from '../src/sixLayerTrackProduct.mjs';
+} from '../src/track-cleaning/streamingEvidenceIntake.mjs';
+import { buildSixLayerTrackProduct } from '../src/track-cleaning/sixLayerTrackProduct.mjs';
 
 test('streaming evidence intake parses split JSONL chunks only at complete lines', () => {
   const lines = neutralWalkLines();

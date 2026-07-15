@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { buildTargetOutput, parseEvidenceJsonl } from '../src/diagnosticMap.mjs';
-import { buildSixLayerTrackProduct } from '../src/sixLayerTrackProduct.mjs';
+import { buildSixLayerTrackProduct } from '../src/track-cleaning/sixLayerTrackProduct.mjs';
 
 const FIXTURE_ROOT = fileURLToPath(new URL(
   '../../app/src/test/resources/replay-fixtures/',
@@ -69,31 +69,48 @@ test('android replay stationary recovery fixture remains pending and uncounted',
   assert.equal(product.stats.weakPointCount, 1);
 });
 
-test('android replay transport fixture excludes transport and resumes without bridging', () => {
+test('android replay transport fixture preserves route outside hiking metrics', () => {
   const { product } = buildFixtureProduct('transport_mode');
-  const rejectedRawPointIds = product.excluded.rejected.map((point) => point.rawPointId);
-  const recovery = product.track.find((point) => point.sourceRawPointId === 4);
+  const transport = product.track.find((point) => point.sourceRawPointId === 3);
   const transportScenario = product.scenarios.find((scenario) =>
     scenario.scenario === 'transport_contamination');
-  const gapBoundary = product.scenarios.find((scenario) =>
-    scenario.scenario === 'gap_recovery_boundary');
 
-  assert.deepEqual(rejectedRawPointIds, [3]);
-  assert.ok(product.excluded.rejected.every((point) => point.reason === 'transport_risk'));
-  assert.ok(recovery);
-  assert.equal(recovery.reason, 'gap_recovery');
-  assert.equal(recovery.countsDistance, false);
-  assert.equal(recovery.countsMovingTime, false);
+  assert.deepEqual(product.excluded.rejected, []);
+  assert.ok(transport);
+  assert.equal(transport.reason, 'transport_suspected_kept');
+  assert.equal(transport.entersTrustedGpx, true);
+  assert.equal(transport.countsDistance, false);
+  assert.equal(transport.countsMovingTime, false);
   assert.equal(product.stats.transportCount, 1);
-  assert.equal(product.stats.gapCount, 1);
+  assert.equal(product.stats.suspectedTransportSegmentCount, 1);
+  assert.ok(product.stats.suspectedTransportDistanceMeters > 0);
+  assert.ok(product.stats.suspectedTransportDurationSeconds > 0);
+  assert.ok(product.stats.suspectedTransportAverageSpeedMetersPerSecond > 0);
+  assert.equal(product.stats.gapCount, 0);
   assert.ok(transportScenario);
   assert.deepEqual(transportScenario.rawRange, { startRawPointId: 3, endRawPointId: 3 });
-  assert.deepEqual(transportScenario.evidence.rejectedRawPointIds, [3]);
+  assert.deepEqual(transportScenario.evidence.rejectedRawPointIds, []);
+  assert.deepEqual(transportScenario.evidence.keptRawPointIds, [3]);
+  assert.equal(transportScenario.evidence.routePreserved, true);
   assert.equal(transportScenario.evidence.countsDistance, false);
   assert.equal(transportScenario.evidence.countsMovingTime, false);
   assert.ok(transportScenario.evidence.suspectedDistanceMeters > 0);
-  assert.ok(gapBoundary);
-  assert.deepEqual(gapBoundary.rawRange, { startRawPointId: 4, endRawPointId: 4 });
+  assert.ok(transportScenario.evidence.suspectedDurationSeconds > 0);
+});
+
+test('android replay high-frequency transport stays continuous below the 20m step gate', () => {
+  const { product } = buildFixtureProduct('transport_high_frequency');
+  const transportPoints = product.track.filter((point) =>
+    point.reason === 'transport_suspected_kept');
+
+  assert.deepEqual(product.track.map((point) => point.sourceRawPointId), [1, 2, 3, 4]);
+  assert.equal(transportPoints.length, 3);
+  assert.ok(transportPoints.every((point) => point.entersTrustedGpx));
+  assert.ok(transportPoints.every((point) => !point.countsDistance));
+  assert.ok(transportPoints.every((point) => !point.countsMovingTime));
+  assert.equal(product.excluded.rejected.length, 0);
+  assert.equal(product.excluded.weak.length, 0);
+  assert.equal(product.stats.suspectedTransportSegmentCount, 1);
 });
 
 test('android replay slow recovery with motion keeps walking metrics', () => {

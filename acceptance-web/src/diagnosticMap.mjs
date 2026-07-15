@@ -1,6 +1,8 @@
-import { createNearestWindowLookup } from './timeWindowIndex.mjs';
-import { buildStreamingDiagnosticContextReport } from './streamingDiagnosticContextReport.mjs';
-import { exportStreamingSettlementStateContract } from './streamingSettlementState.mjs';
+import {
+  buildStreamingDiagnosticContextReport,
+  createNearestWindowLookup,
+  exportStreamingSettlementStateContract
+} from './track-cleaning/index.mjs';
 
 const TRUSTED_RESULTS = new Set(['anchor', 'accept']);
 const WEAK_RESULTS = new Set(['weak']);
@@ -210,6 +212,7 @@ export function buildTargetOutput(model, targetProduct = null) {
   const paceSecondsPerKm = totalDistanceMeters > 0 && movingTimeSeconds > 0
     ? movingTimeSeconds / (totalDistanceMeters / 1000)
     : null;
+  const suspectedTransport = buildSuspectedTransportSummary(model, targetProduct);
   const ascent = mergedAscentEvidence(model.events, targetProduct);
   const explainedRawPointIds = targetProduct
     ? explainedRawPointIdsFromTargetProduct(targetProduct)
@@ -242,6 +245,12 @@ export function buildTargetOutput(model, targetProduct = null) {
     totalDistanceMeters,
     movingTimeSeconds,
     paceSecondsPerKm,
+    suspectedTransportPointCount: suspectedTransport.pointCount,
+    suspectedTransportDistanceMeters: suspectedTransport.distanceMeters,
+    suspectedTransportDurationSeconds: suspectedTransport.durationSeconds,
+    suspectedTransportSegmentCount: suspectedTransport.segmentCount,
+    suspectedTransportAverageSpeedMetersPerSecond:
+      suspectedTransport.averageSpeedMetersPerSecond,
     selectedTotalAscentMeters: ascent.selectedTotalAscentMeters,
     selectedTotalDescentMeters: ascent.selectedTotalDescentMeters,
     selectedAscentSource: ascent.selectedAscentSource,
@@ -249,7 +258,8 @@ export function buildTargetOutput(model, targetProduct = null) {
       raw: rawSummary(model.points, targetProduct),
       decision: decisionSummary(model, targetProduct),
       pressure: pressureSummary(model, ascent),
-      motion: motionSummary(model)
+      motion: motionSummary(model),
+      suspectedTransport
     },
     scenarioSettlementPlan: targetProduct?.scenarioSettlementPlan || null,
     streamingSettlementState: targetProduct?.streamingSettlementState || null,
@@ -264,6 +274,31 @@ export function buildTargetOutput(model, targetProduct = null) {
     forwardSpineConflicts: targetProduct?.forwardSpineConflicts || [],
     forwardSpineDecisions: targetProduct?.forwardSpineDecisions || [],
     findings
+  };
+}
+
+function buildSuspectedTransportSummary(model, targetProduct) {
+  const stats = targetProduct?.stats || {};
+  const recorded = model?.evidence?.metrics?.transportMetrics || {};
+  const distanceMeters = numericField(stats, 'suspectedTransportDistanceMeters')
+    ?? numericField(stats, 'suspectedDistanceMeters')
+    ?? 0;
+  const durationSeconds = numericField(stats, 'suspectedTransportDurationSeconds') ?? 0;
+  const averageSpeedMetersPerSecond =
+    numericField(stats, 'suspectedTransportAverageSpeedMetersPerSecond')
+    ?? (distanceMeters > 0 && durationSeconds > 0
+      ? distanceMeters / durationSeconds
+      : null);
+  return {
+    pointCount: numericField(stats, 'suspectedTransportPointCount')
+      ?? numericField(stats, 'transportCount')
+      ?? numericField(recorded, 'decisionCount')
+      ?? 0,
+    segmentCount: numericField(stats, 'suspectedTransportSegmentCount') ?? 0,
+    distanceMeters,
+    durationSeconds,
+    averageSpeedMetersPerSecond,
+    diagnosticOnly: true
   };
 }
 

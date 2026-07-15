@@ -18,7 +18,7 @@ Rust Core 不需要额外中间层。它的任务很直接：
 当前主要翻译对象是：
 
 ```text
-acceptance-web/src/sixLayerTrackProduct.mjs
+acceptance-web/src/track-cleaning/sixLayerTrackProduct.mjs
 ```
 
 优先按函数和责任拆解，而不是按“规则文件”拆解：

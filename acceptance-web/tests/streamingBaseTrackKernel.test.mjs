@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildSixLayerTrackProduct } from '../src/sixLayerTrackProduct.mjs';
+import { buildSixLayerTrackProduct } from '../src/track-cleaning/sixLayerTrackProduct.mjs';
 import {
   advanceStreamingBaseTrackKernel,
   createStreamingBaseTrackKernelState
-} from '../src/streamingBaseTrackKernel.mjs';
+} from '../src/track-cleaning/streamingBaseTrackKernel.mjs';
 
 const CONFIG = { stationarySessionCollapseEnabled: false };
 
@@ -203,13 +203,18 @@ test('streaming base kernel preserves recovery transport continuity', () => {
   ]);
   assert.deepEqual(streamed.track.map((point) => point.entersTrustedGpx), [
     true,
-    false,
-    false
+    true,
+    true
   ]);
   assert.equal(streamed.excluded.weak[0].reason, 'gap_recovery_pending');
   assert.equal(streamed.stats.totalDistanceMeters, 0);
   assert.equal(streamed.stats.movingTimeSeconds, 0);
   assert.equal(streamed.stats.transportCount, 2);
+  assert.equal(streamed.stats.suspectedTransportPointCount, 2);
+  assert.equal(streamed.stats.suspectedTransportSegmentCount, 1);
+  assert.ok(streamed.stats.suspectedTransportDistanceMeters > 20);
+  assert.equal(streamed.stats.suspectedTransportDurationSeconds, 1);
+  assert.ok(streamed.stats.suspectedTransportAverageSpeedMetersPerSecond > 20);
 });
 
 test('streaming base kernel rejects out-of-order fix without moving the cursor backward', () => {
@@ -260,6 +265,16 @@ function baseProjection(productOrState) {
       segmentCount: productOrState.stats.segmentCount,
       gapCount: productOrState.stats.gapCount,
       transportCount: productOrState.stats.transportCount,
+      suspectedTransportPointCount:
+        productOrState.stats.suspectedTransportPointCount,
+      suspectedTransportSegmentCount:
+        productOrState.stats.suspectedTransportSegmentCount,
+      suspectedTransportDistanceMeters:
+        rounded(productOrState.stats.suspectedTransportDistanceMeters),
+      suspectedTransportDurationSeconds:
+        rounded(productOrState.stats.suspectedTransportDurationSeconds),
+      suspectedTransportAverageSpeedMetersPerSecond:
+        rounded(productOrState.stats.suspectedTransportAverageSpeedMetersPerSecond),
       totalDistanceMeters: rounded(productOrState.stats.totalDistanceMeters),
       movingTimeSeconds: rounded(productOrState.stats.movingTimeSeconds)
     }

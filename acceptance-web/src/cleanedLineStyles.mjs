@@ -4,7 +4,7 @@ import {
   enabledScenarioRepairIds,
   scenarioRepairLabel,
   scenarioRepairOption
-} from './scenarioRepairConfig.mjs';
+} from './track-cleaning/index.mjs';
 
 const DEFAULT_CLEANED_LINE_COLOR = '#ef4444';
 const DEFAULT_CLEANED_LINE_WIDTH = 4;

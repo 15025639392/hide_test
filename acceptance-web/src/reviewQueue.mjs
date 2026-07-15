@@ -1,4 +1,4 @@
-import { scenarioRepairOption } from './scenarioRepairConfig.mjs';
+import { scenarioRepairOption } from './track-cleaning/index.mjs';
 
 const SETTLED_REVIEW_SCENARIOS = new Set([
   'rest_photo_micro_move',

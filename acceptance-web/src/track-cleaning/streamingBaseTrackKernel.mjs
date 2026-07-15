@@ -241,16 +241,9 @@ function decideHorizontal(rawPoint, motion, state, config) {
     return decideGapRecovery(rawPoint, previous, motion, state, distance, config);
   }
 
-  if (isTransportRiskDistance(distance, impliedSpeed, reportedSpeed, config)) {
-    if (isTransportTrackReason(previous.reason)) {
-      return trustedDecision(rawPoint, 'accept', 'transport_suspected_kept', motion, {
-        boundaryState: 'transport_risk',
-        cloudType: 'TRANSPORT_RISK_CLOUD',
-        distanceDeltaMeters: distance,
-        movingTimeDeltaSeconds: Math.max(0, dtSeconds)
-      });
-    }
-    return diagnosticDecision(rawPoint, 'reject', 'transport_risk', motion, {
+  if (isTransportRiskDistance(distance, impliedSpeed, reportedSpeed, config,
+    stationaryThreshold(rawPoint, config))) {
+    return trustedDecision(rawPoint, 'accept', 'transport_suspected_kept', motion, {
       boundaryState: 'transport_risk',
       cloudType: 'TRANSPORT_RISK_CLOUD',
       distanceDeltaMeters: distance,
@@ -512,7 +505,7 @@ function settleDecision(decision) {
     && decision.reason !== 'stationary_drift_anchor'
     && !transport;
   return {
-    entersTrustedGpx: trusted && !transport,
+    entersTrustedGpx: trusted,
     countsDistance,
     countsMovingTime: countsDistance && decision.movingTimeDeltaSeconds > 0,
     countsAscentWindow: false
@@ -568,10 +561,15 @@ function finalizeStreamingStats(state) {
   state.stats.weakPointCount = state.excluded.weak.length;
   state.stats.rejectedPointCount = state.excluded.rejected.length;
   state.stats.intakeRejectedPointCount = state.excluded.intakeRejected.length;
-  state.stats.transportCount = state.excluded.rejected
-    .filter((point) => point.reason === 'transport_risk').length;
-  state.stats.transportCount += state.track
-    .filter((point) => isTransportTrackReason(point.reason)).length;
+  const transportSummary = suspectedTransportSummary(state);
+  state.stats.transportCount = transportSummary.pointCount;
+  state.stats.suspectedTransportPointCount = transportSummary.pointCount;
+  state.stats.suspectedDistanceMeters = transportSummary.distanceMeters;
+  state.stats.suspectedTransportDistanceMeters = transportSummary.distanceMeters;
+  state.stats.suspectedTransportDurationSeconds = transportSummary.durationSeconds;
+  state.stats.suspectedTransportSegmentCount = transportSummary.segmentCount;
+  state.stats.suspectedTransportAverageSpeedMetersPerSecond =
+    transportSummary.averageSpeedMetersPerSecond;
   state.stats.segmentCount = state.track.length === 0
     ? 0
     : new Set(state.track.map((point) => point.segmentId)).size;
@@ -737,12 +735,23 @@ function createStats(overrides = {}) {
   return {
     routeDistanceMeters: finiteNumber(overrides.routeDistanceMeters) ?? 0,
     totalDistanceMeters: finiteNumber(overrides.totalDistanceMeters) ?? 0,
+    suspectedDistanceMeters: finiteNumber(overrides.suspectedDistanceMeters) ?? 0,
+    suspectedTransportDistanceMeters:
+      finiteNumber(overrides.suspectedTransportDistanceMeters) ?? 0,
+    suspectedTransportDurationSeconds:
+      finiteNumber(overrides.suspectedTransportDurationSeconds) ?? 0,
+    suspectedTransportSegmentCount:
+      finiteNumber(overrides.suspectedTransportSegmentCount) ?? 0,
+    suspectedTransportAverageSpeedMetersPerSecond:
+      finiteNumber(overrides.suspectedTransportAverageSpeedMetersPerSecond),
     movingTimeSeconds: finiteNumber(overrides.movingTimeSeconds) ?? 0,
     recordStartElapsedRealtimeNanos: finiteNumber(overrides.recordStartElapsedRealtimeNanos),
     recordEndElapsedRealtimeNanos: finiteNumber(overrides.recordEndElapsedRealtimeNanos),
     segmentCount: finiteNumber(overrides.segmentCount) ?? 0,
     gapCount: finiteNumber(overrides.gapCount) ?? 0,
     transportCount: finiteNumber(overrides.transportCount) ?? 0,
+    suspectedTransportPointCount:
+      finiteNumber(overrides.suspectedTransportPointCount) ?? 0,
     rawPointCount: finiteNumber(overrides.rawPointCount) ?? 0,
     trustedPointCount: finiteNumber(overrides.trustedPointCount) ?? 0,
     weakPointCount: finiteNumber(overrides.weakPointCount) ?? 0,
@@ -768,10 +777,11 @@ function decideTransportRecovery(rawPoint, motion, state, config) {
   const dtSeconds = elapsedSeconds(reference.elapsedRealtimeNanos, rawPoint.elapsedRealtimeNanos);
   const impliedSpeed = dtSeconds > 0 ? distance / dtSeconds : Infinity;
   const reportedSpeed = Number.isFinite(rawPoint.speed) ? rawPoint.speed : null;
-  const stillTransport = isTransportRiskDistance(distance, impliedSpeed, reportedSpeed, config);
+  const stillTransport = isTransportRiskDistance(distance, impliedSpeed, reportedSpeed, config,
+    stationaryThreshold(rawPoint, config));
 
   if (stillTransport) {
-    return diagnosticDecision(rawPoint, 'reject', 'transport_risk', motion, {
+    return trustedDecision(rawPoint, 'accept', 'transport_suspected_kept', motion, {
       boundaryState: 'transport_risk',
       cloudType: 'TRANSPORT_RISK_CLOUD',
       distanceDeltaMeters: distance,
@@ -805,7 +815,8 @@ function isRecoveryTransportPoint(rawPoint, previousRawPoint, config) {
   const distance = distanceMeters(previousRawPoint.lat, previousRawPoint.lng,
     rawPoint.lat, rawPoint.lng);
   const reportedSpeed = Number.isFinite(rawPoint.speed) ? rawPoint.speed : null;
-  return isTransportRiskDistance(distance, distance / dtSeconds, reportedSpeed, config);
+  return isTransportRiskDistance(distance, distance / dtSeconds, reportedSpeed, config,
+    stationaryThreshold(rawPoint, config));
 }
 
 function isTransportTrackReason(reason) {
@@ -813,10 +824,54 @@ function isTransportTrackReason(reason) {
     || reason === 'transport_suspected_kept';
 }
 
-function isTransportRiskDistance(distance, impliedSpeed, reportedSpeed, config) {
-  if (distance < config.transportMinDistanceMeters) return false;
-  if (reportedSpeed !== null) return reportedSpeed >= config.transportSpeedMetersPerSecond;
-  return impliedSpeed >= config.transportSpeedMetersPerSecond;
+function isSuspectedTransportReason(reason) {
+  return reason === 'transport_risk'
+    || reason === 'transport_recovery_pending'
+    || isTransportTrackReason(reason);
+}
+
+function suspectedTransportSummary(state) {
+  const rejected = state.excluded.rejected
+    .filter((point) => point.reason === 'transport_risk');
+  const kept = state.track.filter((point) => isTransportTrackReason(point.reason));
+  const countedPoints = [...rejected, ...kept];
+  const distanceMeters = countedPoints.reduce((sum, point) =>
+    sum + Math.max(0, Number(point.distanceDeltaMeters) || 0), 0);
+  const durationSeconds = countedPoints.reduce((sum, point) =>
+    sum + Math.max(0, Number(point.movingTimeDeltaSeconds) || 0), 0);
+  return {
+    pointCount: countedPoints.length,
+    segmentCount: countSuspectedTransportSegments(state.rawPointDecisions),
+    distanceMeters,
+    durationSeconds,
+    averageSpeedMetersPerSecond: durationSeconds > 0
+      ? distanceMeters / durationSeconds
+      : null
+  };
+}
+
+function countSuspectedTransportSegments(rawPointDecisions) {
+  let segmentCount = 0;
+  let inTransportSegment = false;
+  const decisions = [...(rawPointDecisions || [])]
+    .sort((left, right) => left.rawPointId - right.rawPointId);
+  for (const decision of decisions) {
+    const suspectedTransport = isSuspectedTransportReason(decision.horizontalReason);
+    if (suspectedTransport && !inTransportSegment) segmentCount++;
+    inTransportSegment = suspectedTransport;
+  }
+  return segmentCount;
+}
+
+function isTransportRiskDistance(distance, impliedSpeed, reportedSpeed, config,
+  reportedSpeedMinDistance = config.stationaryDistanceMeters) {
+  if (reportedSpeed !== null) {
+    if (reportedSpeed < config.transportSpeedMetersPerSecond) return false;
+    return distance >= config.transportMinDistanceMeters
+      || distance >= reportedSpeedMinDistance;
+  }
+  return distance >= config.transportMinDistanceMeters
+    && impliedSpeed >= config.transportSpeedMetersPerSecond;
 }
 
 function isImpliedTransportUnconfirmedByReportedSpeed(distance, impliedSpeed, reportedSpeed,

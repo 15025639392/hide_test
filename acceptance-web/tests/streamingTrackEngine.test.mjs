@@ -5,7 +5,7 @@ import {
   advanceStreamingTrackEngine,
   createStreamingTrackEngineState,
   finishStreamingTrackEngine
-} from '../src/streamingTrackEngine.mjs';
+} from '../src/track-cleaning/streamingTrackEngine.mjs';
 
 const CONFIG = { stationarySessionCollapseEnabled: false };
 
@@ -625,7 +625,8 @@ test('streaming track engine feeds transport recognizer proposals into settlemen
   });
 
   assert.equal(state.lastAdvanceSummary.recognizer.proposalCount, 1);
-  assert.equal(state.baseKernel.excluded.rejected[0].reason, 'transport_risk');
+  assert.equal(state.baseKernel.track[1].reason, 'transport_suspected_kept');
+  assert.equal(state.baseKernel.track[1].entersTrustedGpx, true);
   assert.deepEqual(state.scenarioSettlementSession.settlementState
     .hardBoundaryCheckpoints.map((item) => ({
       scenario: item.scenario,
@@ -635,7 +636,7 @@ test('streaming track engine feeds transport recognizer proposals into settlemen
     {
       scenario: 'transport_contamination',
       range: range(2, 2),
-      affectedMetricGates: ['route', 'distance', 'moving_time', 'elevation']
+      affectedMetricGates: ['distance', 'moving_time', 'elevation']
     }
   ]);
   assert.deepEqual(state.scenarioSettlementSession.settlementState
@@ -654,12 +655,16 @@ test('streaming track engine feeds transport recognizer proposals into settlemen
     {
       sourceRawPointId: 1,
       reason: 'first_fix_good'
+    },
+    {
+      sourceRawPointId: 2,
+      reason: 'transport_suspected_kept'
     }
   ]);
   assert.equal(state.localRebuild.unsupportedScenarioCount, 0);
 });
 
-test('streaming track engine keeps recovery transport continuity out of hiking product', () => {
+test('streaming track engine keeps recovery transport route outside hiking metrics', () => {
   const state = advanceStreamingTrackEngine(createStreamingTrackEngineState({
     config: CONFIG
   }), {
@@ -685,14 +690,14 @@ test('streaming track engine keeps recovery transport continuity out of hiking p
     {
       sourceRawPointId: 3,
       reason: 'recovery_transport_suspected_kept',
-      entersTrustedGpx: false,
+      entersTrustedGpx: true,
       countsDistance: false,
       countsMovingTime: false
     },
     {
       sourceRawPointId: 4,
       reason: 'transport_suspected_kept',
-      entersTrustedGpx: false,
+      entersTrustedGpx: true,
       countsDistance: false,
       countsMovingTime: false
     }
@@ -700,6 +705,12 @@ test('streaming track engine keeps recovery transport continuity out of hiking p
   assert.equal(state.baseKernel.excluded.weak[0].rawPointId, 2);
   assert.equal(state.baseKernel.excluded.weak[0].reason, 'gap_recovery_pending');
   assert.equal(state.baseKernel.stats.transportCount, 2);
+  assert.equal(state.lastAdvanceSummary.suspectedTransport.pointCount, 2);
+  assert.equal(state.lastAdvanceSummary.suspectedTransport.segmentCount, 1);
+  assert.ok(state.lastAdvanceSummary.suspectedTransport.distanceMeters > 20);
+  assert.equal(state.lastAdvanceSummary.suspectedTransport.durationSeconds, 1);
+  assert.ok(state.lastAdvanceSummary.suspectedTransport.averageSpeedMetersPerSecond > 20);
+  assert.equal(state.lastAdvanceSummary.suspectedTransport.diagnosticOnly, true);
   assert.equal(state.baseKernel.stats.totalDistanceMeters, 0);
   assert.equal(state.baseKernel.stats.movingTimeSeconds, 0);
   assert.ok(state.baseKernel.track.find((point) =>
@@ -741,12 +752,12 @@ test('streaming track engine keeps recovery transport continuity out of hiking p
     {
       scenario: 'transport_contamination',
       range: range(3, 3),
-      affectedMetricGates: ['route', 'distance', 'moving_time', 'elevation']
+      affectedMetricGates: ['distance', 'moving_time', 'elevation']
     },
     {
       scenario: 'transport_contamination',
       range: range(4, 4),
-      affectedMetricGates: ['route', 'distance', 'moving_time', 'elevation']
+      affectedMetricGates: ['distance', 'moving_time', 'elevation']
     }
   ]);
   assert.deepEqual(state.scenarioSettlementSession.settlementState
@@ -766,6 +777,14 @@ test('streaming track engine keeps recovery transport continuity out of hiking p
     {
       sourceRawPointId: 1,
       reason: 'first_fix_good'
+    },
+    {
+      sourceRawPointId: 3,
+      reason: 'recovery_transport_suspected_kept'
+    },
+    {
+      sourceRawPointId: 4,
+      reason: 'transport_suspected_kept'
     }
   ]);
   assert.equal(state.localRebuild.stats.totalDistanceMeters, 0);

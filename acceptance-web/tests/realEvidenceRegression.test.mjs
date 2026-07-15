@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 
 import { buildTargetOutput, parseEvidenceJsonl } from '../src/diagnosticMap.mjs';
-import { buildSixLayerTrackProduct } from '../src/sixLayerTrackProduct.mjs';
+import { buildSixLayerTrackProduct } from '../src/track-cleaning/sixLayerTrackProduct.mjs';
 
 const SESSION_5CC_PATH = firstExistingPath([
   '/Users/ldy/Desktop/gps_data/gnss_evidence_5ccf3a9f-1d85-4c2b-8b24-61839d459845.jsonl',
   '/Users/ldy/Desktop/device_fix_track_evidence_20260523_210422/track_sessions/5ccf3a9f-1d85-4c2b-8b24-61839d459845/evidence.jsonl'
 ]);
 const SESSION_0DD_PATH = '/Users/ldy/Desktop/device_fix_track_evidence_20260523_210422/track_sessions/0ddf2d35-02e2-454c-9057-667265fe8a71/evidence.jsonl';
+const WATCH_TRANSPORT_PATH = '/Users/ldy/Desktop/数据/outdoor_track_evidence_v1(3).jsonl';
 
 const modelCache = new Map();
 const productCache = new Map();
@@ -51,6 +52,30 @@ function scenarioByName(product, name, startRawPointId, endRawPointId) {
       && scenario.rawRange?.startRawPointId <= endRawPointId
       && scenario.rawRange?.endRawPointId >= startRawPointId);
 }
+
+test('watch evidence keeps Raw 661-688 vehicle movement in the route', (t) => {
+  if (!existsSync(WATCH_TRANSPORT_PATH)) {
+    t.skip('watch transport evidence is not available on this machine');
+    return;
+  }
+
+  const product = buildProductFromEvidence(WATCH_TRANSPORT_PATH);
+  const decisions = product.rawPointDecisions.filter((decision) =>
+    decision.rawPointId >= 661 && decision.rawPointId <= 688);
+  const trackRawPointIds = product.track
+    .filter((point) => point.sourceRawPointId >= 661 && point.sourceRawPointId <= 688)
+    .map((point) => point.sourceRawPointId);
+
+  assert.equal(decisions.length, 28);
+  assert.ok(decisions.every((decision) =>
+    decision.horizontalResult === 'accept'
+      && decision.horizontalReason === 'transport_suspected_kept'
+      && decision.entersTrustedGpx
+      && !decision.countsDistance
+      && !decision.countsMovingTime));
+  assert.deepEqual(trackRawPointIds, Array.from({ length: 28 }, (_, index) => index + 661));
+  assert.equal(new Set(decisions.map((decision) => decision.segmentId)).size, 1);
+});
 
 test('real evidence session 5cc key dense rest ranges stay collapsed', (t) => {
   if (!existsSync(SESSION_5CC_PATH)) {

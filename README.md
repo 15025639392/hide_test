@@ -170,14 +170,15 @@ RecordingForegroundService
 
 | 目的 | 文件 |
 | --- | --- |
-| proposal 重叠仲裁和 commit plan | `acceptance-web/src/scenarioWindowCoordinator.mjs` |
-| commit plan 到可持久化 cursor 状态 | `acceptance-web/src/streamingSettlementState.mjs` |
-| 多批次实时封段 session | `acceptance-web/src/streamingScenarioSettlementSession.mjs` |
-| 平台中立 JSONL 分片 intake | `acceptance-web/src/streamingEvidenceIntake.mjs` |
-| 流式基础安全内核 v0 | `acceptance-web/src/streamingBaseTrackKernel.mjs` |
-| 流式指标累计 v0 | `acceptance-web/src/streamingMetricAccumulator.mjs` |
-| 流式情景识别 proposal v0 | `acceptance-web/src/streamingScenarioRecognizer.mjs` |
-| 流式轨迹引擎串联 v0 | `acceptance-web/src/streamingTrackEngine.mjs` |
+| Web 轨迹清洗算法统一入口 | `acceptance-web/src/track-cleaning/index.mjs` |
+| proposal 重叠仲裁和 commit plan | `acceptance-web/src/track-cleaning/scenarioWindowCoordinator.mjs` |
+| commit plan 到可持久化 cursor 状态 | `acceptance-web/src/track-cleaning/streamingSettlementState.mjs` |
+| 多批次实时封段 session | `acceptance-web/src/track-cleaning/streamingScenarioSettlementSession.mjs` |
+| 平台中立 JSONL 分片 intake | `acceptance-web/src/track-cleaning/streamingEvidenceIntake.mjs` |
+| 流式基础安全内核 v0 | `acceptance-web/src/track-cleaning/streamingBaseTrackKernel.mjs` |
+| 流式指标累计 v0 | `acceptance-web/src/track-cleaning/streamingMetricAccumulator.mjs` |
+| 流式情景识别 proposal v0 | `acceptance-web/src/track-cleaning/streamingScenarioRecognizer.mjs` |
+| 流式轨迹引擎串联 v0 | `acceptance-web/src/track-cleaning/streamingTrackEngine.mjs` |
 | review queue JSON 导出 | `acceptance-web/scripts/export-review-queue.mjs` |
 | review queue Markdown 对齐报告 | `acceptance-web/scripts/report-review-queue.mjs` |
 | review queue AI 发包 | `acceptance-web/scripts/package-review-queue.mjs` |
