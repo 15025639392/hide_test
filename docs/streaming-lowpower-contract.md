@@ -88,9 +88,26 @@
 - [x] **SNAP(缺口二)** weak_recovery pre-gap 锚快照进 recognizer 状态(`carriedTrustedTrackPoints`,bounded ring N=128),使其回看有界、扫描可 bound;margin 因此收到 64。
 - 实测(gnss 38857 行 fixture 前 8000 行):总耗时 **378s → 4.8s(~79x)**,per-chunk slope **497x → 2.1x**(O(n²)→O(n),每 advance 工作量恒定),峰值 heap 310MB → 104MB。
 
+已实现并验证(续,commit e9a22f1 / 29238fd / fac8987 / a29c19b):
+
+- [x] **L3 存储裁剪**:baseKernel.track/decisions/excluded 裁到 `[cursor-128, head]`(gnss 8000 行 track 396→134)。
+- [x] **增量 stats**:localRebuild 指标随点累加,去掉每 advance 全量 reduce。
+- [x] **device 记录器模式(DEVICE_FLUSH)**:committedTrack flush 即弃 + intake.events 处理即弃 + 4 个去重键有界窗(N=1024)+ 超窗计数。三大内存主项(events/track/输出)在游标正常推进段与长度解耦。
+
+## 8. C 类深挖发现 —— 冲突死锁会丢数据(pre-existing 正确性 bug)
+
+追查"完整轨迹某段游标 stall"时,定位到根因**不是**超长场景,而是**冲突死锁**:
+
+- 两个重叠 `moving_spike_cleanup` 提案(如 `417-422-425` vs `390-417-422`)在同一指标 gate 上 `conservative_fallback`,**已选定 activeProposalId 却按住不提交**,committedCursor 冻结(gnss fixture 卡在 raw 416),直到 finish。
+- **验证是引擎原始行为**(关闭 recognizer 窗口化同样复现),与本次性能改造无关。
+- **更严重的是**:streaming 引擎**在 finish 时也没解开、直接丢弃该段**——批处理 `buildSixLayerTrackProduct`(算法 ground truth)对同一 fixture 提交了完整 1..598(含 417 accept),streaming 只提交到 ~416。**即冲突死锁导致 streaming 丢输出数据**,device 录制长轨迹会丢失此类冲突附近的区段。
+- 试过"超时强制提交 activeProposalId":能解死锁、找回该段(357 点),但**既不等于批处理 330、也不等于 finish 326**,无法对齐任何 ground truth → 未验证正确,已撤销(不 ship 未验证的输出改动)。
+
+**正确修法(待办,需独立排查)**:修 streaming settlement 的冲突解析,让 moving_spike-vs-moving_spike 的 `conservative_fallback` **像批处理那样解出并提交 active**,而非按住到 finish 再丢。以批处理输出为 oracle 逐点对齐验证。这是正确性 bug,优先级高于纯内存优化。
+
 待办:
 
-- [ ] **L3 存储裁剪 + L4 输出 flush**:兑现常驻内存有界(当前仅*扫描/回看*有界,baseKernel 仍存全量 track/events/decisions)。这是"低功耗"从"计算有界"走到"内存也有界"的最后一段。
+- [ ] **修 C 类冲突死锁丢数据 bug**(§8)——对齐批处理的冲突解析,以批处理为 oracle。
+- [ ] **L4 输出 flush 已做**;剩 intake.events 的诊断回放旁路(落盘 sink)。
 - [ ] 验证上下文型(#15–18)的独立有界窗方案(§3 注)。
-- [ ] 定 #9/#11 防御 cap 的具体数值 + C 类 forced-settlement,防病态永不闭窗撑大未提交区(margin 有界依赖游标正常推进)。
 - [ ] 迟到/乱序容忍窗口定义:裁剪后迟到到已释放窗口的点如何处理,及其对旧"全量保留"行为的输出差异是否接受。
