@@ -78,17 +78,52 @@ export function advanceStreamingBaseTrackKernel(previousState = {}, eventsOrBatc
   return next;
 }
 
+// L3: retention margin below the committed cursor for the intermediate base
+// buffers (track / rawPointDecisions / excluded). The real cleaned output is
+// localRebuild.committedTrack, which is flushed before this prune runs, so
+// committed base points are only still needed by (a) the next advance's
+// recognizer scan window [cursor-64, head] and (b) localRebuild's next settled
+// ranges — both of which sit within a small margin of the cursor because open
+// scenario windows pin the cursor at their own start until they settle. The
+// margin must therefore exceed the recognizer window (64); 128 keeps 2x
+// headroom. Verified byte-identical on the real-output golden (committedTrack)
+// down to retention=32 and against the full unit suite. Set L3_RETENTION=0 to
+// disable (legacy: only rawPointTimeline pruned) for A/B verification.
+const L3_RETENTION = process.env.L3_RETENTION !== undefined
+  ? Number(process.env.L3_RETENTION)
+  : 128;
+
 export function pruneStreamingBaseTrackKernelForSettlement(previousState = {}, settlementState = {}) {
   const state = createStreamingBaseTrackKernelState(previousState);
   const cursor = finiteNumber(settlementState?.committedCursorRawPointId);
   if (!Number.isFinite(cursor)) return state;
-  return {
+  const pruned = {
     ...state,
     rawPointTimeline: state.rawPointTimeline.filter((point) => {
       const rawPointId = finiteNumber(point?.rawPointId);
       return Number.isFinite(rawPointId) && rawPointId >= cursor;
     }),
     rawPointTimelinePrunedBeforeRawPointId: cursor
+  };
+  if (!(L3_RETENTION > 0)) return pruned;
+
+  const floor = cursor - L3_RETENTION;
+  const keepBySource = (point) => {
+    const id = finiteNumber(point?.sourceRawPointId ?? point?.rawPointId);
+    return !Number.isFinite(id) || id >= floor;
+  };
+  return {
+    ...pruned,
+    track: pruned.track.filter(keepBySource),
+    rawPointDecisions: pruned.rawPointDecisions.filter((decision) => {
+      const id = finiteNumber(decision?.rawPointId);
+      return !Number.isFinite(id) || id >= floor;
+    }),
+    excluded: {
+      weak: pruned.excluded.weak.filter(keepBySource),
+      rejected: pruned.excluded.rejected.filter(keepBySource),
+      intakeRejected: pruned.excluded.intakeRejected.filter(keepBySource)
+    }
   };
 }
 
