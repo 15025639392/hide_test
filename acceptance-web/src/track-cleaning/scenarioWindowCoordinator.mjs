@@ -564,13 +564,19 @@ function baseMetricOwnershipRange(range) {
 }
 
 function computeCommitWatermark(options, conflicts) {
-  const openWindowStarts = (options.openWindows || [])
+  // finish（数据流终结，无后续 advance）：不再有 lookahead 能改变任何已闭合的
+  // conservative_fallback 冲突或未闭合的 open window，让它们继续钉住水位线只会在
+  // finish 时把冲突点之后的整条尾巴丢弃。此时强制结算——blocker 已是 active、被挡
+  // 提案已被 reject——水位线安全推进到 currentRawPointId。非 finish 仍保持阻塞语义
+  // 以维护“已提交不回改”不变量（见 tests: rejects unresolved partial ...）。
+  const finish = options.finish === true;
+  const openWindowStarts = finish ? [] : (options.openWindows || [])
     .filter((window) => window?.metricOwner !== false)
     .map((window) => normalizeRange(window.influenceRange || window.rawRange))
     .filter(Boolean)
     .map((range) => range.startRawPointId);
 
-  const unresolvedConflictStarts = (conflicts || [])
+  const unresolvedConflictStarts = finish ? [] : (conflicts || [])
     .filter((conflict) => conflict.resolution === 'conservative_fallback')
     .map((conflict) => normalizeRange(conflict.range))
     .filter(Boolean)
@@ -598,6 +604,8 @@ function unresolvedMetricOwnerCount(options) {
 }
 
 function commitBlockingRanges(conflicts, options) {
+  // finish：与 computeCommitWatermark 对齐——强制结算，不再产出阻塞区间（见该函数注释）。
+  if (options.finish === true) return [];
   const openWindowRanges = (options.openWindows || [])
     .flatMap((window, index) => {
       if (window?.metricOwner === false) return [];

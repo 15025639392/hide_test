@@ -47,7 +47,9 @@ export function advanceStreamingScenarioSettlementSession(previousSession = {}, 
     currentRawPointId,
     lookaheadRawPoints,
     openWindows,
-    committedCursorRawPointId: session.settlementState.committedCursorRawPointId
+    committedCursorRawPointId: session.settlementState.committedCursorRawPointId,
+    // finish 时协调器强制结算被冻结的冲突/未闭合窗口，避免尾巴被丢弃。
+    finish: input.finish === true
   });
   const settlementState = applyCommitPlanToStreamingState(
     session.settlementState,

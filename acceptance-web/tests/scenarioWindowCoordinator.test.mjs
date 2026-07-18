@@ -269,6 +269,36 @@ test('coordinateScenarioProposals rejects unresolved partial metric-owner confli
   assert.equal(plan.commitWatermark, 20);
 });
 
+test('coordinateScenarioProposals force-settles blocked conflicts on finish', () => {
+  // 数据流终结（finish=true）后不会再有 lookahead 改变已闭合的 conservative_fallback
+  // 冲突，若仍让它钉住 watermark 会把冲突点之后的整条尾巴丢弃（真实文件里表现为流式
+  // 只提交前半段）。finish 时强制结算：blocker 保持 active、被挡提案保持 rejected，
+  // watermark 推进到 currentRawPointId，尾巴不再丢。
+  const base = [
+    proposal('rest-1', 'rest_photo_micro_move', 10, 30),
+    proposal('route-1', 'round_trip_line', 20, 45)
+  ];
+
+  const blocked = coordinateScenarioProposals(base, {
+    currentRawPointId: 80,
+    lookaheadRawPoints: 10
+  });
+  assert.equal(blocked.commitPlan.status, 'blocked_at_watermark');
+
+  const settled = coordinateScenarioProposals(base, {
+    currentRawPointId: 80,
+    lookaheadRawPoints: 0,
+    finish: true
+  });
+  // 冲突仍被记录（诊断可见），但不再产出阻塞区间、也不再拉回 watermark。
+  assert.equal(settled.conflicts[0].relation, 'partial');
+  assert.deepEqual(settled.activeProposals.map((item) => item.id), ['rest-1']);
+  assert.deepEqual(settled.rejectedProposals.map((item) => item.id), ['route-1']);
+  assert.equal(settled.commitPlan.status, 'committable');
+  assert.deepEqual(settled.commitPlan.blockingRanges, []);
+  assert.equal(settled.commitPlan.endRawPointId, 80);
+});
+
 test('coordinateScenarioProposals still blocks overlaps on the same metric gate', () => {
   const plan = coordinateScenarioProposals([
     proposal('rest-1', 'rest_photo_micro_move', 10, 30, {

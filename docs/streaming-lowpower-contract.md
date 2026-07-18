@@ -110,7 +110,24 @@
 待办:
 
 - [x] **修 C 类冲突死锁丢数据 bug**(§8)——已在协调器复刻批处理去重叠,以批处理为 oracle 验证局部同构。
+- [x] **修 C 类第二例:跨类型 partial 冲突 finish 时冻结丢尾巴**(§9)——finish 强制结算,5ccf 长文件流式 792→2459 点对齐批 2411,新增回归测试。
 - [ ] **对齐流式 rest_photo_micro_move/dense_area_intent 的折叠到批处理**(§8 残差)——独立的输出稀密差异 bug,需各自以批处理为 oracle 排查(gnss[:4200] 417–522 区段:批 2 点 vs 流 19 点;outdoor 全程亦有同类差异)。
 - [ ] **L4 输出 flush 已做**;剩 intake.events 的诊断回放旁路(落盘 sink)。
 - [ ] 验证上下文型(#15–18)的独立有界窗方案(§3 注)。
 - [ ] 迟到/乱序容忍窗口定义:裁剪后迟到到已释放窗口的点如何处理,及其对旧"全量保留"行为的输出差异是否接受。
+
+## 9. C 类第二例 —— 跨类型 partial 冲突在 finish 时仍冻结丢尾巴(pre-existing)
+
+用真实长文件 `gnss_evidence_5ccf…`(38857 事件)对比批流,发现流式只提交 **792 点 / 2777m**,批处理 **2411 点 / 8517m**——流式丢了后半段。逐层定位:
+
+- 死锁点:`lastCommitPlanStatus: blocked_at_watermark`、`lastCommitWatermark: 1578`,阻塞源是**跨类型** partial 冲突 `moving-spike:1578-1585-1586 × rest-photo:1558-1578`(仅 sampleId 1578 单点重叠)。§8 的 `deoverlapMovingSpikeProposals` 只解 moving_spike **同类**重叠,跨类型的这条没覆盖。
+- **关键架构差异**:批处理里 moving_spike/rest_photo 的清洗在**标记阶段**(`sixLayerTrackProduct` L416/L430)就地改 `product.track`,而 `scenarioSettlementPlan`/协调器是**事后独立诊断层、不驱动 track**;所以批处理即便产出同样 21 个冲突,`commitPlan.status` 仍是 `committable`(那些冲突被一个跨度 `gap_recovery_boundary:53-3858` 硬边界吸收成 `blocked_by_hard_boundary`,非 `conservative_fallback`,不阻塞)。**流式相反**:`localRebuild` 靠 settlement 的 active 提案构建 committedTrack,settlement 卡住=输出卡住。两者是"标记阶段顺序叠加清洗" vs "互斥 metric ownership 仲裁"的根本不同。
+- 设计上 `conservative_fallback` 阻塞是**有意的**(真歧义就等 lookahead,保"已提交不回改";见 `tests: rejects unresolved partial metric-owner conflicts`)。真正的 bug 是:**数据流终结(finish)后仍无限阻塞并丢弃冲突点之后的尾巴**——此时两提案都终态、不会再有 lookahead 改变它们。
+
+**已修复(finish 强制结算,3 文件手术式改动)**:把 `finish` 信号从引擎 `advanceScenarioSettlement` → 结算会话 → 协调器透传;协调器 `computeCommitWatermark`/`commitBlockingRanges` 在 `finish===true` 时不再让 `conservative_fallback` 冲突与未闭合 open window 钉住水位线(blocker 已 active、被挡提案已 reject,决策已定,watermark 安全推进到 `currentRawPointId`)。非 finish 路径完全不变(现有阻塞语义/测试不受影响)。
+
+以**批处理为 oracle** 验证:5ccf 流式 792→**2459 点 / 8667m**(批 2411 / 8517,丢失点 1635→14);gnss[:4200] 357→358(批 330,原本就未死锁,几乎无影响)。`npm test` 236 pass / 1 pre-existing fail(rust fixture,无关),新增 `force-settles blocked conflicts on finish` 回归测试锁定行为。
+
+**残差(2459 vs 2411 ≈ +2%):同 §8 残差同类**——流式 committedTrack 本就不逐点等于批处理(scenario 折叠/composition 差异),属下面独立待办,与本死锁无关。
+
+**已知未解(pre-existing,非本 fix 引入)**:`golden.mjs chunkinvariance` 显示流式最终输出**随 chunk 大小变化**(gnss[:4200] chunked 358 vs 单发 335)——根因是 RDP 简约的非前方单调性 + 有界识别窗在不同 chunk 边界看到的上下文不同(契约 §3 注已记)。修改前后同样不稳定(已 stash 对照确认),本 fix 未使其变差。web 端 `buildStreamingTrackProduct` 走单发路径(335,最接近批 330),不受此影响。

@@ -213,7 +213,9 @@ function advanceScenarioSettlement(previousSession, baseKernel, input, recognize
   const settlementInput = {
     firstRawPointId,
     currentRawPointId,
-    lookaheadRawPoints: finiteNumber(input.lookaheadRawPoints) ?? 0
+    lookaheadRawPoints: finiteNumber(input.lookaheadRawPoints) ?? 0,
+    // 透传 finish：让结算会话/协调器在数据流终结时强制结算冻结的冲突。
+    finish: input.finish === true
   };
   const openWindows = mergeArrays(input.openWindows, recognizer.openWindows);
   if (openWindows.length > 0
