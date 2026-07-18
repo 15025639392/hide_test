@@ -156,4 +156,4 @@
 待办:
 
 - [x] **修 `stationary_session_collapse` 缺失**(§10)——device 增量塌缩,`gnss_7da81318` 对齐批处理 1 点 / 0m。
-- [ ] **补 `stationary_dual_cluster_gnss_drift`**(§10,`outdoor_v1`,bbox 96m>80m 会话门)——双簇多径漂移塌缩,需双簇几何(两中心 30-150m)+ 簇间高速遷移检测 + `motionWindows`,依赖 device 模式已 flush 的 raw 点数据,是更重的独立场景。
+- [~] **`stationary_dual_cluster_gnss_drift` —— 流式有意暂不处理(2026-07-19 决定)**。城市高楼多径导致 GPS 在两个相距 30-150m 的簇之间反复横跳,被当成真实往返记出假距离(`outdoor_v1` 55m)。批处理认定需双簇几何(两中心 30-150m)+ 簇间高速迁移检测(≥6 次、≥25% 达 ≥12 m/s)+ `motionWindows`,依赖 device 模式已 flush 的逐 raw 点数据,和"有界内存"有张力,是更重的独立场景。属**城市多径边缘场景**(纯山野徒步少见)——若 app 覆盖城市/峡谷记录场景再补。已修的 `stationary_session_collapse`(§10)覆盖单簇长时间静止(扎营/长休),不受此影响。

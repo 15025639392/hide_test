@@ -1049,6 +1049,10 @@ function stationaryDriftProposal(candidate) {
 // 等),而非 rejected 漂移点。比批处理"仅整轨"更通用:嵌入式扎营(轨迹中段长时间静止)也覆盖。
 // 门判据对齐批处理 isStationarySession(见 sixLayerTrackProduct.stationarySession*):最小 raw
 // 点数(用 cloudSampleCount 还原)、最短时长、最大 bbox/净距离、最大平均上报速度、最大路径速率。
+// 注:批处理另有 stationary_dual_cluster_gnss_drift(城市高楼多径,GPS 在两个相距 30-150m
+// 的簇间反复横跳,被当成真实往返记出假距离)。流式**有意暂不实现**(2026-07-19 决定,见契约
+// §10):它需双簇几何 + 簇间高速迁移检测 + motionWindows,依赖 device 模式已 flush 的逐 raw
+// 点数据,和有界内存有张力,属城市多径边缘场景。下面的 session_collapse 只覆盖单簇长时间静止。
 function stationarySessionCandidates(track, lastProcessedRawPointId, config, finish = false) {
   if (!config.stationarySessionCollapseEnabled) return [];
   return stationarySessionGroups(track, config)
