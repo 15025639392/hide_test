@@ -36,6 +36,7 @@ export function createStreamingBaseTrackKernelState(overrides = {}) {
     stationaryCloud: cloneObject(overrides.stationaryCloud),
     lastLegalElapsedRealtimeNanos: finiteNumber(overrides.lastLegalElapsedRealtimeNanos),
     legalFixKeys: cloneArray(overrides.legalFixKeys),
+    legalFixKeysEvicted: finiteNumber(overrides.legalFixKeysEvicted) ?? 0,
     rawPointTimelinePrunedBeforeRawPointId:
       finiteNumber(overrides.rawPointTimelinePrunedBeforeRawPointId),
     lastProcessedRawPointId: finiteNumber(overrides.lastProcessedRawPointId)
@@ -93,12 +94,25 @@ const L3_RETENTION = process.env.L3_RETENTION !== undefined
   ? Number(process.env.L3_RETENTION)
   : 128;
 
+// Bounded dedup window for legalFixKeys (device mode) — see streamingTrackEngine.
+const DEVICE_FLUSH = process.env.DEVICE_FLUSH === '1'
+  || process.env.DEVICE_FLUSH === 'true';
+const DEVICE_DEDUP_WINDOW = Number(process.env.DEVICE_DEDUP_WINDOW) || 1024;
+
 export function pruneStreamingBaseTrackKernelForSettlement(previousState = {}, settlementState = {}) {
   const state = createStreamingBaseTrackKernelState(previousState);
   const cursor = finiteNumber(settlementState?.committedCursorRawPointId);
   if (!Number.isFinite(cursor)) return state;
+  const boundedFixKeys = DEVICE_FLUSH && state.legalFixKeys.length > DEVICE_DEDUP_WINDOW
+    ? {
+      keys: state.legalFixKeys.slice(-DEVICE_DEDUP_WINDOW),
+      evicted: state.legalFixKeys.length - DEVICE_DEDUP_WINDOW
+    }
+    : { keys: state.legalFixKeys, evicted: 0 };
   const pruned = {
     ...state,
+    legalFixKeys: boundedFixKeys.keys,
+    legalFixKeysEvicted: (finiteNumber(state.legalFixKeysEvicted) ?? 0) + boundedFixKeys.evicted,
     rawPointTimeline: state.rawPointTimeline.filter((point) => {
       const rawPointId = finiteNumber(point?.rawPointId);
       return Number.isFinite(rawPointId) && rawPointId >= cursor;

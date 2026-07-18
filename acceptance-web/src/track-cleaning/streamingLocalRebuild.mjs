@@ -10,6 +10,7 @@ const EARTH_RADIUS_METERS = 6_371_000;
 // everything, tests/replay unchanged). Set DEVICE_FLUSH=1 to enable.
 const DEVICE_FLUSH = process.env.DEVICE_FLUSH === '1'
   || process.env.DEVICE_FLUSH === 'true';
+const DEVICE_DEDUP_WINDOW = Number(process.env.DEVICE_DEDUP_WINDOW) || 1024;
 
 export const STREAMING_LOCAL_REBUILD_VERSION = 'streaming-local-rebuild-v0';
 
@@ -20,6 +21,7 @@ export function createStreamingLocalRebuildState(overrides = {}) {
     emittedRawPointIds: cloneArray(overrides.emittedRawPointIds)
       .map((value) => finiteNumber(value))
       .filter(Number.isFinite),
+    emittedRawPointIdsEvicted: finiteNumber(overrides.emittedRawPointIdsEvicted) ?? 0,
     trackPointId: finiteNumber(overrides.trackPointId) ?? 0,
     lastAppliedProductTrackPoints: cloneArray(overrides.lastAppliedProductTrackPoints),
     lastAppliedOwnershipRangeCount:
@@ -69,6 +71,11 @@ export function applyStreamingLocalRebuild(
 
   next.lastAppliedOwnershipRangeCount =
     scenarioSettlementSession.settlementState?.lastAppliedMetricOwnershipRanges?.length || 0;
+  if (DEVICE_FLUSH && next.emittedRawPointIds.length > DEVICE_DEDUP_WINDOW) {
+    next.emittedRawPointIdsEvicted = (finiteNumber(next.emittedRawPointIdsEvicted) ?? 0)
+      + (next.emittedRawPointIds.length - DEVICE_DEDUP_WINDOW);
+    next.emittedRawPointIds = next.emittedRawPointIds.slice(-DEVICE_DEDUP_WINDOW);
+  }
   return next;
 }
 

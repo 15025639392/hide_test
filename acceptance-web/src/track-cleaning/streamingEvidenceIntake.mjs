@@ -5,6 +5,7 @@ export function createStreamingEvidenceIntakeState(overrides = {}) {
     pendingText: typeof overrides.pendingText === 'string' ? overrides.pendingText : '',
     lastEventSeqBySession: cloneObject(overrides.lastEventSeqBySession) || {},
     seenEventKeys: cloneArray(overrides.seenEventKeys),
+    seenEventKeysEvicted: finiteNumber(overrides.seenEventKeysEvicted) ?? 0,
     duplicateEventCount: finiteNumber(overrides.duplicateEventCount) ?? 0,
     outOfOrderEventCount: finiteNumber(overrides.outOfOrderEventCount) ?? 0,
     finished: overrides.finished === true,

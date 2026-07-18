@@ -43,6 +43,19 @@ export const STREAMING_TRACK_ENGINE_VERSION = 'streaming-track-engine-v0';
 // single chunk instead of the whole recording. Default OFF. DEVICE_FLUSH=1 on.
 const DEVICE_FLUSH = process.env.DEVICE_FLUSH === '1'
   || process.env.DEVICE_FLUSH === 'true';
+// Bounded dedup window (device mode): keep only the most recent N dedup keys
+// instead of the whole-recording history. N covers >=512 events of reordering
+// headroom; real-time sensor duplicates/reorders are seconds-scale, far inside
+// it. Keys evicted below the window are counted (seenEventKeysEvicted) so any
+// reliance beyond the window is observable (expected ~0 on real streams).
+const DEVICE_DEDUP_WINDOW = Number(process.env.DEVICE_DEDUP_WINDOW) || 1024;
+
+function boundDedupKeys(keys) {
+  if (!DEVICE_FLUSH || keys.length <= DEVICE_DEDUP_WINDOW) {
+    return { kept: keys, evicted: 0 };
+  }
+  return { kept: keys.slice(-DEVICE_DEDUP_WINDOW), evicted: keys.length - DEVICE_DEDUP_WINDOW };
+}
 
 export function createStreamingTrackEngineState(overrides = {}) {
   return {
@@ -115,8 +128,15 @@ export function advanceStreamingTrackEngine(previousState = {}, input = {}) {
   // Device mode: drop the just-processed events so intake memory stays bounded
   // (dedup/seq state inside evidenceIntake is preserved). Next advance starts
   // its slice from 0 since the retained events array is now empty.
+  const boundedSeen = boundDedupKeys(evidenceIntake.seenEventKeys || []);
   const outEvidenceIntake = DEVICE_FLUSH
-    ? { ...evidenceIntake, events: [] }
+    ? {
+      ...evidenceIntake,
+      events: [],
+      seenEventKeys: boundedSeen.kept,
+      seenEventKeysEvicted:
+        (finiteNumber(evidenceIntake.seenEventKeysEvicted) ?? 0) + boundedSeen.evicted
+    }
     : evidenceIntake;
 
   return {

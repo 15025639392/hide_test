@@ -16,6 +16,7 @@ export function createStreamingScenarioRecognizerState(overrides = {}) {
     openWindows: cloneArray(overrides.openWindows),
     lastInputTrackPointId: finiteNumber(overrides.lastInputTrackPointId),
     lastProposalCount: finiteNumber(overrides.lastProposalCount) ?? 0,
+    emittedProposalIdsEvicted: finiteNumber(overrides.emittedProposalIdsEvicted) ?? 0,
     // SNAP (缺口二): a bounded ring of the most-recent trusted track points,
     // carried across advances. weak_recovery needs the "last trusted point
     // before a gap" as its anchor; that anchor can sit arbitrarily far below
@@ -74,6 +75,11 @@ function takeCarriedTrustedTrackPoints(anchorTrack) {
 // with SNAP active, and against the full unit suite. 64 keeps ~64x headroom.
 // Set RECOGNIZER_WINDOW=0 to disable (full-track scan) for A/B verification.
 const DEFAULT_RECOGNIZER_WINDOW = 64;
+
+// Bounded dedup window for emittedProposalIds (device mode) — see streamingTrackEngine.
+const DEVICE_FLUSH = process.env.DEVICE_FLUSH === '1'
+  || process.env.DEVICE_FLUSH === 'true';
+const DEVICE_DEDUP_WINDOW = Number(process.env.DEVICE_DEDUP_WINDOW) || 1024;
 const RECOGNIZER_WINDOW = process.env.RECOGNIZER_WINDOW !== undefined
   ? Number(process.env.RECOGNIZER_WINDOW)
   : DEFAULT_RECOGNIZER_WINDOW;
@@ -305,10 +311,18 @@ export function advanceStreamingScenarioRecognizer(previousState = {}, baseKerne
       ...enclosedLoopClusterSettlementOpenWindows(track, config, emittedProposalIds)
     ];
 
+  const boundedEmittedProposalIds =
+    DEVICE_FLUSH && emittedProposalIds.length > DEVICE_DEDUP_WINDOW
+      ? emittedProposalIds.slice(-DEVICE_DEDUP_WINDOW)
+      : emittedProposalIds;
+  const emittedProposalIdsEvicted = (finiteNumber(state.emittedProposalIdsEvicted) ?? 0)
+    + (emittedProposalIds.length - boundedEmittedProposalIds.length);
+
   return {
     ...state,
     enabled: true,
-    emittedProposalIds,
+    emittedProposalIds: boundedEmittedProposalIds,
+    emittedProposalIdsEvicted,
     openWindows,
     carriedTrustedTrackPoints,
     lastInputTrackPointId: track.at(-1)?.trackPointId ?? state.lastInputTrackPointId,
