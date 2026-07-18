@@ -10,4 +10,5 @@ export * from './streamingScenarioRecognizer.mjs';
 export * from './streamingScenarioSettlementSession.mjs';
 export * from './streamingSettlementState.mjs';
 export * from './streamingTrackEngine.mjs';
+export * from './streamingTrackProductAdapter.mjs';
 export * from './timeWindowIndex.mjs';

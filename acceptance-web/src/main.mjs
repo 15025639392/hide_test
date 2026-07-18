@@ -8,6 +8,7 @@ import {
 import { buildCleanedLineFeatures, cleanedRouteLinePoints } from './cleanedLineStyles.mjs';
 import {
   buildSixLayerTrackProduct,
+  buildStreamingTrackProduct,
   DEFAULT_SCENARIO_REPAIR_IDS,
   fullScenarioRepairConfig,
   reviewTrackPointScenarioCoverage
@@ -89,6 +90,7 @@ const elements = {
   showRaw: document.querySelector('#showRaw'),
   showTrusted: document.querySelector('#showTrusted'),
   showCleaned: document.querySelector('#showCleaned'),
+  showStreaming: document.querySelector('#showStreaming'),
   showScenarios: document.querySelector('#showScenarios'),
   showTerrain: document.querySelector('#showTerrain'),
   showContours: document.querySelector('#showContours'),
@@ -137,6 +139,7 @@ for (const input of [
   elements.showRaw,
   elements.showTrusted,
   elements.showCleaned,
+  elements.showStreaming,
   elements.showScenarios,
   elements.showDirection,
   elements.showCleanedPoints,
@@ -243,6 +246,25 @@ async function readEvidenceFileOnMainThread(file, filePath, config, scenarioConf
   };
 }
 
+// Streaming (device-reference) cleaning line for the WIP comparison overlay.
+// Computed lazily (only when the 流式线 layer is enabled) and memoized on the
+// dataset, so a normal import never pays the streaming-engine cost.
+function buildStreamingLine(model, config) {
+  try {
+    const product = buildStreamingTrackProduct(model, { config });
+    return (product.track || [])
+      .filter((point) => Number.isFinite(point?.lat) && Number.isFinite(point?.lng))
+      .map((point) => ({
+        lat: point.lat,
+        lng: point.lng,
+        trackPointId: point.trackPointId,
+        sourceRawPointId: point.sourceRawPointId
+      }));
+  } catch (error) {
+    return [];
+  }
+}
+
 function finalizeDataset(result, index) {
   const dataset = {
     id: `dataset-${index + 1}`,
@@ -254,6 +276,7 @@ function finalizeDataset(result, index) {
     scenarioProduct: result.scenarioProduct || result.targetProduct,
     targetProduct: result.targetProduct,
     targetOutput: result.targetOutput,
+    streamingLine: null, // lazily computed on first 流式线 render (see streamingFeatureCollection)
     visible: true
   };
   attachDatasetIndexes(dataset);
@@ -2434,6 +2457,7 @@ function addMapLayers() {
   state.map.addSource('raw-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('trusted-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('cleaned-lines', { type: 'geojson', data: emptyFeatureCollection() });
+  state.map.addSource('streaming-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('dense-intent-conflicts', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('forward-spine-conflicts', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('direction-arrows', { type: 'geojson', data: emptyFeatureCollection() });
@@ -2498,6 +2522,19 @@ function addMapLayers() {
       'line-color': ['coalesce', ['get', 'lineColor'], '#ef4444'],
       'line-width': ['coalesce', ['get', 'lineWidth'], 4],
       'line-opacity': ['coalesce', ['get', 'lineOpacity'], 0.95]
+    }
+  });
+  // 流式引擎(设备参考)清洗线 —— WIP 对比图层。青色虚线,与批处理红线区分。
+  // 注意:流式输出目前与批处理有分歧(距离偏低),此层仅用于诊断对比。
+  state.map.addLayer({
+    id: 'streaming-lines',
+    type: 'line',
+    source: 'streaming-lines',
+    paint: {
+      'line-color': '#06b6d4',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 10, 2.5, 15, 4, 20, 6],
+      'line-opacity': 0.9,
+      'line-dasharray': [2, 1.4]
     }
   });
   state.map.addLayer({
@@ -2785,6 +2822,9 @@ function renderMapHighlightLayers(visibleDatasets = null) {
   state.map.getSource('cleaned-lines').setData(mapElementVisible(elements.showCleaned)
     ? cleanedFeatureCollection(visible)
     : emptyFeatureCollection());
+  state.map.getSource('streaming-lines').setData(mapElementVisible(elements.showStreaming)
+    ? streamingFeatureCollection(visible)
+    : emptyFeatureCollection());
 }
 
 function renderDirectionArrows(visibleDatasets = null) {
@@ -2826,6 +2866,26 @@ function cleanedFeatureCollection(datasets) {
         enabledScenarioRepairIds: DEFAULT_SCENARIO_REPAIR_IDS
       }))
       .filter((feature) => feature.geometry.coordinates.length > 1)
+  };
+}
+
+// Streaming (device-reference) cleaned line — WIP comparison overlay.
+// A plain LineString from the streaming committedTrack; not the repair-encoded
+// batch line. Lets you see where the streaming engine diverges from batch.
+function streamingFeatureCollection(datasets) {
+  return {
+    type: 'FeatureCollection',
+    features: datasets
+      .map((dataset) => {
+        if (dataset.streamingLine === null) {
+          dataset.streamingLine = buildStreamingLine(dataset.model, fullScenarioConfig());
+        }
+        const points = dataset.streamingLine || [];
+        return points.length > 1
+          ? lineFeature(dataset, points, 'streaming', null, { engine: 'streaming' })
+          : null;
+      })
+      .filter(Boolean)
   };
 }
 
