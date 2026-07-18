@@ -90,14 +90,18 @@ export function advanceStreamingBaseTrackKernel(previousState = {}, eventsOrBatc
 // headroom. Verified byte-identical on the real-output golden (committedTrack)
 // down to retention=32 and against the full unit suite. Set L3_RETENTION=0 to
 // disable (legacy: only rawPointTimeline pruned) for A/B verification.
-const L3_RETENTION = process.env.L3_RETENTION !== undefined
-  ? Number(process.env.L3_RETENTION)
+// Browser-safe env read: `process` is Node-only; in the web app it is undefined.
+function readEnv(name) {
+  return (typeof process !== 'undefined' && process.env) ? process.env[name] : undefined;
+}
+const L3_RETENTION = readEnv('L3_RETENTION') !== undefined
+  ? Number(readEnv('L3_RETENTION'))
   : 128;
 
 // Bounded dedup window for legalFixKeys (device mode) — see streamingTrackEngine.
-const DEVICE_FLUSH = process.env.DEVICE_FLUSH === '1'
-  || process.env.DEVICE_FLUSH === 'true';
-const DEVICE_DEDUP_WINDOW = Number(process.env.DEVICE_DEDUP_WINDOW) || 1024;
+const DEVICE_FLUSH = readEnv('DEVICE_FLUSH') === '1'
+  || readEnv('DEVICE_FLUSH') === 'true';
+const DEVICE_DEDUP_WINDOW = Number(readEnv('DEVICE_DEDUP_WINDOW')) || 1024;
 
 export function pruneStreamingBaseTrackKernelForSettlement(previousState = {}, settlementState = {}) {
   const state = createStreamingBaseTrackKernelState(previousState);

@@ -8,9 +8,13 @@ const EARTH_RADIUS_METERS = 6_371_000;
 // stream reconstructs exactly the offline committedTrack (verified byte-
 // identical by the device-mode golden). Default OFF (offline/oracle: retain
 // everything, tests/replay unchanged). Set DEVICE_FLUSH=1 to enable.
-const DEVICE_FLUSH = process.env.DEVICE_FLUSH === '1'
-  || process.env.DEVICE_FLUSH === 'true';
-const DEVICE_DEDUP_WINDOW = Number(process.env.DEVICE_DEDUP_WINDOW) || 1024;
+// Browser-safe env read: `process` is Node-only; in the web app it is undefined.
+function readEnv(name) {
+  return (typeof process !== 'undefined' && process.env) ? process.env[name] : undefined;
+}
+const DEVICE_FLUSH = readEnv('DEVICE_FLUSH') === '1'
+  || readEnv('DEVICE_FLUSH') === 'true';
+const DEVICE_DEDUP_WINDOW = Number(readEnv('DEVICE_DEDUP_WINDOW')) || 1024;
 
 export const STREAMING_LOCAL_REBUILD_VERSION = 'streaming-local-rebuild-v0';
 

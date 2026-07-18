@@ -76,12 +76,16 @@ function takeCarriedTrustedTrackPoints(anchorTrack) {
 // Set RECOGNIZER_WINDOW=0 to disable (full-track scan) for A/B verification.
 const DEFAULT_RECOGNIZER_WINDOW = 64;
 
+// Browser-safe env read: `process` is Node-only; in the web app it is undefined.
+function readEnv(name) {
+  return (typeof process !== 'undefined' && process.env) ? process.env[name] : undefined;
+}
 // Bounded dedup window for emittedProposalIds (device mode) — see streamingTrackEngine.
-const DEVICE_FLUSH = process.env.DEVICE_FLUSH === '1'
-  || process.env.DEVICE_FLUSH === 'true';
-const DEVICE_DEDUP_WINDOW = Number(process.env.DEVICE_DEDUP_WINDOW) || 1024;
-const RECOGNIZER_WINDOW = process.env.RECOGNIZER_WINDOW !== undefined
-  ? Number(process.env.RECOGNIZER_WINDOW)
+const DEVICE_FLUSH = readEnv('DEVICE_FLUSH') === '1'
+  || readEnv('DEVICE_FLUSH') === 'true';
+const DEVICE_DEDUP_WINDOW = Number(readEnv('DEVICE_DEDUP_WINDOW')) || 1024;
+const RECOGNIZER_WINDOW = readEnv('RECOGNIZER_WINDOW') !== undefined
+  ? Number(readEnv('RECOGNIZER_WINDOW'))
   : DEFAULT_RECOGNIZER_WINDOW;
 
 function boundRecognizerWindow(track, committedCursorRawPointId) {
