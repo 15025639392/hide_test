@@ -15,8 +15,41 @@ export function createStreamingScenarioRecognizerState(overrides = {}) {
     emittedProposalIds: cloneArray(overrides.emittedProposalIds).map(String),
     openWindows: cloneArray(overrides.openWindows),
     lastInputTrackPointId: finiteNumber(overrides.lastInputTrackPointId),
-    lastProposalCount: finiteNumber(overrides.lastProposalCount) ?? 0
+    lastProposalCount: finiteNumber(overrides.lastProposalCount) ?? 0,
+    // SNAP (缺口二): a bounded ring of the most-recent trusted track points,
+    // carried across advances. weak_recovery needs the "last trusted point
+    // before a gap" as its anchor; that anchor can sit arbitrarily far below
+    // the committed cursor and would be lost once the scan window is bounded.
+    // Since no trusted points are produced during a gap, the pre-gap anchor
+    // stays among the most-recent trusted points until CARRIED_TRUSTED_POINTS
+    // new trusted points arrive after recovery — comfortably beyond how long a
+    // weak-recovery window stays pending. Keeping it here makes the back-read
+    // bounded instead of unbounded, which is what lets the scan window shrink.
+    carriedTrustedTrackPoints: cloneArray(overrides.carriedTrustedTrackPoints)
   };
+}
+
+const CARRIED_TRUSTED_POINTS = 128;
+
+// Merge the (bounded) scan-window trusted track points with the carried
+// anchors, de-duplicated by sourceRawPointId and ordered by rawPoint id, so
+// weak_recovery sees its pre-gap anchor even after window pruning drops it.
+function mergeAnchorTrack(windowTrack, carried) {
+  const byRawPointId = new Map();
+  for (const point of carried) {
+    const id = finiteNumber(point?.sourceRawPointId);
+    if (Number.isFinite(id)) byRawPointId.set(id, point);
+  }
+  for (const point of windowTrack) {
+    const id = finiteNumber(point?.sourceRawPointId);
+    if (Number.isFinite(id)) byRawPointId.set(id, point);
+  }
+  return [...byRawPointId.values()]
+    .sort((a, b) => finiteNumber(a.sourceRawPointId) - finiteNumber(b.sourceRawPointId));
+}
+
+function takeCarriedTrustedTrackPoints(anchorTrack) {
+  return anchorTrack.slice(-CARRIED_TRUSTED_POINTS);
 }
 
 // L2/L3: bound the recognizer's scan window to the recently uncommitted tail
@@ -30,15 +63,17 @@ export function createStreamingScenarioRecognizerState(overrides = {}) {
 // per-advance deep cloning (L1a) is removed. Verified byte-identical against
 // real fixtures (golden) down to margin=1 and against the full unit suite.
 //
-// The margin must cover (max uncommitted-window span) + (deepest recognizer
-// back-read). Measured on real evidence: the commit cursor tracks the stream
-// head with an uncommitted lag of <=26 rawPoints, and the deepest back-read is
-// ~1 rawPoint, so 256 is ~10x safety headroom while still pinning per-advance
-// work to a constant (independent of total track length). Note: a margin
-// larger than the track's whole rawPointId span silently disables the bound
-// (floor goes negative), so keep it tight, not "very large to be safe".
+// The whole uncommitted region [cursor, head] is always retained (its ids are
+// >= cursor >= floor), and any active scenario window pins the cursor at its
+// own start, so an open window's full span is always in scope. The margin
+// therefore only needs to cover each recognizer's back-read BELOW the cursor.
+// The deepest back-reads are depth-1 (position_snap, enclosed_loop); the one
+// unbounded back-read (weak_recovery's pre-gap anchor) is handled separately by
+// the carried-anchor SNAP above, not by this margin. So a small margin with
+// large headroom suffices: verified byte-identical (golden) down to margin=4
+// with SNAP active, and against the full unit suite. 64 keeps ~64x headroom.
 // Set RECOGNIZER_WINDOW=0 to disable (full-track scan) for A/B verification.
-const DEFAULT_RECOGNIZER_WINDOW = 256;
+const DEFAULT_RECOGNIZER_WINDOW = 64;
 const RECOGNIZER_WINDOW = process.env.RECOGNIZER_WINDOW !== undefined
   ? Number(process.env.RECOGNIZER_WINDOW)
   : DEFAULT_RECOGNIZER_WINDOW;
@@ -74,6 +109,12 @@ export function advanceStreamingScenarioRecognizer(previousState = {}, baseKerne
       .sort((a, b) => finiteNumber(a.trackPointId) - finiteNumber(b.trackPointId)),
     options.committedCursorRawPointId
   );
+  // SNAP: weak_recovery reads the trusted track to find the pre-gap anchor.
+  // Give it the bounded scan window augmented with carried anchors so its
+  // back-read survives window pruning; other detectors keep using `track`.
+  const anchorTrack = mergeAnchorTrack(track, state.carriedTrustedTrackPoints);
+  const weakBaseKernel = { ...baseKernel, track: anchorTrack };
+  const carriedTrustedTrackPoints = takeCarriedTrustedTrackPoints(anchorTrack);
   const weakByRawPointId = new Map((baseKernel.excluded?.weak || [])
     .map((point) => [finiteNumber(point.rawPointId ?? point.sourceRawPointId), point])
     .filter(([rawPointId]) => Number.isFinite(rawPointId)));
@@ -110,7 +151,7 @@ export function advanceStreamingScenarioRecognizer(previousState = {}, baseKerne
   }
 
   for (const candidate of weakRecoveryEndpointClosedCandidates(
-    baseKernel,
+    weakBaseKernel,
     config,
     options.finish === true
   )) {
@@ -257,7 +298,7 @@ export function advanceStreamingScenarioRecognizer(previousState = {}, baseKerne
       ...movingSpikeOpenWindows(track, emittedProposalIds),
       ...stationaryDriftOpenWindows(baseKernel.excluded?.rejected,
         baseKernel.lastProcessedRawPointId, config),
-      ...weakRecoveryEndpointOpenWindows(baseKernel, config, emittedProposalIds),
+      ...weakRecoveryEndpointOpenWindows(weakBaseKernel, config, emittedProposalIds),
       ...restPhotoMicroMoveOpenWindows(track, config, emittedProposalIds),
       ...denseMainRouteOpenWindows(track, config, emittedProposalIds),
       ...roundTripRouteOpenWindows(track, config, emittedProposalIds),
@@ -269,6 +310,7 @@ export function advanceStreamingScenarioRecognizer(previousState = {}, baseKerne
     enabled: true,
     emittedProposalIds,
     openWindows,
+    carriedTrustedTrackPoints,
     lastInputTrackPointId: track.at(-1)?.trackPointId ?? state.lastInputTrackPointId,
     lastProposalCount: proposals.length,
     proposals
