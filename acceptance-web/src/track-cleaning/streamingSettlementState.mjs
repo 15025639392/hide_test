@@ -287,8 +287,8 @@ function cloneArray(value) {
   return Array.isArray(value) ? value.map((item) => structuredCloneFallback(item)) : [];
 }
 
+// L1a: share element references instead of per-advance deep cloning; see
+// streamingBaseTrackKernel.mjs for the immutability rationale.
 function structuredCloneFallback(value) {
-  return value && typeof value === 'object'
-    ? JSON.parse(JSON.stringify(value))
-    : value;
+  return value;
 }

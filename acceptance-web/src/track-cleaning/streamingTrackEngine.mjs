@@ -71,7 +71,13 @@ export function advanceStreamingTrackEngine(previousState = {}, input = {}) {
       emitOpenWindows: input.emitScenarioRecognizerOpenWindows !== false,
       metricAccumulator,
       finish: input.finish === true,
-      config: baseKernel.config
+      config: baseKernel.config,
+      // L2/L3: the committed cursor from the previous advance is a safe lower
+      // bound for how far back a recognizer must look. Passed through so the
+      // recognizer can bound its scan window instead of re-scanning the full
+      // (growing) track every advance. Inert unless windowing is enabled.
+      committedCursorRawPointId:
+        state.scenarioSettlementSession.settlementState.committedCursorRawPointId
     }
   );
   const scenarioSettlementSession = advanceScenarioSettlement(
@@ -218,9 +224,11 @@ function finiteNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+// L1a: lastAdvanceSummary is rebuilt fresh each advance and never mutated in
+// place, so sharing the reference is safe and avoids a full serialization.
 function cloneObject(value) {
   return value && typeof value === 'object'
-    ? JSON.parse(JSON.stringify(value))
+    ? value
     : null;
 }
 

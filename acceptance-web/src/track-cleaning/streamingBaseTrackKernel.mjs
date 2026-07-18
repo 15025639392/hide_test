@@ -958,8 +958,11 @@ function cloneObject(value) {
   return value && typeof value === 'object' ? structuredCloneFallback(value) : null;
 }
 
+// L1a: existing state elements are treated as immutable across advance()
+// (advance only appends new elements / reassigns fields on a fresh `next`),
+// so per-advance deep cloning is redundant. Share element references; the
+// containing array is still freshly created by cloneArray's map(). This drops
+// the JSON.parse(JSON.stringify) serialization cost that dominated each advance.
 function structuredCloneFallback(value) {
-  return value && typeof value === 'object'
-    ? JSON.parse(JSON.stringify(value))
-    : value;
+  return value;
 }

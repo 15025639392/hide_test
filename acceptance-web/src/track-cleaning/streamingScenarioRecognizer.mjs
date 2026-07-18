@@ -19,6 +19,41 @@ export function createStreamingScenarioRecognizerState(overrides = {}) {
   };
 }
 
+// L2/L3: bound the recognizer's scan window to the recently uncommitted tail
+// instead of the full growing track. Committed track points
+// (sourceRawPointId < committedCursor - margin) can no longer change any
+// proposal, so dropping them from the scan is output-preserving as long as the
+// margin covers every recognizer's real back-read depth.
+//
+// This turns the recognizer's per-advance cost from O(total track) into
+// O(uncommitted window + margin), which is the dominant O(n^2) factor once
+// per-advance deep cloning (L1a) is removed. Verified byte-identical against
+// real fixtures (golden) down to margin=1 and against the full unit suite.
+//
+// The margin must cover (max uncommitted-window span) + (deepest recognizer
+// back-read). Measured on real evidence: the commit cursor tracks the stream
+// head with an uncommitted lag of <=26 rawPoints, and the deepest back-read is
+// ~1 rawPoint, so 256 is ~10x safety headroom while still pinning per-advance
+// work to a constant (independent of total track length). Note: a margin
+// larger than the track's whole rawPointId span silently disables the bound
+// (floor goes negative), so keep it tight, not "very large to be safe".
+// Set RECOGNIZER_WINDOW=0 to disable (full-track scan) for A/B verification.
+const DEFAULT_RECOGNIZER_WINDOW = 256;
+const RECOGNIZER_WINDOW = process.env.RECOGNIZER_WINDOW !== undefined
+  ? Number(process.env.RECOGNIZER_WINDOW)
+  : DEFAULT_RECOGNIZER_WINDOW;
+
+function boundRecognizerWindow(track, committedCursorRawPointId) {
+  if (!(RECOGNIZER_WINDOW > 0)) return track;
+  const cursor = finiteNumber(committedCursorRawPointId);
+  if (!Number.isFinite(cursor)) return track;
+  const floor = cursor - RECOGNIZER_WINDOW;
+  return track.filter((point) => {
+    const rawPointId = finiteNumber(point.sourceRawPointId);
+    return !Number.isFinite(rawPointId) || rawPointId >= floor;
+  });
+}
+
 export function advanceStreamingScenarioRecognizer(previousState = {}, baseKernel = {},
   options = {}) {
   const state = createStreamingScenarioRecognizerState(previousState);
@@ -33,9 +68,12 @@ export function advanceStreamingScenarioRecognizer(previousState = {}, baseKerne
   }
 
   const config = normalizeSixLayerTrackConfig(options.config || baseKernel.config);
-  const track = cloneArray(baseKernel.track)
-    .filter((point) => point.entersTrustedGpx !== false)
-    .sort((a, b) => finiteNumber(a.trackPointId) - finiteNumber(b.trackPointId));
+  const track = boundRecognizerWindow(
+    cloneArray(baseKernel.track)
+      .filter((point) => point.entersTrustedGpx !== false)
+      .sort((a, b) => finiteNumber(a.trackPointId) - finiteNumber(b.trackPointId)),
+    options.committedCursorRawPointId
+  );
   const weakByRawPointId = new Map((baseKernel.excluded?.weak || [])
     .map((point) => [finiteNumber(point.rawPointId ?? point.sourceRawPointId), point])
     .filter(([rawPointId]) => Number.isFinite(rawPointId)));
@@ -2606,8 +2644,8 @@ function cloneArray(value) {
   return Array.isArray(value) ? value.map((item) => structuredCloneFallback(item)) : [];
 }
 
+// L1a: share element references instead of per-advance deep cloning; see
+// streamingBaseTrackKernel.mjs for the immutability rationale.
 function structuredCloneFallback(value) {
-  return value && typeof value === 'object'
-    ? JSON.parse(JSON.stringify(value))
-    : value;
+  return value;
 }
