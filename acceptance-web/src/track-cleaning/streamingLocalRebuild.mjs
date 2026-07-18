@@ -105,6 +105,12 @@ function rebuildOwnershipRange(ownership, range, proposal, baseKernel, rawPoints
       unsupported: false
     };
   }
+  if (proposal.scenario === 'stationary_session_collapse') {
+    return {
+      points: stationarySessionAnchorPoint(proposal, baseKernel.track),
+      unsupported: false
+    };
+  }
   if (proposal.scenario === 'rest_photo_micro_move') {
     return {
       points: restPhotoMicroMovePoints(proposal, baseKernel.track),
@@ -378,6 +384,60 @@ function stationaryDriftAnchorPoint(proposal, rawPointsById) {
     localRebuildApplied: true,
     localRebuildScenario: 'stationary_drift_collapse',
     localRebuild: 'stationary_drift_anchor'
+  }];
+}
+
+// stationary_session_collapse 的 localRebuild:把整个静止会话跨度内的 base track 点塌成
+// 单个代表锚点(countsDistance/countsMovingTime=false → 不贡献距离/移动时间,消除静止假距离)。
+// 与 stationaryDriftAnchorPoint 同形,但源于 base track 保留点(会话由 stationary_anchor /
+// dwell 中 gap_recovery 等组成),而非 rejected 漂移原始点。
+function stationarySessionAnchorPoint(proposal, baseTrack) {
+  const span = baseTrackPointsInRange(baseTrack, proposal.rawRange)
+    .filter((point) => hasValidLngLat(point));
+  if (span.length === 0) return [];
+  const center = weightedCenter(span);
+  const representativeRawPointId = finiteNumber(proposal.evidence?.representativeRawPointId)
+    ?? nearestPoint(center, span)?.sourceRawPointId
+    ?? span[0].sourceRawPointId;
+  const representative = span.find((point) =>
+    finiteNumber(point.sourceRawPointId) === representativeRawPointId) || span[0];
+  const contributingRawPointIds = span
+    .map((point) => finiteNumber(point.sourceRawPointId))
+    .filter(Number.isFinite);
+  return [{
+    sourceRawPointId: representativeRawPointId,
+    segmentId: null,
+    lat: center.lat,
+    lng: center.lng,
+    altitude: representative.altitude,
+    verticalAccuracy: representative.verticalAccuracy,
+    elapsedRealtimeNanos: representative.elapsedRealtimeNanos,
+    timeMillis: representative.timeMillis,
+    result: 'anchor',
+    reason: 'stationary_session_anchor',
+    distanceDeltaMeters: 0,
+    movingTimeDeltaSeconds: 0,
+    startsNewSegment: false,
+    cloudType: 'STATIONARY_SESSION',
+    cloudId: contributingRawPointIds[0] ?? representativeRawPointId,
+    cloudSampleCount: finiteNumber(proposal.evidence?.rawPointCount) ?? contributingRawPointIds.length,
+    cloudWeightSum: center.weight,
+    cloudWeightedRadiusMeters: center.radiusMeters,
+    representativeRawPointId,
+    contributingRawPointIds,
+    coordinateSource: 'cloud_center',
+    virtualCoordinate: true,
+    routeLineVertex: false,
+    routeLineStrategy: 'bridge_previous_next',
+    activityState: 'stationary_session',
+    boundaryState: 'stationary_session_collapsed',
+    countsDistance: false,
+    countsMovingTime: false,
+    countsAscentWindow: false,
+    entersTrustedGpx: true,
+    localRebuildApplied: true,
+    localRebuildScenario: 'stationary_session_collapse',
+    localRebuild: 'stationary_session_anchor'
   }];
 }
 

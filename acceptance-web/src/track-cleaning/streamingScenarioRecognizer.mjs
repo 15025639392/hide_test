@@ -139,8 +139,14 @@ export function advanceStreamingScenarioRecognizer(previousState = {}, baseKerne
   const denseAreaIntentProposalsForReview = denseAreaIntentCandidatesForReview
     .map((candidate) => denseAreaIntentProposal(candidate));
 
+  // 静止会话跨度内的 gap_recovery 是"设备静止时的信号 blip",不是真实移动恢复,批处理整轨
+  // 塌缩会连它一起吞掉。这里抑制落在会话跨度内的 gap_recovery 硬边界发射——否则它们会把会话
+  // 切成多段、各自塌一个锚点(达不到批处理的单锚)。会话 open window 已把游标钉在会话起点,故
+  // 会话内 gap_recovery 在会话确认后尚未提交,可安全在发射侧抑制。非静止文件无会话跨度,无影响。
+  const stationarySessionSpans = stationarySessionCandidateSpans(track, config);
   for (const proposal of gapRecoveryBoundaryProposals(track)) {
     if (emittedProposalIds.includes(proposal.id)) continue;
+    if (rawPointIdInAnySpan(proposal.rawRange?.startRawPointId, stationarySessionSpans)) continue;
     proposals.push(proposal);
     emittedProposalIds.push(proposal.id);
   }
@@ -195,6 +201,14 @@ export function advanceStreamingScenarioRecognizer(previousState = {}, baseKerne
   for (const candidate of stationaryDriftCandidates(baseKernel.excluded?.rejected,
     baseKernel.lastProcessedRawPointId, config, options.finish === true)) {
     const proposal = stationaryDriftProposal(candidate);
+    if (emittedProposalIds.includes(proposal.id)) continue;
+    proposals.push(proposal);
+    emittedProposalIds.push(proposal.id);
+  }
+
+  for (const candidate of stationarySessionCandidates(track,
+    baseKernel.lastProcessedRawPointId, config, options.finish === true)) {
+    const proposal = stationarySessionProposal(candidate);
     if (emittedProposalIds.includes(proposal.id)) continue;
     proposals.push(proposal);
     emittedProposalIds.push(proposal.id);
@@ -307,6 +321,8 @@ export function advanceStreamingScenarioRecognizer(previousState = {}, baseKerne
       ),
       ...movingSpikeOpenWindows(track, emittedProposalIds),
       ...stationaryDriftOpenWindows(baseKernel.excluded?.rejected,
+        baseKernel.lastProcessedRawPointId, config),
+      ...stationarySessionOpenWindows(track,
         baseKernel.lastProcessedRawPointId, config),
       ...weakRecoveryEndpointOpenWindows(weakBaseKernel, config, emittedProposalIds),
       ...restPhotoMicroMoveOpenWindows(track, config, emittedProposalIds),
@@ -1021,6 +1037,184 @@ function stationaryDriftProposal(candidate) {
       zeroSpeedRatio: rounded(candidate.zeroSpeedRatio),
       averageSpeedMetersPerSecond: rounded(candidate.averageSpeed),
       coreRatio: rounded(candidate.coreRatio)
+    }
+  };
+}
+
+// stationary_session_collapse（device 增量版，缺失场景补齐）:批处理 collapseStationarySession
+// 是"整轨若全静止→塌成 1 锚点"的早退门,在全部 raw 点上判。流式 device 模式逐次 flush、
+// 无法在 finish 时回撤已吐的多个锚点,故做成"进行中的静止会话用 open window 挂住游标、只在
+// 会话结束(移动恢复)或 finish 时闭合出 1 个代表锚"的增量场景——与 stationary_drift_collapse
+// 同机制,但作用于 base kernel 保留的 track 点(stationary_anchor / dwell 中的 gap_recovery
+// 等),而非 rejected 漂移点。比批处理"仅整轨"更通用:嵌入式扎营(轨迹中段长时间静止)也覆盖。
+// 门判据对齐批处理 isStationarySession(见 sixLayerTrackProduct.stationarySession*):最小 raw
+// 点数(用 cloudSampleCount 还原)、最短时长、最大 bbox/净距离、最大平均上报速度、最大路径速率。
+function stationarySessionCandidates(track, lastProcessedRawPointId, config, finish = false) {
+  if (!config.stationarySessionCollapseEnabled) return [];
+  return stationarySessionGroups(track, config)
+    .filter((group) => stationarySessionGroupIsClosed(group, lastProcessedRawPointId, finish))
+    .map((group) => stationarySessionCandidate(group, config))
+    .filter(Boolean);
+}
+
+function stationarySessionOpenWindows(track, lastProcessedRawPointId, config) {
+  if (!config.stationarySessionCollapseEnabled) return [];
+  const cursor = finiteNumber(lastProcessedRawPointId);
+  if (!Number.isFinite(cursor)) return [];
+  return stationarySessionGroups(track, config)
+    .filter((group) => group.at(-1)?.rawPointId === cursor)
+    .map((group) => stationarySessionCandidate(group, config))
+    .filter(Boolean)
+    .map((candidate) => ({
+      id: `stationary-session-open:${candidate.startRawPointId}-${candidate.endRawPointId}`,
+      scenario: 'stationary_session_collapse',
+      metricOwner: true,
+      influenceRange: candidate.rawRange,
+      rawRange: candidate.rawRange,
+      reason: 'awaiting_stationary_session_exit'
+    }));
+}
+
+// 连续 track 点按几何贪心分组:维护 running bbox(min/max lat/lng,O(1)/点),点加入后 bbox
+// 对角线仍 ≤ 门则并入,否则收束当前组、以该点起新组。移动轨迹会碎成多个 <bbox 小组,各自过不了
+// 最小点数/时长门 → 不会被误塌;真静止会长成一个大组。
+function stationarySessionGroups(track, config) {
+  const maxBboxMeters = config.stationarySessionMaxBboxMeters;
+  const points = cloneArray(track)
+    .filter((point) => hasValidLngLat(point))
+    .map((point) => ({
+      ...point,
+      rawPointId: finiteNumber(point.sourceRawPointId),
+      elapsedRealtimeNanos: finiteNumber(point.elapsedRealtimeNanos),
+      reportedSpeed: finiteNumber(point.reportedSpeedMetersPerSecond),
+      sampleCount: finiteNumber(point.cloudSampleCount) ?? 1
+    }))
+    .filter((point) =>
+      Number.isFinite(point.rawPointId) && Number.isFinite(point.elapsedRealtimeNanos))
+    .sort((a, b) => a.rawPointId - b.rawPointId);
+  const groups = [];
+  let current = [];
+  let box = null;
+  for (const point of points) {
+    if (current.length === 0) {
+      current = [point];
+      box = { minLat: point.lat, maxLat: point.lat, minLng: point.lng, maxLng: point.lng };
+      continue;
+    }
+    const next = {
+      minLat: Math.min(box.minLat, point.lat),
+      maxLat: Math.max(box.maxLat, point.lat),
+      minLng: Math.min(box.minLng, point.lng),
+      maxLng: Math.max(box.maxLng, point.lng)
+    };
+    if (distanceMeters(next.minLat, next.minLng, next.maxLat, next.maxLng) <= maxBboxMeters) {
+      current.push(point);
+      box = next;
+    } else {
+      groups.push(current);
+      current = [point];
+      box = { minLat: point.lat, maxLat: point.lat, minLng: point.lng, maxLng: point.lng };
+    }
+  }
+  if (current.length > 0) groups.push(current);
+  return groups;
+}
+
+function stationarySessionGroupIsClosed(group, lastProcessedRawPointId, finish) {
+  const endRawPointId = group.at(-1)?.rawPointId;
+  if (!Number.isFinite(endRawPointId)) return false;
+  if (finish) return true;
+  const cursor = finiteNumber(lastProcessedRawPointId);
+  return Number.isFinite(cursor) && endRawPointId < cursor;
+}
+
+// 所有通过 session 门的组的跨度(closed 或 open 都算),供 gap_recovery 抑制用。
+function stationarySessionCandidateSpans(track, config) {
+  if (!config.stationarySessionCollapseEnabled) return [];
+  return stationarySessionGroups(track, config)
+    .map((group) => stationarySessionCandidate(group, config))
+    .filter(Boolean)
+    .map((candidate) => candidate.rawRange);
+}
+
+function rawPointIdInAnySpan(rawPointId, spans) {
+  const id = finiteNumber(rawPointId);
+  if (!Number.isFinite(id)) return false;
+  return spans.some((span) =>
+    id >= span.startRawPointId && id <= span.endRawPointId);
+}
+
+function stationarySessionCandidate(group, config) {
+  const rawPointCount = group.reduce((sum, point) => sum + (point.sampleCount ?? 1), 0);
+  if (rawPointCount < config.stationarySessionMinRawPoints) return null;
+  const durationSeconds = elapsedSeconds(group[0].elapsedRealtimeNanos,
+    group.at(-1).elapsedRealtimeNanos);
+  if (durationSeconds < config.stationarySessionMinDurationSeconds) return null;
+  const bboxMeters = bboxDiagonalMeters(group);
+  if (bboxMeters > config.stationarySessionMaxBboxMeters) return null;
+  const netDistanceMeters = distanceMeters(group[0].lat, group[0].lng,
+    group.at(-1).lat, group.at(-1).lng);
+  if (netDistanceMeters > config.stationarySessionMaxNetDistanceMeters) return null;
+  const pathMeters = stationarySessionPathMeters(group);
+  if (pathMeters / Math.max(durationSeconds, 1)
+      > config.stationarySessionMaxPathRateMetersPerSecond) {
+    return null;
+  }
+  const finiteSpeeds = group.map((point) => point.reportedSpeed).filter(Number.isFinite);
+  const averageSpeed = finiteSpeeds.length === 0
+    ? 0
+    : finiteSpeeds.reduce((sum, speed) => sum + speed, 0) / finiteSpeeds.length;
+  if (averageSpeed > config.stationarySessionMaxAverageReportedSpeedMetersPerSecond) return null;
+  const center = averageLatLng(group);
+  const representative = nearestPoint(center, group);
+  return {
+    rawRange: range(group[0].rawPointId, group.at(-1).rawPointId),
+    startRawPointId: group[0].rawPointId,
+    endRawPointId: group.at(-1).rawPointId,
+    rawPointIds: group.map((point) => point.rawPointId),
+    representativeRawPointId: representative?.rawPointId ?? group[0].rawPointId,
+    trackPointCount: group.length,
+    rawPointCount,
+    durationSeconds,
+    bboxMeters,
+    netDistanceMeters,
+    averageSpeed
+  };
+}
+
+function stationarySessionPathMeters(group) {
+  let total = 0;
+  for (let index = 1; index < group.length; index++) {
+    total += distanceMeters(group[index - 1].lat, group[index - 1].lng,
+      group[index].lat, group[index].lng);
+  }
+  return total;
+}
+
+function stationarySessionProposal(candidate) {
+  const durationScore = Math.min(1, candidate.durationSeconds / 300);
+  const bboxScore = 1 - Math.min(1, candidate.bboxMeters / 80);
+  const netScore = 1 - Math.min(1, candidate.netDistanceMeters / 80);
+  return {
+    id: `stationary-session:${candidate.startRawPointId}-${candidate.endRawPointId}`,
+    scenario: 'stationary_session_collapse',
+    confidence: rounded(clamp01(0.55 + durationScore * 0.15 + bboxScore * 0.15 + netScore * 0.15)),
+    rawRange: candidate.rawRange,
+    influenceRange: candidate.rawRange,
+    metricRange: candidate.rawRange,
+    metricOwner: true,
+    hardBoundary: false,
+    affectedMetricGates: ['route', 'distance', 'moving_time'],
+    action: 'collapse_to_single_anchor',
+    localRebuild: 'stationary_session_anchor',
+    evidence: {
+      trackPointCount: candidate.trackPointCount,
+      rawPointCount: candidate.rawPointCount,
+      representativeRawPointId: candidate.representativeRawPointId,
+      durationSeconds: rounded(candidate.durationSeconds),
+      bboxDiagonalMeters: rounded(candidate.bboxMeters),
+      netDistanceMeters: rounded(candidate.netDistanceMeters),
+      averageSpeedMetersPerSecond: rounded(candidate.averageSpeed)
     }
   };
 }

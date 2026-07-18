@@ -4,6 +4,7 @@ export const DEFAULT_SCENARIO_PROPOSAL_PRIORITIES = Object.freeze({
   transport_contamination: 10,
   pressure_jump: 10,
   weak_recovery_endpoint: 10,
+  stationary_session_collapse: 15,
   moving_spike_cleanup: 20,
   position_snap_recovery: 20,
   enclosed_loop_cluster_settlement: 25,

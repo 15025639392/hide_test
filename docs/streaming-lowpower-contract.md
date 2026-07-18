@@ -131,3 +131,29 @@
 **残差(2459 vs 2411 ≈ +2%):同 §8 残差同类**——流式 committedTrack 本就不逐点等于批处理(scenario 折叠/composition 差异),属下面独立待办,与本死锁无关。
 
 **已知未解(pre-existing,非本 fix 引入)**:`golden.mjs chunkinvariance` 显示流式最终输出**随 chunk 大小变化**(gnss[:4200] chunked 358 vs 单发 335)——根因是 RDP 简约的非前方单调性 + 有界识别窗在不同 chunk 边界看到的上下文不同(契约 §3 注已记)。修改前后同样不稳定(已 stash 对照确认),本 fix 未使其变差。web 端 `buildStreamingTrackProduct` 走单发路径(335,最接近批 330),不受此影响。
+
+## 10. 流式缺失静止塌缩场景 —— 静止录制记出假距离(pre-existing 覆盖缺口)
+
+8 个真实文件批流普扫(sweep)发现:**纯静止录制流式记出假距离**。批处理把整段静止塌成 1 锚点(0m),流式保留多个锚点 + 假距离:
+
+| 文件 | 特征 | 批处理 | 流式(修前) | 批处理场景 |
+|---|---|---|---|---|
+| `gnss_7da81318` | 设备静止 **5.9 小时**(bbox 34m) | 1 点 / 0m | 23 点 / **25m** | `stationary_session_collapse` |
+| `outdoor_v1` | 城市多径**双簇漂移**(bbox 96m) | 1 点 / 0m | 20 点 / **55m** | `stationary_dual_cluster_gnss_drift` |
+
+**根因**:流式识别器只实现了 `stationary_drift_collapse`(塌缩 **rejected** 漂移点),缺失批处理的 `stationary_session_collapse`(整轨若全静止→塌成 1 锚,作用于**保留**的 stationary_anchor 点)和 `stationary_dual_cluster_gnss_drift`。直接命中"5 小时起步"徒步场景——扎营/长休会显示假移动。
+
+**架构冲突**:批处理 `collapseStationarySession` 是"整轨全静止→`product.track=[anchor]`"的早退门,在全部 raw 点上判。流式 device 模式**逐次 flush、无法回撤已吐锚点**,整轨塌缩不可行。
+
+**已修复 `stationary_session_collapse`(device 增量,3 文件 +255 行)**:做成"进行中的静止会话用 open window 挂住游标、只在会话结束或 finish 时闭合出 1 个代表锚"的**增量 span 场景**(比批处理"仅整轨"更通用,嵌入式扎营也覆盖)。
+- **recognizer**:`stationarySessionGroups`(running bbox O(1)/点贪心分组)+ 门校验(对齐 `isStationarySession`:最小 raw 点数用 `cloudSampleCount` 还原、时长、bbox、净距离、平均上报速度、路径速率)→ closed 出 proposal / ongoing 出 open window。
+- **gap_recovery 吸收**:抑制落在会话跨度内的 gap_recovery 硬边界发射(静止中信号 blip 非真移动),否则会话被切成多段各塌一锚。会话 open window 已钉住游标,故未提交前可安全抑制。
+- **localRebuild**:`stationary_session_anchor` 把跨度内 base track 点塌成 1 锚(`countsDistance/countsMovingTime=false`)。
+- **coordinator**:优先级 15(高于 moving_spike 20,低于 gap_recovery 10)。
+
+以**批处理为 oracle** 验证:`gnss_7da81318` 23 点 / 25m → **1 点 / 0m**(逐字段对齐批处理);其余 6 文件(运动轨迹)committedTrack **零回归**;5ccf 实徒歩 2459 点**不变**(嵌入式短 dwell 不被误塌,归现有 drift collapse 管辖)。`npm test` 238 pass / 1 pre-existing fail,新增 `collapses a stationary session` + `keeps a moving track uncollapsed` 回归测试。
+
+待办:
+
+- [x] **修 `stationary_session_collapse` 缺失**(§10)——device 增量塌缩,`gnss_7da81318` 对齐批处理 1 点 / 0m。
+- [ ] **补 `stationary_dual_cluster_gnss_drift`**(§10,`outdoor_v1`,bbox 96m>80m 会话门)——双簇多径漂移塌缩,需双簇几何(两中心 30-150m)+ 簇间高速遷移检测 + `motionWindows`,依赖 device 模式已 flush 的 raw 点数据,是更重的独立场景。

@@ -52,6 +52,46 @@ test('streaming scenario recognizer emits moving spike cleanup proposal', () => 
   assert.ok(state.proposals[0].evidence.bridgeDistanceMeters < 15);
 });
 
+test('streaming scenario recognizer collapses a stationary session to one anchor', () => {
+  // 一段静止会话(设备静止、GNSS 抖动):10 个保留 track 点、每点代表 3 个 raw(cloudSampleCount)
+  // → 30 raw ≥ 门(20);跨 90s ≥ 门(60s);bbox/净距离 ~几米;上报速度 ~0。应产出 1 个
+  // stationary_session_collapse 提案覆盖整段(消除静止假距离)。
+  const track = stationarySessionTrack();
+  const state = advanceStreamingScenarioRecognizer(createStreamingScenarioRecognizerState(), {
+    track
+  }, {
+    enabled: true,
+    emitOpenWindows: false,
+    finish: true
+  });
+
+  const sessionProposals = state.proposals.filter((proposal) =>
+    proposal.scenario === 'stationary_session_collapse');
+  assert.equal(sessionProposals.length, 1);
+  const proposal = sessionProposals[0];
+  assert.equal(proposal.metricOwner, true);
+  assert.equal(proposal.hardBoundary, false);
+  assert.equal(proposal.localRebuild, 'stationary_session_anchor');
+  assert.deepEqual(proposal.rawRange, range(1, 10));
+  assert.equal(proposal.evidence.rawPointCount, 30);
+  assert.ok(proposal.evidence.bboxDiagonalMeters <= 80);
+  assert.ok(proposal.evidence.netDistanceMeters <= 80);
+});
+
+test('streaming scenario recognizer keeps a moving track uncollapsed', () => {
+  // 移动轨迹(每点前进 ~11m):净距离/路径速率远超静止门,不应产出 stationary_session_collapse。
+  const track = movingTrack();
+  const state = advanceStreamingScenarioRecognizer(createStreamingScenarioRecognizerState(), {
+    track
+  }, {
+    enabled: true,
+    emitOpenWindows: false,
+    finish: true
+  });
+  assert.equal(state.proposals.filter((proposal) =>
+    proposal.scenario === 'stationary_session_collapse').length, 0);
+});
+
 test('streaming scenario recognizer emits competing low-speed geometry override', () => {
   const track = spikeTrack();
   track[2] = {
@@ -1210,6 +1250,29 @@ function spikeTrack() {
     point(4, 30, 120.0002),
     point(5, 30, 120.0003)
   ];
+}
+
+function stationarySessionTrack() {
+  // 10 个静止点,微抖动(~±0.2m,2e-6 度 ≈ 0.22m),每点 cloudSampleCount=3(→30 raw),
+  // 跨 180s(每点 +20s)。低路径速率满足 stationarySessionMaxPathRate(0.05 m/s)。
+  const jitter = [0, 1, -1, 1, -1, 1, -1, 1, -1, 0];
+  return jitter.map((delta, index) => point(index + 1,
+    29.5 + delta * 0.000002, 106.5 + delta * 0.000002, {
+      reason: 'stationary_anchor',
+      reportedSpeedMetersPerSecond: 0.02,
+      cloudSampleCount: 3,
+      elapsedRealtimeNanos: 1_000_000_000 + index * 20_000_000_000
+    }));
+}
+
+function movingTrack() {
+  // 10 个点,每点约前进 11m(1e-4 度纬度),持续移动 → 非静止。
+  return Array.from({ length: 10 }, (unused, index) => point(index + 1,
+    29.5 + index * 0.0001, 106.5, {
+      reportedSpeedMetersPerSecond: 1.4,
+      cloudSampleCount: 3,
+      elapsedRealtimeNanos: 1_000_000_000 + index * 10_000_000_000
+    }));
 }
 
 function restPhotoTrack(startRawPointId, count) {
