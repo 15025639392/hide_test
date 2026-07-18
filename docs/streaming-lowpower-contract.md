@@ -103,11 +103,14 @@
 - **更严重的是**:streaming 引擎**在 finish 时也没解开、直接丢弃该段**——批处理 `buildSixLayerTrackProduct`(算法 ground truth)对同一 fixture 提交了完整 1..598(含 417 accept),streaming 只提交到 ~416。**即冲突死锁导致 streaming 丢输出数据**,device 录制长轨迹会丢失此类冲突附近的区段。
 - 试过"超时强制提交 activeProposalId":能解死锁、找回该段(357 点),但**既不等于批处理 330、也不等于 finish 326**,无法对齐任何 ground truth → 未验证正确,已撤销(不 ship 未验证的输出改动)。
 
-**正确修法(待办,需独立排查)**:修 streaming settlement 的冲突解析,让 moving_spike-vs-moving_spike 的 `conservative_fallback` **像批处理那样解出并提交 active**,而非按住到 finish 再丢。以批处理输出为 oracle 逐点对齐验证。这是正确性 bug,优先级高于纯内存优化。
+**已修复(off `perf/streaming-lowpower-l1` 的 `fix/streaming-conflict-deadlock`)**:根因是**流式识别器发射了两个重叠的 moving_spike 提案,而批处理在生成场景前就用 `nonOverlappingMovingSpikeCandidates` 按几何分数(`detour*2+lateral`)贪心去重叠**。识别器 `emittedProposalIds` 累积、无法回撤已发射的低分提案,故在**协调器**(`coordinateScenarioProposals`,此处两个竞争提案必同时在 `pendingProposals` 中)复刻批处理同一去重叠规则:保留高分者 `417-422-425`(score 31.4)、丢弃低分者 `390-417-422`(score 28.3,标记 `moving_spike_overlap_superseded`),partial→`conservative_fallback` 冲突不再产生,watermark 不再冻结。修复后 gnss[:4200] 游标从 416 推进到 597,committedTrack 326→357,尖刺局部决策与批处理逐点同构(417 保留、422 桥接删除、415/416/418–426 删除)。回归验证:两条干净轨迹 committedTrack 不变(outdoor_v1 669、v1(3) 614),`npm test` 基线不变。
+
+**残差(357 vs 批处理 330):独立的 pre-existing 分歧,不属本 bug**。死锁解开后 417–522 区段提交出来,暴露出**流式的 `rest_photo_micro_move`/`dense_area_intent` 场景不像批处理那样折叠**:批处理把 417–522 折成 2 点(439 一个 rest_photo 锚),流式保留 19 点(16 motion + 3 stationary_anchor)。这与 outdoor 干净轨迹上 stream 669≠batch 967 是同一类"流式非逐点等于批处理"的实现差异(流式 committedTrack **本就不逐点等于批处理**,已实测确认),与 moving_spike 死锁无关。故 357 不再作为"未对齐 ground truth"的否决依据——尖刺决策已对齐,残差归属下面的独立待办。
 
 待办:
 
-- [ ] **修 C 类冲突死锁丢数据 bug**(§8)——对齐批处理的冲突解析,以批处理为 oracle。
+- [x] **修 C 类冲突死锁丢数据 bug**(§8)——已在协调器复刻批处理去重叠,以批处理为 oracle 验证局部同构。
+- [ ] **对齐流式 rest_photo_micro_move/dense_area_intent 的折叠到批处理**(§8 残差)——独立的输出稀密差异 bug,需各自以批处理为 oracle 排查(gnss[:4200] 417–522 区段:批 2 点 vs 流 19 点;outdoor 全程亦有同类差异)。
 - [ ] **L4 输出 flush 已做**;剩 intake.events 的诊断回放旁路(落盘 sink)。
 - [ ] 验证上下文型(#15–18)的独立有界窗方案(§3 注)。
 - [ ] 迟到/乱序容忍窗口定义:裁剪后迟到到已释放窗口的点如何处理,及其对旧"全量保留"行为的输出差异是否接受。

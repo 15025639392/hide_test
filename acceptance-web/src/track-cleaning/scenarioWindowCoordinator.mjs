@@ -23,14 +23,24 @@ const PRODUCT_TRACK_METRIC_GATES = Object.freeze(['route', 'distance', 'moving_t
 const DEFAULT_PRIORITY = 50;
 
 export function coordinateScenarioProposals(proposals, options = {}) {
-  const normalized = (proposals || [])
+  const normalizedAll = (proposals || [])
     .map((proposal, index) => normalizeScenarioProposal(proposal, index))
     .filter(Boolean)
     .sort(compareScenarioProposals);
 
+  // 与批处理对齐：批处理在生成 moving_spike 场景前先用 nonOverlappingMovingSpikeCandidates
+  // 按几何分数贪心去重叠（保留 score 高者、丢弃重叠者）。流式识别器逐 advance 发射、
+  // 无法回撤已发射的低分提案，因此在这里（协调器持有全部竞争提案）复刻同一去重叠规则。
+  // 否则两个重叠的单点 moving_spike 提案会落到 partial→conservative_fallback，冻结
+  // 提交游标并在 finish 时丢弃该段（丢数据的正确性 bug）。
+  const { kept: normalized, superseded: supersededMovingSpikes } =
+    deoverlapMovingSpikeProposals(normalizedAll);
+
   const activeProposals = [];
   const contextProposals = [];
-  const rejectedProposals = [];
+  const rejectedProposals = supersededMovingSpikes.map((proposal) =>
+    withCoordinatorState(proposal, 'moving_spike_overlap_superseded',
+      proposal.supersededByProposal));
   const conflicts = [];
   const ownership = [];
 
@@ -306,6 +316,65 @@ function defaultConflictResolution(blocker, relation) {
   if (blocker.hardBoundary) return 'blocked_by_hard_boundary';
   if (relation === 'nested' || relation === 'equal') return 'context_only';
   return 'conservative_fallback';
+}
+
+// 复刻批处理 sixLayerTrackProduct.nonOverlappingMovingSpikeCandidates：对互相重叠的
+// 单点 moving_spike 清理提案做贪心去重叠——按几何分数(detour*2+lateral)降序，保留最高分、
+// 丢弃与已保留者 metricRange 重叠的其余提案。tie-break 与批处理逐项对齐(detour 降序、
+// reportedSpeed 升序、起点升序)。非 moving_spike 提案原样保留、顺序不变。
+function deoverlapMovingSpikeProposals(normalized) {
+  const spikes = normalized.filter((proposal) =>
+    proposal.scenario === 'moving_spike_cleanup' && proposal.metricOwner);
+  if (spikes.length < 2) {
+    return { kept: normalized, superseded: [] };
+  }
+
+  const accepted = [];
+  const supersededById = new Map();
+  for (const candidate of [...spikes].sort(compareMovingSpikeForDeoverlap)) {
+    const winner = accepted.find((existing) =>
+      rangesOverlap(candidate.metricRange, existing.metricRange));
+    if (winner) {
+      supersededById.set(candidate.id, {
+        ...candidate,
+        supersededByProposal: winner
+      });
+      continue;
+    }
+    accepted.push(candidate);
+  }
+
+  if (supersededById.size === 0) {
+    return { kept: normalized, superseded: [] };
+  }
+  return {
+    kept: normalized.filter((proposal) => !supersededById.has(proposal.id)),
+    superseded: [...supersededById.values()]
+  };
+}
+
+function compareMovingSpikeForDeoverlap(left, right) {
+  const scoreOrder = movingSpikeGeometryScore(right) - movingSpikeGeometryScore(left);
+  if (scoreOrder !== 0) return scoreOrder;
+  const detourOrder = movingSpikeDetour(right) - movingSpikeDetour(left);
+  if (detourOrder !== 0) return detourOrder;
+  const speedOrder = movingSpikeReportedSpeed(left) - movingSpikeReportedSpeed(right);
+  if (speedOrder !== 0) return speedOrder;
+  const startOrder = left.metricRange.startRawPointId - right.metricRange.startRawPointId;
+  if (startOrder !== 0) return startOrder;
+  return String(left.id).localeCompare(String(right.id));
+}
+
+function movingSpikeGeometryScore(proposal) {
+  return movingSpikeDetour(proposal) * 2 + (finiteNumber(proposal?.evidence?.lateralMeters) ?? 0);
+}
+
+function movingSpikeDetour(proposal) {
+  return finiteNumber(proposal?.evidence?.detourMeters) ?? 0;
+}
+
+function movingSpikeReportedSpeed(proposal) {
+  return finiteNumber(proposal?.evidence?.reportedSpeedMetersPerSecond) ?? 0;
 }
 
 function splitNestedParentProposal(proposal, blockers) {

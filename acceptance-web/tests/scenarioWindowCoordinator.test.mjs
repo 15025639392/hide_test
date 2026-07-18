@@ -213,6 +213,39 @@ test('coordinateScenarioProposals resolves equal ranges deterministically by con
   assert.equal(forward.conflicts[0].relation, 'equal');
 });
 
+test('coordinateScenarioProposals de-overlaps competing moving spikes like batch instead of deadlocking', () => {
+  // 复现批处理会去重叠、流式却死锁的两个重叠单点尖刺(对应 fixture 的
+  // moving-spike:417-422-425 vs 390-417-422)。批处理按几何分数(detour*2+lateral)保留
+  // 高分者、丢弃重叠者;修复前流式把它们判为 partial→conservative_fallback,钉住 watermark
+  // 冻结提交游标并在 finish 丢弃该段。修复后应保留高分者、丢弃低分者,且不再冻结。
+  const winner = proposal('moving-spike:417-422-425', 'moving_spike_cleanup', 417, 425, {
+    affectedMetricGates: ['route', 'distance', 'moving_time'],
+    evidence: { detourMeters: 12.04, lateralMeters: 7.35, reportedSpeedMetersPerSecond: 0.89 }
+  });
+  const loser = proposal('moving-spike:390-417-422', 'moving_spike_cleanup', 390, 422, {
+    affectedMetricGates: ['route', 'distance', 'moving_time'],
+    evidence: { detourMeters: 11.07, lateralMeters: 6.16, reportedSpeedMetersPerSecond: 0 }
+  });
+
+  // 顺序不应影响结果:高分者永远胜出。
+  for (const proposals of [[winner, loser], [loser, winner]]) {
+    const plan = coordinateScenarioProposals(proposals, {
+      firstRawPointId: 390,
+      currentRawPointId: 500,
+      lookaheadRawPoints: 0
+    });
+
+    assert.deepEqual(plan.activeProposals.map((item) => item.id), ['moving-spike:417-422-425']);
+    assert.deepEqual(plan.rejectedProposals.map((item) => item.id), ['moving-spike:390-417-422']);
+    assert.equal(plan.rejectedProposals[0].coordinatorState, 'moving_spike_overlap_superseded');
+    assert.equal(plan.rejectedProposals[0].blockedByProposalId, 'moving-spike:417-422-425');
+    // 关键:不再产生 conservative_fallback 冲突,提交不被冻结。
+    assert.equal(plan.conflicts.some((conflict) =>
+      conflict.resolution === 'conservative_fallback'), false);
+    assert.equal(plan.commitPlan.status, 'committable');
+  }
+});
+
 test('coordinateScenarioProposals rejects unresolved partial metric-owner conflicts', () => {
   const plan = coordinateScenarioProposals([
     proposal('rest-1', 'rest_photo_micro_move', 10, 30),
