@@ -34,6 +34,16 @@ import { buildStreamingDiagnosticContextReport } from './streamingDiagnosticCont
 
 export const STREAMING_TRACK_ENGINE_VERSION = 'streaming-track-engine-v0';
 
+// Device recorder mode (5h+ on-device recordings): the raw evidence event log
+// is retained in full by default only so the offline harness can re-export it
+// (evidenceIntakeJsonl replay). On device that log must not live in RAM — the
+// app persists evidence to disk as it arrives. In device mode we drop already-
+// processed events after each advance (dedup state — seenEventKeys / seq map —
+// is kept, so cleaning stays byte-identical), so intake memory is bounded by a
+// single chunk instead of the whole recording. Default OFF. DEVICE_FLUSH=1 on.
+const DEVICE_FLUSH = process.env.DEVICE_FLUSH === '1'
+  || process.env.DEVICE_FLUSH === 'true';
+
 export function createStreamingTrackEngineState(overrides = {}) {
   return {
     version: STREAMING_TRACK_ENGINE_VERSION,
@@ -102,15 +112,22 @@ export function advanceStreamingTrackEngine(previousState = {}, input = {}) {
     scenarioSettlementSession.settlementState
   );
 
+  // Device mode: drop the just-processed events so intake memory stays bounded
+  // (dedup/seq state inside evidenceIntake is preserved). Next advance starts
+  // its slice from 0 since the retained events array is now empty.
+  const outEvidenceIntake = DEVICE_FLUSH
+    ? { ...evidenceIntake, events: [] }
+    : evidenceIntake;
+
   return {
     ...state,
-    evidenceIntake,
+    evidenceIntake: outEvidenceIntake,
     baseKernel,
     metricAccumulator,
     scenarioRecognizer,
     scenarioSettlementSession,
     localRebuild,
-    processedEvidenceEventCount: evidenceIntake.events.length,
+    processedEvidenceEventCount: DEVICE_FLUSH ? 0 : evidenceIntake.events.length,
     lastAdvanceSummary: {
       newEvidenceEventCount: newEvents.length,
       processedEvidenceEventCount: evidenceIntake.events.length,

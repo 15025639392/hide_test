@@ -1,5 +1,16 @@
 const EARTH_RADIUS_METERS = 6_371_000;
 
+// L4 (device recorder mode): the real-time on-device use case records for 5+
+// hours, so the full output track cannot be held in RAM. Each advance already
+// exposes lastAppliedProductTrackPoints (the points newly committed this
+// advance) — the natural flush stream the app persists to its GPX/store. In
+// flush mode we stop retaining the cumulative committedTrack; the emitted
+// stream reconstructs exactly the offline committedTrack (verified byte-
+// identical by the device-mode golden). Default OFF (offline/oracle: retain
+// everything, tests/replay unchanged). Set DEVICE_FLUSH=1 to enable.
+const DEVICE_FLUSH = process.env.DEVICE_FLUSH === '1'
+  || process.env.DEVICE_FLUSH === 'true';
+
 export const STREAMING_LOCAL_REBUILD_VERSION = 'streaming-local-rebuild-v0';
 
 export function createStreamingLocalRebuildState(overrides = {}) {
@@ -927,7 +938,10 @@ function appendProductPoint(state, point) {
     baseTrackPointId: point.trackPointId ?? null,
     trackPointId: ++state.trackPointId
   };
-  state.committedTrack.push(output);
+  // Device flush mode drops the cumulative retention; the point still goes to
+  // lastAppliedProductTrackPoints (this advance's flush) and updates the
+  // running metrics below, so the emitted stream + metrics are unchanged.
+  if (!DEVICE_FLUSH) state.committedTrack.push(output);
   state.lastAppliedProductTrackPoints.push(output);
   // Incremental metrics (replaces the per-advance full reduce over committedTrack).
   state.stats.productTrackPointCount++;
