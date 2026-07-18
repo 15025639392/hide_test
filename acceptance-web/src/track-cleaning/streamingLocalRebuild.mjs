@@ -32,7 +32,13 @@ export function applyStreamingLocalRebuild(
     ...state,
     committedTrack: [...state.committedTrack],
     emittedRawPointIds: [...state.emittedRawPointIds],
-    lastAppliedProductTrackPoints: []
+    lastAppliedProductTrackPoints: [],
+    // Running totals (see appendProductPoint). Carried from the prior advance
+    // and incremented per newly committed point instead of re-reducing the
+    // whole committedTrack each advance — same summation order, byte-identical,
+    // and O(1) per point instead of O(n). Also decouples the metrics from
+    // committedTrack retention so device mode can flush the output.
+    stats: { ...state.stats }
   };
   const proposalsById = new Map((scenarioSettlementSession.lastSettlementPlan?.activeProposals || [])
     .map((proposal) => [String(proposal.id), proposal]));
@@ -52,7 +58,6 @@ export function applyStreamingLocalRebuild(
 
   next.lastAppliedOwnershipRangeCount =
     scenarioSettlementSession.settlementState?.lastAppliedMetricOwnershipRanges?.length || 0;
-  finalizeStats(next);
   return next;
 }
 
@@ -924,6 +929,14 @@ function appendProductPoint(state, point) {
   };
   state.committedTrack.push(output);
   state.lastAppliedProductTrackPoints.push(output);
+  // Incremental metrics (replaces the per-advance full reduce over committedTrack).
+  state.stats.productTrackPointCount++;
+  if (output.countsDistance) {
+    state.stats.totalDistanceMeters += finiteNumber(output.distanceDeltaMeters) ?? 0;
+  }
+  if (output.countsMovingTime) {
+    state.stats.movingTimeSeconds += finiteNumber(output.movingTimeDeltaSeconds) ?? 0;
+  }
 }
 
 function baseTrackPointsInRange(track = [], range) {
@@ -1010,16 +1023,6 @@ function nearestPoint(target, points) {
     distanceMeters(target.lat, target.lng, a.lat, a.lng)
       - distanceMeters(target.lat, target.lng, b.lat, b.lng)
     || finiteNumber(a.rawPointId) - finiteNumber(b.rawPointId))[0] ?? null;
-}
-
-function finalizeStats(state) {
-  state.stats = {
-    productTrackPointCount: state.committedTrack.length,
-    totalDistanceMeters: state.committedTrack.reduce((sum, point) =>
-      sum + (point.countsDistance ? finiteNumber(point.distanceDeltaMeters) ?? 0 : 0), 0),
-    movingTimeSeconds: state.committedTrack.reduce((sum, point) =>
-      sum + (point.countsMovingTime ? finiteNumber(point.movingTimeDeltaSeconds) ?? 0 : 0), 0)
-  };
 }
 
 function normalizeRange(range) {
