@@ -93,6 +93,7 @@
 - [x] **L3 存储裁剪**:baseKernel.track/decisions/excluded 裁到 `[cursor-128, head]`(gnss 8000 行 track 396→134)。
 - [x] **增量 stats**:localRebuild 指标随点累加,去掉每 advance 全量 reduce。
 - [x] **device 记录器模式(DEVICE_FLUSH)**:committedTrack flush 即弃 + intake.events 处理即弃 + 4 个去重键有界窗(N=1024)+ 超窗计数。三大内存主项(events/track/输出)在游标正常推进段与长度解耦。
+- [x] **流式引擎与批处理解耦(可移植性)**:流式对批处理的唯一依赖是 `normalizeSixLayerTrackConfig`(13 行 config 默认值填充),3 个流式文件各 import 一次。已把它 + `DEFAULT_SIX_LAYER_TRACK_CONFIG` 抽到独立 `sixLayerTrackConfig.mjs`(零 import、自包含),批处理 import+再导出保持向后兼容,3 个流式文件改指向新模块。结果:**流式引擎对 `sixLayerTrackProduct.mjs` 零 import**,成为自足子树(streaming* + sixLayerTrackConfig + 三个零依赖叶子 timeWindowIndex/positionSnapRecovery/scenarioWindowCoordinator),可独立抽包 / 移植设备端(纯函数 + 普通对象,无 Node/DOM API)。纯搬移,输出逐字节不变(批流均 1点/0m 验证),`npm test` 238 pass。这也是"批处理退场前置条件 #3(解耦)"。
 - [x] **committedRanges 有界化(DEVICE_FLUSH)**:引擎 state 自身画像(排除 harness 源文件/GC)显示 6h 录制约 **544KB**,唯一单调增长向量是 `committedRanges`(提交区段账本,~1.3KB/1000 事件,48KB@6h)。它**仅供导出契约 + reviewQueue 诊断消费**,引擎前向 advance 不读全账本,故 device flush 下保留最近 N=512 段(超出计入 `committedRangesEvicted`)。offline 保持全量(reviewQueue 需要)。`committedMetricOwnershipRanges`/`hardBoundaryCheckpoints` 是运行时必需(metric accumulator 每 advance 读)不裁,前者自带相邻合并本就增长慢。默认 512 下 6h(161 段)不触发,仅多日连续录制封顶。
 
 ## 8. C 类深挖发现 —— 冲突死锁会丢数据(pre-existing 正确性 bug)

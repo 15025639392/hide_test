@@ -1,4 +1,4 @@
-import { normalizeSixLayerTrackConfig } from './sixLayerTrackProduct.mjs';
+import { normalizeSixLayerTrackConfig } from './sixLayerTrackConfig.mjs';
 import { createRecentMotionSummaryIndex, recentMotionStats } from './timeWindowIndex.mjs';
 
 const EARTH_RADIUS_METERS = 6_371_000;

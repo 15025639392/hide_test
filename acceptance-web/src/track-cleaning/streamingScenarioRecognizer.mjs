@@ -1,4 +1,4 @@
-import { normalizeSixLayerTrackConfig } from './sixLayerTrackProduct.mjs';
+import { normalizeSixLayerTrackConfig } from './sixLayerTrackConfig.mjs';
 import {
   findPositionSnapRecoveryCandidates,
   unstablePositionSnapRecoveryOpenWindow

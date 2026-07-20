@@ -1,4 +1,4 @@
-import { normalizeSixLayerTrackConfig } from './sixLayerTrackProduct.mjs';
+import { normalizeSixLayerTrackConfig } from './sixLayerTrackConfig.mjs';
 
 const NANOS_PER_SECOND = 1_000_000_000;
 
