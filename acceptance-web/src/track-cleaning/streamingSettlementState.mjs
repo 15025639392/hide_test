@@ -1,8 +1,35 @@
+// device 录制模式(5h+):committedRanges 是每次提交区段的账本,随提交次数单调增长
+// (~1.3KB / 1000 事件),是流式 state 里唯一未有界化的结构。它**仅供导出契约与 review
+// queue 诊断消费**——引擎前向 advance 从不读全账本(只用 committedCursorRawPointId +
+// 每-advance 增量 lastAppliedMetricOwnershipRanges),device app 消费的也是 flush 出的
+// committedTrack、不是这个账本。故 device flush 下只保留最近 N 段,和 committedTrack 丢弃、
+// seenEventKeys/emittedRawPointIds 有界是同一套模式。offline/诊断模式保持全量(reviewQueue
+// 需要)。注意:committedMetricOwnershipRanges / hardBoundaryCheckpoints 是运行时必需
+// (streamingMetricAccumulator 每 advance 读),不在此有界化之列。
+// Browser-safe env read: `process` is Node-only; in the web app it is undefined.
+function readEnv(name) {
+  return (typeof process !== 'undefined' && process.env) ? process.env[name] : undefined;
+}
+const DEVICE_FLUSH = readEnv('DEVICE_FLUSH') === '1'
+  || readEnv('DEVICE_FLUSH') === 'true';
+const DEVICE_COMMITTED_RANGE_WINDOW = Number(readEnv('DEVICE_COMMITTED_RANGE_WINDOW')) || 512;
+
+function boundCommittedRanges(ranges) {
+  if (!DEVICE_FLUSH || ranges.length <= DEVICE_COMMITTED_RANGE_WINDOW) {
+    return { kept: ranges, evicted: 0 };
+  }
+  return {
+    kept: ranges.slice(-DEVICE_COMMITTED_RANGE_WINDOW),
+    evicted: ranges.length - DEVICE_COMMITTED_RANGE_WINDOW
+  };
+}
+
 export function createStreamingSettlementState(overrides = {}) {
   return {
     committedCursorRawPointId: finiteNumber(overrides.committedCursorRawPointId),
     commitSequence: finiteNumber(overrides.commitSequence) ?? 0,
     committedRanges: cloneArray(overrides.committedRanges),
+    committedRangesEvicted: finiteNumber(overrides.committedRangesEvicted) ?? 0,
     committedMetricOwnershipRanges: cloneArray(overrides.committedMetricOwnershipRanges),
     hardBoundaryCheckpoints: cloneArray(overrides.hardBoundaryCheckpoints),
     blockingRanges: cloneArray(overrides.blockingRanges),
@@ -74,11 +101,15 @@ export function applyCommitPlanToStreamingState(state, commitPlan) {
     }
   }
 
+  const boundedCommittedRanges = boundCommittedRanges(committedRanges);
+
   return {
     ...previous,
     committedCursorRawPointId: Number.isFinite(cursor) ? cursor : null,
     commitSequence: sequence,
-    committedRanges,
+    committedRanges: boundedCommittedRanges.kept,
+    committedRangesEvicted:
+      (finiteNumber(previous.committedRangesEvicted) ?? 0) + boundedCommittedRanges.evicted,
     committedMetricOwnershipRanges,
     hardBoundaryCheckpoints,
     blockingRanges: cloneArray(commitPlan?.blockingRanges),
