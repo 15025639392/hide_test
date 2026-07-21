@@ -1551,6 +1551,64 @@ function straightTransportTrack() {
   ];
 }
 
+test('streaming scenario recognizer emits a pause_resume_boundary for a closed user-pause episode', () => {
+  const baseKernel = {
+    track: [],
+    excluded: {
+      weak: [],
+      rejected: [],
+      intakeRejected: [
+        { rawPointId: 5, reason: 'user_paused', pauseEpisodeId: 1 },
+        { rawPointId: 6, reason: 'user_paused', pauseEpisodeId: 1 },
+        { rawPointId: 7, reason: 'user_paused', pauseEpisodeId: 1 }
+      ]
+    },
+    activeUserPauseEpisodeId: null
+  };
+  const state = advanceStreamingScenarioRecognizer(createStreamingScenarioRecognizerState(),
+    baseKernel, { enabled: true, emitOpenWindows: false });
+
+  const proposal = state.proposals.find((item) => item.scenario === 'pause_resume_boundary');
+  assert.deepEqual(proposal, {
+    id: 'pause-resume:1',
+    scenario: 'pause_resume_boundary',
+    confidence: 0.9,
+    rawRange: range(5, 7),
+    influenceRange: range(5, 7),
+    metricRange: range(5, 7),
+    metricOwner: true,
+    hardBoundary: true,
+    affectedMetricGates: ['route', 'distance', 'moving_time', 'elevation'],
+    action: 'exclude_pause_span_zero_delta',
+    localRebuild: 'pause_resume_boundary_passthrough',
+    evidence: {
+      pauseEpisodeId: 1,
+      pausedRawPointIds: [5, 6, 7],
+      pausedPointCount: 3
+    }
+  });
+});
+
+test('streaming scenario recognizer defers pause_resume_boundary while the episode is still open', () => {
+  const baseKernel = {
+    track: [],
+    excluded: {
+      weak: [],
+      rejected: [],
+      intakeRejected: [
+        { rawPointId: 5, reason: 'user_paused', pauseEpisodeId: 1 },
+        { rawPointId: 6, reason: 'user_paused', pauseEpisodeId: 1 }
+      ]
+    },
+    activeUserPauseEpisodeId: 1
+  };
+  const state = advanceStreamingScenarioRecognizer(createStreamingScenarioRecognizerState(),
+    baseKernel, { enabled: true, emitOpenWindows: false });
+
+  assert.equal(state.proposals.filter((item) =>
+    item.scenario === 'pause_resume_boundary').length, 0);
+});
+
 function range(startRawPointId, endRawPointId) {
   return { startRawPointId, endRawPointId };
 }

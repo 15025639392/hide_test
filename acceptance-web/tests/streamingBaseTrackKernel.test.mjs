@@ -286,6 +286,63 @@ test('streaming base kernel keeps a PAUSED-epoch near jitter stationary, matchin
   assert.ok(streamed.track.every((point) => point.reason !== 'moving_good_fix'));
 });
 
+// 用户主动暂停：user_pause 与 user_resume 之间的 raw 点必须整段排除（reason user_paused、
+// 不入指标/不入可信轨迹），恢复后首个可信点强制断段、跨暂停不累计距离/时长，且流式与批处理
+// 逐点一致。
+test('streaming base kernel excludes a user-paused span and breaks the segment on resume, matching the full product', () => {
+  const events = [
+    sessionMetadata(),
+    samplingPolicy(),
+    locationSample(1, 30, 120, 5, 1_000_000_000),
+    userPause(15_000_000_000),
+    locationSample(2, 30.00001, 120, 5, 16_000_000_000),
+    locationSample(3, 30.00002, 120, 5, 20_000_000_000),
+    userResume(28_000_000_000),
+    locationSample(4, 30.0003, 120, 5, 31_000_000_000, {
+      speedMetersPerSecond: 1.1
+    })
+  ];
+
+  const full = buildSixLayerTrackProduct(events, { config: CONFIG });
+  const first = advanceStreamingBaseTrackKernel(createStreamingBaseTrackKernelState({
+    config: CONFIG
+  }), events.slice(0, 3));
+  const streamed = advanceStreamingBaseTrackKernel(first, events.slice(3));
+
+  assert.deepEqual(baseProjection(streamed), baseProjection(full));
+  // 暂停段两点被整段排除，不进可信轨迹。
+  assert.deepEqual(streamed.track.map((point) => point.sourceRawPointId), [1, 4]);
+  const paused = streamed.excluded.intakeRejected.filter((point) => point.reason === 'user_paused');
+  assert.equal(paused.length, 2);
+  assert.deepEqual(paused.map((point) => point.rawPointId), [2, 3]);
+  assert.ok(paused.every((point) => point.pauseEpisodeId === 1));
+  // 恢复点强制断段、清零跨暂停里程。
+  assert.equal(streamed.track[1].startsNewSegment, true);
+  assert.equal(streamed.track[1].segmentId, 2);
+  assert.equal(streamed.track[1].distanceDeltaMeters, 0);
+  assert.equal(streamed.track[1].movingTimeDeltaSeconds, 0);
+  assert.equal(streamed.stats.totalDistanceMeters, 0);
+  assert.equal(streamed.stats.movingTimeSeconds, 0);
+});
+
+function userPause(eventElapsedRealtimeNanos) {
+  return {
+    schemaVersion: 'outdoor-track-evidence-v1',
+    event: 'user_pause',
+    sessionId: 'S1',
+    eventElapsedRealtimeNanos
+  };
+}
+
+function userResume(eventElapsedRealtimeNanos) {
+  return {
+    schemaVersion: 'outdoor-track-evidence-v1',
+    event: 'user_resume',
+    sessionId: 'S1',
+    eventElapsedRealtimeNanos
+  };
+}
+
 function pausedPolicy(samplingEpochId, startedElapsedRealtimeNanos) {
   return {
     schemaVersion: 'outdoor-track-evidence-v1',

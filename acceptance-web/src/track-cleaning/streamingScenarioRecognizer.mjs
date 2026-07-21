@@ -151,6 +151,12 @@ export function advanceStreamingScenarioRecognizer(previousState = {}, baseKerne
     emittedProposalIds.push(proposal.id);
   }
 
+  for (const proposal of pauseResumeBoundaryProposals(baseKernel)) {
+    if (emittedProposalIds.includes(proposal.id)) continue;
+    proposals.push(proposal);
+    emittedProposalIds.push(proposal.id);
+  }
+
   for (const proposal of transportContaminationProposals(baseKernel)) {
     if (emittedProposalIds.includes(proposal.id)) continue;
     proposals.push(proposal);
@@ -383,6 +389,50 @@ function gapRecoveryBoundaryProposals(track) {
       };
     })
     .filter(Boolean);
+}
+
+// 用户主动暂停：把已闭合的暂停 episode（user_pause…user_resume）整段发成 hardBoundary，
+// 独占 route/distance/moving_time/elevation，coordinator 据此禁止任何场景跨暂停桥接指标。
+// 只发已闭合 episode（episodeId !== baseKernel.activeUserPauseEpisodeId）——当前仍打开的
+// episode 其排除点还在增长，若按 episode id 提前发射会被 emittedProposalIds 去重卡住 range。
+// 注：极长暂停下早期排除点可能被 L3 保留裁剪，导致 span 起点偏晚（已知流式边界限制）。
+function pauseResumeBoundaryProposals(baseKernel = {}) {
+  const activeEpisodeId = finiteNumber(baseKernel.activeUserPauseEpisodeId);
+  const byEpisode = new Map();
+  for (const point of baseKernel.excluded?.intakeRejected || []) {
+    if (point?.reason !== 'user_paused') continue;
+    const episodeId = finiteNumber(point.pauseEpisodeId);
+    const rawPointId = finiteNumber(point.rawPointId ?? point.sourceRawPointId);
+    if (!Number.isFinite(episodeId) || !Number.isFinite(rawPointId)) continue;
+    if (episodeId === activeEpisodeId) continue;
+    if (!byEpisode.has(episodeId)) byEpisode.set(episodeId, []);
+    byEpisode.get(episodeId).push(rawPointId);
+  }
+  return [...byEpisode.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([episodeId, rawPointIds]) => {
+      const startRawPointId = Math.min(...rawPointIds);
+      const endRawPointId = Math.max(...rawPointIds);
+      const rawRange = range(startRawPointId, endRawPointId);
+      return {
+        id: `pause-resume:${episodeId}`,
+        scenario: 'pause_resume_boundary',
+        confidence: 0.9,
+        rawRange,
+        influenceRange: rawRange,
+        metricRange: rawRange,
+        metricOwner: true,
+        hardBoundary: true,
+        affectedMetricGates: ['route', 'distance', 'moving_time', 'elevation'],
+        action: 'exclude_pause_span_zero_delta',
+        localRebuild: 'pause_resume_boundary_passthrough',
+        evidence: {
+          pauseEpisodeId: episodeId,
+          pausedRawPointIds: [...rawPointIds].sort((a, b) => a - b),
+          pausedPointCount: rawPointIds.length
+        }
+      };
+    });
 }
 
 function transportContaminationProposals(baseKernel = {}) {

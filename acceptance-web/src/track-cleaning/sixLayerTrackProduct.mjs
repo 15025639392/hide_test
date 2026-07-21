@@ -94,6 +94,19 @@ export function buildSixLayerTrackProduct(modelOrEvents, options = {}) {
 
   for (const rawPoint of evidence.rawPoints) {
     product.stats.rawPointCount++;
+    if (rawPoint.userPauseEpisodeId !== null && rawPoint.userPauseEpisodeId !== undefined) {
+      const point = excludedPoint(rawPoint, 'intake_rejected', 'user_paused', null, null, {
+        activityState: 'unknown',
+        boundaryState: 'user_paused',
+        gnssAltitudeResult: 'unavailable',
+        gnssAltitudeReason: null
+      });
+      point.pauseEpisodeId = rawPoint.userPauseEpisodeId;
+      product.excluded.intakeRejected.push(point);
+      product.rawPointDecisions.push(rawPointDecision(point, false, false, false));
+      trackState.pendingSegmentBreakAfterPause = true;
+      continue;
+    }
     const epoch = findSamplingEpoch(rawPoint, evidence.samplingEpochs);
     const intake = intakeRawPoint(rawPoint, epoch, evidence, trackState, config);
     if (!intake.accepted) {
@@ -112,6 +125,7 @@ export function buildSixLayerTrackProduct(modelOrEvents, options = {}) {
     trackState.legalFixKeys.add(fixKey(rawPoint));
     const motion = classifyActivity(rawPoint, motionIndex);
     const decision = decideHorizontal(rawPoint, epoch, motion, trackState, config);
+    maybeApplyPauseResumeSegmentBreak(trackState, decision);
     const gnssAltitude = applyGnssAltitude(rawPoint, decision, trackState, product, config);
     const settlement = settleDecision(decision, gnssAltitude);
 
@@ -253,14 +267,25 @@ function buildEvidence(events, config) {
   const barometerWindows = [];
   let metadata = {};
 
+  // 用户主动暂停：按事件流顺序跟踪当前暂停 episode（与流式 base kernel 的 active flag 逐点
+  // 对齐），暂停期间的 raw 点打上 userPauseEpisodeId，供点循环在 intake 前直接排除。
+  let userPauseEpisodeSeq = 0;
+  let activeUserPauseEpisodeId = null;
   for (const event of events || []) {
     if (event?.event === 'session_metadata') {
       metadata = { ...metadata, ...event };
     } else if (isLocationEvidenceEvent(event)) {
       const rawPoint = normalizeRawPoint(event);
-      if (rawPoint) rawPoints.push(rawPoint);
+      if (rawPoint) {
+        rawPoint.userPauseEpisodeId = activeUserPauseEpisodeId;
+        rawPoints.push(rawPoint);
+      }
     } else if (event?.event === 'sampling_policy') {
       samplingEpochs.push(normalizeSamplingEpoch(event));
+    } else if (event?.event === 'user_pause') {
+      activeUserPauseEpisodeId = ++userPauseEpisodeSeq;
+    } else if (event?.event === 'user_resume') {
+      activeUserPauseEpisodeId = null;
     } else if (isMotionWindowEvent(event)) {
       motionWindows.push(normalizeMotionWindow(event, config));
     } else if (event?.event === 'barometer_window') {
@@ -497,6 +522,20 @@ function rejected(reason) {
 
 function isPausedEpoch(epoch) {
   return !!epoch && epoch.state === 'PAUSED';
+}
+
+// 用户主动暂停恢复后的首个可信点：强制断段并清零跨暂停的距离/时长。与流式 base kernel 的
+// maybeApplyPauseResumeSegmentBreak 逐字段对齐，保证两侧 base 产物一致。
+function maybeApplyPauseResumeSegmentBreak(state, decision) {
+  if (!state.pendingSegmentBreakAfterPause) return;
+  if (decision.result !== 'anchor' && decision.result !== 'accept') return;
+  if (state.previousTrustedTrackPoint) {
+    decision.startsNewSegment = true;
+    decision.distanceDeltaMeters = 0;
+    decision.movingTimeDeltaSeconds = 0;
+    decision.boundaryState = 'pause_resume';
+  }
+  state.pendingSegmentBreakAfterPause = false;
 }
 
 function decideHorizontal(rawPoint, epoch, motion, state, config) {

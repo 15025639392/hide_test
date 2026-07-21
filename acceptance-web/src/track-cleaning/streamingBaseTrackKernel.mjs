@@ -39,7 +39,14 @@ export function createStreamingBaseTrackKernelState(overrides = {}) {
     legalFixKeysEvicted: finiteNumber(overrides.legalFixKeysEvicted) ?? 0,
     rawPointTimelinePrunedBeforeRawPointId:
       finiteNumber(overrides.rawPointTimelinePrunedBeforeRawPointId),
-    lastProcessedRawPointId: finiteNumber(overrides.lastProcessedRawPointId)
+    lastProcessedRawPointId: finiteNumber(overrides.lastProcessedRawPointId),
+    // 用户主动暂停（user_pause/user_resume 事件）：暂停期间 activeUserPauseEpisodeId 记录
+    // 当前暂停 episode，区间内的 raw 点在 intake 前直接排除（reason user_paused，不入指标/
+    // 不入可信轨迹）；恢复后 pendingSegmentBreakAfterPause 强制下一个可信点断段，跨暂停不
+    // bridge 距离/时长。与端上"用户手动暂停"语义对齐（见 pause_resume_boundary 场景）。
+    userPauseEpisodeSeq: finiteNumber(overrides.userPauseEpisodeSeq) ?? 0,
+    activeUserPauseEpisodeId: finiteNumber(overrides.activeUserPauseEpisodeId),
+    pendingSegmentBreakAfterPause: overrides.pendingSegmentBreakAfterPause === true
   };
 }
 
@@ -67,6 +74,12 @@ export function advanceStreamingBaseTrackKernel(previousState = {}, eventsOrBatc
       applySessionMetadata(next, event);
     } else if (event?.event === 'sampling_policy') {
       upsertSamplingEpoch(next, normalizeSamplingEpoch(event));
+    } else if (event?.event === 'user_pause') {
+      next.activeUserPauseEpisodeId = ++next.userPauseEpisodeSeq;
+      next.pendingSegmentBreakAfterPause = true;
+    } else if (event?.event === 'user_resume') {
+      next.activeUserPauseEpisodeId = null;
+      // pendingSegmentBreakAfterPause 保持置位，直到下一个被接受的可信点结算断段。
     } else if (isMotionWindowEvent(event)) {
       addMotionWindow(next, normalizeMotionWindow(event, state.config));
     } else if (isLocationEvidenceEvent(event)) {
@@ -149,6 +162,17 @@ function processRawPoint(state, rawPoint) {
   state.stats.rawPointCount++;
   state.lastProcessedRawPointId = rawPoint.rawPointId;
   recordRawPointTimeline(state, rawPoint);
+  if (state.activeUserPauseEpisodeId !== null && state.activeUserPauseEpisodeId !== undefined) {
+    const point = excludedPoint(rawPoint, 'intake_rejected', 'user_paused', null, null, {
+      activityState: 'unknown',
+      boundaryState: 'user_paused'
+    });
+    point.pauseEpisodeId = state.activeUserPauseEpisodeId;
+    state.excluded.intakeRejected.push(point);
+    state.rawPointDecisions.push(rawPointDecision(point, false, false, false));
+    state.pendingSegmentBreakAfterPause = true;
+    return;
+  }
   const epoch = findSamplingEpoch(rawPoint, state.samplingEpochs);
   const intake = intakeRawPoint(rawPoint, epoch, state);
   if (!intake.accepted) {
@@ -166,6 +190,7 @@ function processRawPoint(state, rawPoint) {
   const motion = classifyActivity(rawPoint, state.motionWindows);
   pruneMotionWindows(state, rawPoint.elapsedRealtimeNanos);
   const decision = decideHorizontal(rawPoint, epoch, motion, state, state.config);
+  maybeApplyPauseResumeSegmentBreak(state, decision);
   const settlement = settleDecision(decision);
 
   if (decision.result === 'anchor' || decision.result === 'accept') {
@@ -264,6 +289,21 @@ function intakeRawPoint(rawPoint, epoch, state) {
 
 function isPausedEpoch(epoch) {
   return !!epoch && epoch.state === 'PAUSED';
+}
+
+// 用户主动暂停恢复后的首个可信点：强制断段并清零跨暂停的距离/时长，避免把"暂停前最后一点
+// → 恢复后首点"的空间跳变误计成里程。仅当有前序可信点时才断段；无前序（暂停发生在首个可信
+// 定位之前）则直接清标记，走正常首定位。
+function maybeApplyPauseResumeSegmentBreak(state, decision) {
+  if (!state.pendingSegmentBreakAfterPause) return;
+  if (decision.result !== 'anchor' && decision.result !== 'accept') return;
+  if (state.previousTrustedTrackPoint) {
+    decision.startsNewSegment = true;
+    decision.distanceDeltaMeters = 0;
+    decision.movingTimeDeltaSeconds = 0;
+    decision.boundaryState = 'pause_resume';
+  }
+  state.pendingSegmentBreakAfterPause = false;
 }
 
 function decideHorizontal(rawPoint, epoch, motion, state, config) {

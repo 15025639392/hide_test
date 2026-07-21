@@ -166,7 +166,8 @@ function rebuildOwnershipRange(ownership, range, proposal, baseKernel, rawPoints
     };
   }
   if (proposal.scenario === 'gap_recovery_boundary'
-      || proposal.scenario === 'pressure_jump') {
+      || proposal.scenario === 'pressure_jump'
+      || proposal.scenario === 'pause_resume_boundary') {
     return {
       points: baseTrackPointsInRange(baseKernel.track, range).map((point) => ({
         ...point,
