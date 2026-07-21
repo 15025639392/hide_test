@@ -233,6 +233,73 @@ test('streaming base kernel rejects out-of-order fix without moving the cursor b
   assert.equal(streamed.lastLegalElapsedRealtimeNanos, 10_000_000_000);
 });
 
+// PAUSED 采样策略下，一段"距离够远但速度合理"的跳变，在普通 MOVING 策略里会被判
+// moving_good_fix 累计假里程；对齐端上 TrackTrustEngine 的 paused 分支后，必须改判
+// gap_recovery（距离/时长不累计、强制新开 segment），且流式与批处理逐点一致。
+test('streaming base kernel treats a PAUSED-epoch far jump as gap recovery, matching the full product', () => {
+  const events = [
+    sessionMetadata(),
+    samplingPolicy(),
+    locationSample(1, 30, 120, 5, 1_000_000_000),
+    pausedPolicy(2, 20_000_000_000),
+    locationSample(2, 30.0003, 120, 5, 31_000_000_000, {
+      samplingEpochId: 2,
+      speedMetersPerSecond: 1.1
+    })
+  ];
+
+  const full = buildSixLayerTrackProduct(events, { config: CONFIG });
+  const first = advanceStreamingBaseTrackKernel(createStreamingBaseTrackKernelState({
+    config: CONFIG
+  }), events.slice(0, 3));
+  const streamed = advanceStreamingBaseTrackKernel(first, events.slice(3));
+
+  assert.deepEqual(baseProjection(streamed), baseProjection(full));
+  assert.equal(streamed.track[1].reason, 'gap_recovery');
+  assert.equal(streamed.track[1].distanceDeltaMeters, 0);
+  assert.equal(streamed.track[1].movingTimeDeltaSeconds, 0);
+  assert.ok(streamed.track[1].startsNewSegment);
+  assert.equal(streamed.track[1].segmentId, 2);
+  assert.equal(streamed.stats.totalDistanceMeters, 0);
+});
+
+// PAUSED 采样策略下的近距离抖动，与普通静止一样落 stationary，不累计里程。
+test('streaming base kernel keeps a PAUSED-epoch near jitter stationary, matching the full product', () => {
+  const events = [
+    sessionMetadata(),
+    samplingPolicy(),
+    locationSample(1, 30, 120, 5, 1_000_000_000),
+    pausedPolicy(2, 20_000_000_000),
+    locationSample(2, 30.00002, 120, 5, 31_000_000_000, {
+      samplingEpochId: 2,
+      speedMetersPerSecond: 0
+    })
+  ];
+
+  const full = buildSixLayerTrackProduct(events, { config: CONFIG });
+  const streamed = advanceStreamingBaseTrackKernel(createStreamingBaseTrackKernelState({
+    config: CONFIG
+  }), events);
+
+  assert.deepEqual(baseProjection(streamed), baseProjection(full));
+  assert.equal(streamed.stats.totalDistanceMeters, 0);
+  assert.ok(streamed.track.every((point) => point.reason !== 'moving_good_fix'));
+});
+
+function pausedPolicy(samplingEpochId, startedElapsedRealtimeNanos) {
+  return {
+    schemaVersion: 'outdoor-track-evidence-v1',
+    event: 'sampling_policy',
+    sessionId: 'S1',
+    eventSeq: 2 + samplingEpochId,
+    eventWallTimeMillis: 1_760_000_000_000 + startedElapsedRealtimeNanos / 1_000_000,
+    eventElapsedRealtimeNanos: startedElapsedRealtimeNanos,
+    samplingEpochId,
+    state: 'PAUSED',
+    startedElapsedRealtimeNanos
+  };
+}
+
 function baseProjection(productOrState) {
   return {
     track: productOrState.track.map((point) => ({

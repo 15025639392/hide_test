@@ -495,6 +495,10 @@ function rejected(reason) {
   return { accepted: false, reason };
 }
 
+function isPausedEpoch(epoch) {
+  return !!epoch && epoch.state === 'PAUSED';
+}
+
 function decideHorizontal(rawPoint, epoch, motion, state, config) {
   const previous = state.previousTrustedTrackPoint;
   if (!previous) {
@@ -527,6 +531,15 @@ function decideHorizontal(rawPoint, epoch, motion, state, config) {
     stationaryThreshold(rawPoint, config));
 
   if (isGap) {
+    return decideGapRecovery(rawPoint, previous, motion, state, distance, config);
+  }
+
+  if (isPausedEpoch(epoch)) {
+    const pausedThresholdMeters = stationaryThreshold(rawPoint, config);
+    if (distance <= pausedThresholdMeters) {
+      return decideStationaryCloud(rawPoint, previous, motion, state, config,
+        pausedThresholdMeters);
+    }
     return decideGapRecovery(rawPoint, previous, motion, state, distance, config);
   }
 

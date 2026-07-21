@@ -165,7 +165,7 @@ function processRawPoint(state, rawPoint) {
   state.legalFixKeys.push(fixKey(rawPoint));
   const motion = classifyActivity(rawPoint, state.motionWindows);
   pruneMotionWindows(state, rawPoint.elapsedRealtimeNanos);
-  const decision = decideHorizontal(rawPoint, motion, state, state.config);
+  const decision = decideHorizontal(rawPoint, epoch, motion, state, state.config);
   const settlement = settleDecision(decision);
 
   if (decision.result === 'anchor' || decision.result === 'accept') {
@@ -262,7 +262,11 @@ function intakeRawPoint(rawPoint, epoch, state) {
   return { accepted: true, reason: null };
 }
 
-function decideHorizontal(rawPoint, motion, state, config) {
+function isPausedEpoch(epoch) {
+  return !!epoch && epoch.state === 'PAUSED';
+}
+
+function decideHorizontal(rawPoint, epoch, motion, state, config) {
   const previous = state.previousTrustedTrackPoint;
   if (!previous) {
     if (rawPoint.accuracy <= config.firstFixGoodAccuracyMeters) {
@@ -291,6 +295,15 @@ function decideHorizontal(rawPoint, motion, state, config) {
   }
 
   if (isGap) {
+    return decideGapRecovery(rawPoint, previous, motion, state, distance, config);
+  }
+
+  if (isPausedEpoch(epoch)) {
+    const pausedThresholdMeters = stationaryThreshold(rawPoint, config);
+    if (distance <= pausedThresholdMeters) {
+      return decideStationaryCloud(rawPoint, previous, motion, state, config,
+        pausedThresholdMeters);
+    }
     return decideGapRecovery(rawPoint, previous, motion, state, distance, config);
   }
 
