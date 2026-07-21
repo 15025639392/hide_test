@@ -91,6 +91,7 @@ const elements = {
   showTrusted: document.querySelector('#showTrusted'),
   showCleaned: document.querySelector('#showCleaned'),
   showStreaming: document.querySelector('#showStreaming'),
+  showDart: document.querySelector('#showDart'),
   showScenarios: document.querySelector('#showScenarios'),
   showTerrain: document.querySelector('#showTerrain'),
   showContours: document.querySelector('#showContours'),
@@ -140,6 +141,7 @@ for (const input of [
   elements.showTrusted,
   elements.showCleaned,
   elements.showStreaming,
+  elements.showDart,
   elements.showScenarios,
   elements.showDirection,
   elements.showCleanedPoints,
@@ -277,6 +279,7 @@ function finalizeDataset(result, index) {
     targetProduct: result.targetProduct,
     targetOutput: result.targetOutput,
     streamingLine: null, // lazily computed on first 流式线 render (see streamingFeatureCollection)
+    dartLine: null, // lazily fetched from local Dart engine server on first Dart 引擎线 render (see dartFeatureCollection)
     visible: true
   };
   attachDatasetIndexes(dataset);
@@ -2458,6 +2461,7 @@ function addMapLayers() {
   state.map.addSource('trusted-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('cleaned-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('streaming-lines', { type: 'geojson', data: emptyFeatureCollection() });
+  state.map.addSource('dart-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('dense-intent-conflicts', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('forward-spine-conflicts', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('direction-arrows', { type: 'geojson', data: emptyFeatureCollection() });
@@ -2535,6 +2539,18 @@ function addMapLayers() {
       'line-width': ['interpolate', ['linear'], ['zoom'], 10, 2.5, 15, 4, 20, 6],
       'line-opacity': 0.9,
       'line-dasharray': [2, 1.4]
+    }
+  });
+  // 设备同款原生 Dart 流式引擎清洗线 —— 由本地 Dart 服务(bin/serve.dart)现算的对比图层。
+  // 品红实线,与 JS 流式线(青虚线)区分:两线重合即证明 Dart 移植与 JS 权威源逐点一致。
+  state.map.addLayer({
+    id: 'dart-lines',
+    type: 'line',
+    source: 'dart-lines',
+    paint: {
+      'line-color': '#d946ef',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 10, 2, 15, 3.2, 20, 5],
+      'line-opacity': 0.85
     }
   });
   state.map.addLayer({
@@ -2825,6 +2841,9 @@ function renderMapHighlightLayers(visibleDatasets = null) {
   state.map.getSource('streaming-lines').setData(mapElementVisible(elements.showStreaming)
     ? streamingFeatureCollection(visible)
     : emptyFeatureCollection());
+  state.map.getSource('dart-lines').setData(mapElementVisible(elements.showDart)
+    ? dartFeatureCollection(visible)
+    : emptyFeatureCollection());
 }
 
 function renderDirectionArrows(visibleDatasets = null) {
@@ -2887,6 +2906,55 @@ function streamingFeatureCollection(datasets) {
       })
       .filter(Boolean)
   };
+}
+
+// 设备同款原生 Dart 流式引擎清洗线 —— 由本地 Dart 服务(packages/track_cleaning/bin/serve.dart)
+// 现算的对比图层。Dart 无法在浏览器原生跑,故走 HTTP:fetch 是异步的,而图层渲染是同步的,
+// 所以这里用「懒取 + 取回后重绘」模式:首次需要时发一次 fetch(用 'pending' 哨兵防重复),
+// 拿到点后写回 dataset.dartLine 并重新触发高亮层渲染。与 JS 流式线共用 lineFeature 渲染。
+const DART_ENGINE_ENDPOINT = 'http://localhost:8787/clean';
+
+function dartFeatureCollection(datasets) {
+  const features = [];
+  for (const dataset of datasets) {
+    if (dataset.dartLine === null) {
+      dataset.dartLine = 'pending';
+      fetchDartLine(dataset.model)
+        .then((points) => {
+          dataset.dartLine = points;
+          renderMapHighlightLayers();
+        })
+        .catch((error) => {
+          dataset.dartLine = [];
+          console.warn('Dart 引擎线获取失败(本地 Dart 服务未启动?):', error);
+        });
+    }
+    const points = Array.isArray(dataset.dartLine) ? dataset.dartLine : [];
+    if (points.length > 1) {
+      features.push(lineFeature(dataset, points, 'dart', null, { engine: 'dart' }));
+    }
+  }
+  return { type: 'FeatureCollection', features };
+}
+
+async function fetchDartLine(model) {
+  const response = await fetch(DART_ENGINE_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ events: model.events || [] })
+  });
+  if (!response.ok) {
+    throw new Error(`Dart 引擎服务返回 HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  return (data.track || [])
+    .filter((point) => Number.isFinite(point?.lat) && Number.isFinite(point?.lng))
+    .map((point) => ({
+      lat: point.lat,
+      lng: point.lng,
+      trackPointId: point.trackPointId,
+      sourceRawPointId: point.sourceRawPointId
+    }));
 }
 
 function scenarioPolygonFeatureCollection(datasets) {
