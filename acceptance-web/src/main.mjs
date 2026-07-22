@@ -17,11 +17,7 @@ import {
   buildScenarioPolygonFeatures
 } from './scenarioPolygons.mjs';
 import {
-  REVIEW_QUEUE_FILTERS,
-  buildReviewQueueExport,
   buildReviewTasks,
-  filterReviewTasks,
-  reviewQueueStats,
   reviewerVisibleScenario,
   scenarioNameLabel,
   scenarioReviewLevel,
@@ -32,17 +28,6 @@ const COLORS = ['#2dd4bf', '#fb7185', '#facc15', '#60a5fa', '#c084fc', '#34d399'
 const MAP_LINE_POINT_LIMIT = 6000;
 const MAP_RAW_POINT_LIMIT = 7000;
 const MAP_TRACK_POINT_LIMIT = 5000;
-const REVIEW_TASK_STATUSES = [
-  { key: 'approved', label: '通过' },
-  { key: 'question', label: '存疑' },
-  { key: 'skipped', label: '跳过' }
-];
-const REVIEW_STATUS_LABELS = {
-  pending: '待看',
-  approved: '通过',
-  question: '存疑',
-  skipped: '跳过'
-};
 const TERRAIN_EXAGGERATION = 1.15;
 const TERRAIN_TILEJSON_URL = 'https://tiles.mapterhorn.com/tilejson.json';
 const TERRAIN_TILE_TEMPLATE = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
@@ -69,9 +54,6 @@ const state = {
   selectedPoint: null,
   scenarioReviewRangeText: '',
   rawReviewContext: null,
-  reviewQueueFilter: 'all',
-  reviewTaskStatusByDataset: {},
-  reviewFocusMode: false,
   focusedMapRange: null,
   currentProblemDrag: null,
   map: null,
@@ -110,7 +92,6 @@ const elements = {
   scenarioRangeReviewButton: document.querySelector('#scenarioRangeReviewButton'),
   scenarioRangeState: document.querySelector('#scenarioRangeState'),
   scenarioRangeReview: document.querySelector('#scenarioRangeReview'),
-  exitFocusButton: document.querySelector('#exitFocusButton'),
   selectedPointText: document.querySelector('#selectedPointText'),
   pointDetails: document.querySelector('#pointDetails'),
   mapView: document.querySelector('#mapView')
@@ -125,7 +106,6 @@ elements.fileInput.addEventListener('change', async (event) => {
 elements.clearButton.addEventListener('click', clearAll);
 elements.fitBoundsButton.addEventListener('click', fitAllBounds);
 elements.scenarioRangeReviewButton.addEventListener('click', applyScenarioRangeReview);
-elements.exitFocusButton.addEventListener('click', exitReviewFocusMode);
 elements.currentProblemPanel.querySelector('.panel-title')
   .addEventListener('pointerdown', startCurrentProblemDrag);
 elements.scenarioRangeInput.addEventListener('keydown', (event) => {
@@ -180,8 +160,6 @@ async function importFiles(files, fromDirectory) {
     state.selectedDatasetId = datasets[0]?.id || null;
     state.selectedPoint = null;
     state.rawReviewContext = null;
-    state.reviewQueueFilter = 'all';
-    state.reviewTaskStatusByDataset = {};
     setImportText(errors.length
       ? `找到 ${evidenceFiles.length} 个 evidence 文件，已导入 ${datasets.length} 个，失败 ${errors.length} 个：${errors[0]}`
       : `找到 ${evidenceFiles.length} 个 evidence 文件，已导入 ${datasets.length} 个`);
@@ -434,9 +412,6 @@ function clearAll() {
   state.selectedPoint = null;
   state.scenarioReviewRangeText = '';
   state.rawReviewContext = null;
-  state.reviewQueueFilter = 'all';
-  state.reviewTaskStatusByDataset = {};
-  state.reviewFocusMode = false;
   state.focusedMapRange = null;
   elements.folderInput.value = '';
   elements.fileInput.value = '';
@@ -451,13 +426,12 @@ function applyScenarioRangeReview() {
   state.scenarioReviewRangeText = elements.scenarioRangeInput.value.trim();
   state.rawReviewContext = null;
   const parsed = parseScenarioRangeText(state.scenarioReviewRangeText);
-  state.reviewFocusMode = Boolean(parsed);
   state.focusedMapRange = parsed
     ? focusedMapRangeFromTrackRange(selectedDataset(), parsed.startTrackPointId,
       parsed.endTrackPointId)
     : null;
   renderScenarioRangeReview();
-  renderReviewFocusMode();
+  renderFocusedMap();
 }
 
 function setImportText(text) {
@@ -492,7 +466,7 @@ function render() {
   renderScenarioRangeReview();
   renderPointDetails();
   renderCleaningAlgorithm();
-  renderReviewFocusMode();
+  renderFocusedMap();
   renderMap();
 }
 
@@ -509,7 +483,6 @@ function renderReviewDatasetOverview() {
     `${selectedIndex + 1}/${state.datasets.length}`;
   elements.reviewDatasetOverview.innerHTML = [
     datasetSummaryMarkup(dataset),
-    reviewQueueSummaryMarkup(dataset),
     state.datasets.length > 1 ? datasetSwitchMarkup() : ''
   ].join('');
 }
@@ -538,37 +511,6 @@ function datasetSummaryMarkup(dataset) {
       <span>${escapeHtml(dataset?.filePath || '-')}</span>
     </section>
   `;
-}
-
-function reviewQueueSummaryMarkup(dataset) {
-  const stats = reviewQueueStats(dataset, {
-    statusForTask: (task) => reviewTaskStatus(dataset, task.reviewKey)
-  });
-  return `
-    <section class="summary-block review-queue-summary">
-      <h3>审核队列</h3>
-      <div class="metric-grid review-queue-grid">
-        ${metricCellMarkup('问题段', formatPlainNumber(stats.total))}
-        ${metricCellMarkup('待看', formatPlainNumber(stats.pending))}
-        ${metricCellMarkup('已处理', formatPlainNumber(stats.done))}
-        ${metricCellMarkup('高风险', formatPlainNumber(stats.highRisk))}
-        ${metricCellMarkup('诊断上下文', formatPlainNumber(stats.diagnosticContext))}
-        ${metricCellMarkup('指标任务', formatPlainNumber(stats.metricOwner))}
-      </div>
-      <span>${escapeHtml(reviewQueueHint(stats))}</span>
-    </section>
-  `;
-}
-
-function reviewQueueHint(stats) {
-  if (!stats.total) return '当前样本没有需要优先复核的问题。';
-  if (stats.question > 0) {
-    return `还有 ${formatPlainNumber(stats.question)} 个存疑问题，建议优先回看地图和原始点。`;
-  }
-  if (stats.pending > 0) {
-    return `建议按 Raw 时间序列从上到下复核，先处理高风险、GAP 和交通混入。`;
-  }
-  return '本样本的问题都已标记，后续可切换样本继续复核。';
 }
 
 function metricCellMarkup(label, value) {
@@ -622,7 +564,6 @@ function handleReviewDatasetClick(event) {
   state.selectedPoint = null;
   state.scenarioReviewRangeText = '';
   state.rawReviewContext = null;
-  state.reviewFocusMode = false;
   state.focusedMapRange = null;
   elements.scenarioRangeInput.value = '';
   if (state.popup) state.popup.remove();
@@ -924,22 +865,6 @@ function humanForwardSpineConflictSummary(conflict) {
 }
 
 function handleScenarioRangeReviewClick(event) {
-  const statusButton = event.target.closest('[data-review-task-key][data-review-task-status]');
-  if (statusButton) {
-    updateReviewTaskStatus(statusButton.dataset.reviewTaskKey,
-      statusButton.dataset.reviewTaskStatus);
-    return;
-  }
-  const filterButton = event.target.closest('[data-review-filter]');
-  if (filterButton) {
-    updateReviewQueueFilter(filterButton.dataset.reviewFilter);
-    return;
-  }
-  const exportButton = event.target.closest('[data-review-export]');
-  if (exportButton) {
-    exportReviewQueue();
-    return;
-  }
   const scenarioButton = event.target.closest('[data-scenario-start-track][data-scenario-end-track]');
   if (scenarioButton) {
     const startTrackPointId = Number(scenarioButton.dataset.scenarioStartTrack);
@@ -966,78 +891,6 @@ function handleScenarioRangeReviewClick(event) {
   focusDenseIntentConflict(startRawPointId, endRawPointId);
 }
 
-function updateReviewTaskStatus(taskKey, nextStatus) {
-  const dataset = selectedDataset();
-  if (!dataset || !taskKey || !reviewStatusIsValid(nextStatus)) return;
-  const statuses = datasetReviewStatuses(dataset);
-  const currentStatus = statuses[taskKey] || 'pending';
-  if (currentStatus === nextStatus) {
-    delete statuses[taskKey];
-  } else {
-    statuses[taskKey] = nextStatus;
-  }
-  renderReviewDatasetOverview();
-  renderCleaningAlgorithm();
-}
-
-function updateReviewQueueFilter(nextFilter) {
-  if (!REVIEW_QUEUE_FILTERS.some((filter) => filter.key === nextFilter)) return;
-  state.reviewQueueFilter = nextFilter;
-  renderCleaningAlgorithm();
-}
-
-function exportReviewQueue() {
-  const dataset = selectedDataset();
-  if (!dataset) return;
-  const payload = {
-    ...buildReviewQueueExport(dataset, {
-      filter: state.reviewQueueFilter,
-      statusForTask: (task) => reviewTaskStatus(dataset, task.reviewKey)
-    }),
-    exportedAt: new Date().toISOString()
-  };
-  downloadJson(reviewQueueExportFileName(dataset, state.reviewQueueFilter), payload);
-}
-
-function reviewQueueExportFileName(dataset, filter) {
-  const baseName = String(dataset?.fileName || 'review-queue')
-    .replace(/\.[^.]+$/, '')
-    .replace(/[^a-zA-Z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    || 'review-queue';
-  return `${baseName}-${filter || 'all'}-review-queue.json`;
-}
-
-function downloadJson(fileName, payload) {
-  const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], {
-    type: 'application/json'
-  });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = fileName;
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
-}
-
-function reviewStatusIsValid(status) {
-  return REVIEW_TASK_STATUSES.some((item) => item.key === status);
-}
-
-function datasetReviewStatuses(dataset) {
-  if (!dataset?.id) return {};
-  state.reviewTaskStatusByDataset[dataset.id] =
-    state.reviewTaskStatusByDataset[dataset.id] || {};
-  return state.reviewTaskStatusByDataset[dataset.id];
-}
-
-function reviewTaskStatus(dataset, taskKey) {
-  if (!dataset || !taskKey) return 'pending';
-  return datasetReviewStatuses(dataset)[taskKey] || 'pending';
-}
-
 function focusScenarioCoverage(startTrackPointId, endTrackPointId, startRawPointId,
   endRawPointId) {
   const dataset = selectedDataset();
@@ -1048,12 +901,11 @@ function focusScenarioCoverage(startTrackPointId, endTrackPointId, startRawPoint
   const trackEnd = Math.max(startTrackPointId, endTrackPointId);
   state.scenarioReviewRangeText = `${trackStart}-${trackEnd}`;
   state.rawReviewContext = null;
-  state.reviewFocusMode = true;
   state.focusedMapRange = focusedMapRangeFromRanges(dataset, trackStart, trackEnd,
     startRawPointId, endRawPointId);
   elements.scenarioRangeInput.value = state.scenarioReviewRangeText;
   renderScenarioRangeReview();
-  renderReviewFocusMode();
+  renderFocusedMap();
   const rawRange = Number.isFinite(startRawPointId) && Number.isFinite(endRawPointId)
     ? {
       startRawPointId: Math.min(startRawPointId, endRawPointId),
@@ -1080,7 +932,6 @@ function focusDenseIntentConflict(startRawPointId, endRawPointId, datasetId = nu
     endRawPointId: Math.max(startRawPointId, endRawPointId)
   };
   const trackRange = trackPointRangeTouchingRawRange(dataset, rawRange);
-  state.reviewFocusMode = true;
   state.focusedMapRange = {
     datasetId: dataset.id,
     trackRange,
@@ -1092,7 +943,7 @@ function focusDenseIntentConflict(startRawPointId, endRawPointId, datasetId = nu
     elements.scenarioRangeInput.value = state.scenarioReviewRangeText;
     renderScenarioRangeReview();
   }
-  renderReviewFocusMode();
+  renderFocusedMap();
   const bounds = rawRangeBounds(dataset, rawRange);
   if (bounds) fitBounds(bounds);
 }
@@ -1117,7 +968,6 @@ function focusDiagnosticContext(startRawPointId, endRawPointId, reviewKey = null
     affectedMetricGates: []
   };
   state.scenarioReviewRangeText = '';
-  state.reviewFocusMode = true;
   state.focusedMapRange = {
     datasetId: dataset.id,
     trackRange,
@@ -1125,21 +975,12 @@ function focusDiagnosticContext(startRawPointId, endRawPointId, reviewKey = null
   };
   elements.scenarioRangeInput.value = '';
   renderScenarioRangeReview();
-  renderReviewFocusMode();
+  renderFocusedMap();
   const bounds = rawRangeBounds(dataset, rawRange);
   if (bounds) fitBounds(bounds);
 }
 
-function exitReviewFocusMode() {
-  state.reviewFocusMode = false;
-  state.focusedMapRange = null;
-  renderReviewFocusMode();
-}
-
-function renderReviewFocusMode() {
-  elements.workspace.classList.toggle('focus-mode', state.reviewFocusMode);
-  elements.exitFocusButton.hidden = !state.reviewFocusMode;
-  renderFocusMapControls();
+function renderFocusedMap() {
   renderTerrain();
   renderContours();
   renderMap();
@@ -1196,36 +1037,12 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
-function renderFocusMapControls() {
-  for (const input of focusHiddenMapInputs()) {
-    input.disabled = state.reviewFocusMode;
-    const toggle = input.closest('.toggle');
-    if (toggle) {
-      toggle.classList.toggle('focus-hidden-map-control', state.reviewFocusMode);
-      toggle.title = state.reviewFocusMode ? '专注模式下临时隐藏，退出后恢复' : '';
-    }
-  }
-  renderContourControlState();
-}
-
-function focusHiddenMapInputs() {
-  return [
-    elements.showDirection,
-    elements.showCleanedPoints,
-    elements.showPoints,
-    elements.showTerrain,
-    elements.showContours,
-    elements.showTrusted
-  ].filter(Boolean);
-}
-
-function mapElementVisible(input, { hideInFocus = false } = {}) {
-  if (!input?.checked) return false;
-  return !(state.reviewFocusMode && hideInFocus);
+function mapElementVisible(input) {
+  return Boolean(input?.checked);
 }
 
 function rawLineVisible() {
-  return state.reviewFocusMode || mapElementVisible(elements.showRaw);
+  return mapElementVisible(elements.showRaw);
 }
 
 function focusedMapRangeFromRanges(dataset, startTrackPointId, endTrackPointId,
@@ -1269,27 +1086,27 @@ function rawRangeForTrackRange(dataset, trackRange) {
 }
 
 function focusedMapDatasets(datasets) {
-  const focus = state.reviewFocusMode ? state.focusedMapRange : null;
+  const focus = state.focusedMapRange;
   if (!focus?.datasetId) return datasets;
   return datasets.filter((dataset) => dataset.id === focus.datasetId);
 }
 
 function inFocusedTrackRange(dataset, point) {
-  const focus = state.reviewFocusMode ? state.focusedMapRange : null;
+  const focus = state.focusedMapRange;
   if (!focus?.trackRange || dataset.id !== focus.datasetId) return true;
   return point.trackPointId >= focus.trackRange.startTrackPointId
     && point.trackPointId <= focus.trackRange.endTrackPointId;
 }
 
 function inFocusedRawRange(dataset, point) {
-  const focus = state.reviewFocusMode ? state.focusedMapRange : null;
+  const focus = state.focusedMapRange;
   if (!focus?.rawRange || dataset.id !== focus.datasetId) return true;
   return point.rawPointId >= focus.rawRange.startRawPointId
     && point.rawPointId <= focus.rawRange.endRawPointId;
 }
 
 function rawRangeOverlapsFocus(dataset, rawRange) {
-  const focus = state.reviewFocusMode ? state.focusedMapRange : null;
+  const focus = state.focusedMapRange;
   if (!focus?.rawRange || dataset.id !== focus.datasetId) return true;
   return rawRangesOverlap(rawRange, focus.rawRange);
 }
@@ -1614,18 +1431,14 @@ function renderCleaningAlgorithm() {
 function algorithmBlock() {
   const dataset = selectedDataset();
   const totalTaskCount = reviewTaskCount(dataset);
-  const filteredTaskCount = filteredReviewTasks(dataset).length;
   if (elements.cleaningConfigState) {
     elements.cleaningConfigState.textContent = dataset
-      ? state.reviewQueueFilter === 'all'
-        ? `${formatPlainNumber(totalTaskCount)} 个问题`
-        : `${formatPlainNumber(filteredTaskCount)}/${formatPlainNumber(totalTaskCount)} 个问题`
+      ? `${formatPlainNumber(totalTaskCount)} 个问题`
       : '等待导入';
   }
   return `
     <h3>问题清单</h3>
     ${currentReviewSummaryMarkup(dataset)}
-    ${reviewQueueToolbarMarkup(dataset)}
     ${reviewTaskListMarkup(dataset)}
   `;
 }
@@ -1635,56 +1448,14 @@ function reviewTaskCount(dataset) {
 }
 
 function reviewTaskListMarkup(dataset) {
-  const tasks = filteredReviewTasks(dataset);
   if (!dataset) {
     return '<span>导入 evidence.jsonl 后按 Raw 时间序列显示问题清单</span>';
   }
+  const tasks = buildReviewTasks(dataset);
   if (tasks.length === 0) {
-    return state.reviewQueueFilter === 'all'
-      ? '<span>当前样本没有需要优先复核的问题</span>'
-      : '<span>当前筛选没有复核任务</span>';
+    return '<span>当前样本没有需要优先复核的问题</span>';
   }
   return tasks.map((task, index) => reviewTaskMarkup(task, dataset, index)).join('');
-}
-
-function filteredReviewTasks(dataset) {
-  return filterReviewTasks(buildReviewTasks(dataset), state.reviewQueueFilter, {
-    dataset,
-    statusForTask: (task) => reviewTaskStatus(dataset, task.reviewKey)
-  });
-}
-
-function reviewQueueToolbarMarkup(dataset) {
-  if (!dataset) return '';
-  const counts = reviewQueueFilterCounts(dataset);
-  return `
-    <div class="review-queue-toolbar" aria-label="复核任务筛选">
-      <div class="review-filter-buttons">
-        ${REVIEW_QUEUE_FILTERS.map((filter) => `
-          <button
-            class="review-filter-button ${state.reviewQueueFilter === filter.key ? 'selected' : ''}"
-            type="button"
-            aria-pressed="${state.reviewQueueFilter === filter.key ? 'true' : 'false'}"
-            data-review-filter="${escapeHtml(filter.key)}"
-          >${escapeHtml(filter.label)} ${escapeHtml(formatPlainNumber(counts[filter.key] || 0))}</button>
-        `).join('')}
-      </div>
-      <button class="review-export-button" type="button" data-review-export="queue">导出</button>
-    </div>
-  `;
-}
-
-function reviewQueueFilterCounts(dataset) {
-  const stats = reviewQueueStats(dataset, {
-    statusForTask: (task) => reviewTaskStatus(dataset, task.reviewKey)
-  });
-  return {
-    all: stats.total,
-    metric: stats.metricOwner,
-    diagnostic: stats.diagnosticContext,
-    highRisk: stats.highRisk,
-    pending: stats.pending
-  };
 }
 
 function currentReviewSummaryMarkup(dataset) {
@@ -1715,7 +1486,6 @@ function currentReviewSummaryMarkup(dataset) {
 }
 
 function reviewTaskMarkup(task, dataset, index = null) {
-  const status = reviewTaskStatus(dataset, task.reviewKey);
   const reviewLevel = task.conflict
     ? { kind: 'conflict', label: '先看冲突' }
     : scenarioReviewLevel(task.item, dataset);
@@ -1726,7 +1496,6 @@ function reviewTaskMarkup(task, dataset, index = null) {
   return `
     <section
       class="review-task"
-      data-review-status-state="${escapeHtml(status)}"
       data-review-kind="${escapeHtml(reviewLevel.kind)}"
       ${reviewTaskActionAttributes(task)}
     >
@@ -1736,7 +1505,6 @@ function reviewTaskMarkup(task, dataset, index = null) {
       ${metaText ? `<span class="review-task-meta">${escapeHtml(metaText)}</span>` : ''}
       <p class="review-task-summary">${escapeHtml(reviewTaskSummary(task))}</p>
       <p class="review-task-action">${escapeHtml(reviewTaskActionText(task))}</p>
-      ${reviewTaskStatusControlsMarkup(task, status)}
     </section>
   `;
 }
@@ -1791,21 +1559,6 @@ function reviewTaskActionText(task) {
     return `点击定位 Raw 区间；只作复盘上下文，不拥有指标；${action}；${rebuild}`;
   }
   return `点击查看区间；${action}；${rebuild}`;
-}
-
-function reviewTaskStatusControlsMarkup(task, status) {
-  return `
-    <span class="review-task-status-label" aria-label="审核状态">${escapeHtml(REVIEW_STATUS_LABELS[status] || REVIEW_STATUS_LABELS.pending)}</span>
-    ${REVIEW_TASK_STATUSES.map((option) => `
-      <button
-        class="review-status-button ${status === option.key ? 'selected' : ''}"
-        type="button"
-        aria-pressed="${status === option.key ? 'true' : 'false'}"
-        data-review-task-key="${escapeHtml(task.reviewKey)}"
-        data-review-task-status="${escapeHtml(option.key)}"
-      >${escapeHtml(option.label)}</button>
-    `).join('')}
-  `;
 }
 
 function reviewTaskRawRangeLabel(task) {
@@ -2399,7 +2152,7 @@ function initMap() {
 
 function renderTerrain() {
   if (!state.mapLoaded) return;
-  const enabled = mapElementVisible(elements.showTerrain, { hideInFocus: true });
+  const enabled = mapElementVisible(elements.showTerrain);
   if (state.map.getLayer('terrain-hillshade')) {
     state.map.setLayoutProperty('terrain-hillshade', 'visibility', enabled ? 'visible' : 'none');
   }
@@ -2409,14 +2162,12 @@ function renderTerrain() {
 }
 
 function renderContourControlState() {
-  elements.showContours.disabled = !state.contoursAvailable || state.reviewFocusMode;
+  elements.showContours.disabled = !state.contoursAvailable;
   const toggle = elements.showContours.closest('.toggle');
   if (toggle) {
     toggle.classList.toggle('disabled', !state.contoursAvailable);
     toggle.title = state.contoursAvailable
-      ? state.reviewFocusMode
-        ? '专注模式下临时隐藏，退出后恢复'
-        : '叠加由地形 DEM 生成的等高线'
+      ? '叠加由地形 DEM 生成的等高线'
       : '等高线插件未加载，当前只显示地形阴影';
   }
 }
@@ -2424,7 +2175,7 @@ function renderContourControlState() {
 function renderContours() {
   if (!state.mapLoaded) return;
   const visibility = state.contoursAvailable
-      && mapElementVisible(elements.showContours, { hideInFocus: true })
+      && mapElementVisible(elements.showContours)
     ? 'visible'
     : 'none';
   for (const layerId of CONTOUR_LAYER_IDS) {
@@ -2820,16 +2571,16 @@ function renderMap() {
       ? scenarioPolygonFeatureCollection(visible)
       : emptyFeatureCollection());
   state.map.getSource('raw-lines').setData(rawLineVisible() ? rawFeatureCollection(visible) : emptyFeatureCollection());
-  state.map.getSource('trusted-lines').setData(mapElementVisible(elements.showTrusted, { hideInFocus: true }) ? trustedFeatureCollection(visible) : emptyFeatureCollection());
+  state.map.getSource('trusted-lines').setData(mapElementVisible(elements.showTrusted) ? trustedFeatureCollection(visible) : emptyFeatureCollection());
   renderMapHighlightLayers(visible);
   state.map.getSource('dense-intent-conflicts').setData(emptyFeatureCollection());
   state.map.getSource('forward-spine-conflicts').setData(forwardSpineConflictFeatureCollection(visible));
   renderDirectionArrows(visible);
   state.map.getSource('cleaned-points').setData(
-    mapElementVisible(elements.showCleaned) && mapElementVisible(elements.showCleanedPoints, { hideInFocus: true })
+    mapElementVisible(elements.showCleaned) && mapElementVisible(elements.showCleanedPoints)
       ? cleanedPointFeatureCollection(visible)
       : emptyFeatureCollection());
-  state.map.getSource('points').setData(mapElementVisible(elements.showPoints, { hideInFocus: true }) ? pointFeatureCollection(visible) : emptyFeatureCollection());
+  state.map.getSource('points').setData(mapElementVisible(elements.showPoints) ? pointFeatureCollection(visible) : emptyFeatureCollection());
 }
 
 function renderMapHighlightLayers(visibleDatasets = null) {
@@ -2851,7 +2602,7 @@ function renderDirectionArrows(visibleDatasets = null) {
   const source = state.map.getSource('direction-arrows');
   if (!source) return;
   const visible = visibleDatasets || focusedMapDatasets(state.datasets.filter((dataset) => dataset.visible));
-  source.setData(mapElementVisible(elements.showDirection, { hideInFocus: true })
+  source.setData(mapElementVisible(elements.showDirection)
     ? directionArrowFeatureCollection(visible)
     : emptyFeatureCollection());
 }
@@ -3156,7 +2907,7 @@ function mapCleanedPointsForDataset(dataset) {
 }
 
 function focusRawPoints(dataset, points) {
-  const focus = state.reviewFocusMode ? state.focusedMapRange : null;
+  const focus = state.focusedMapRange;
   if (focus?.rawRange && dataset.id === focus.datasetId) {
     return rawPointsInRange(dataset, focus.rawRange).filter(hasValidLngLat);
   }
@@ -3164,7 +2915,7 @@ function focusRawPoints(dataset, points) {
 }
 
 function focusTrackPoints(dataset, points) {
-  const focus = state.reviewFocusMode ? state.focusedMapRange : null;
+  const focus = state.focusedMapRange;
   if (focus?.trackRange && dataset.id === focus.datasetId) {
     return (dataset.targetProduct?.track || [])
       .filter((point) => inFocusedTrackRange(dataset, point));
@@ -3173,7 +2924,7 @@ function focusTrackPoints(dataset, points) {
 }
 
 function scenarioPolygonOverlapsFocus(feature) {
-  const focus = state.reviewFocusMode ? state.focusedMapRange : null;
+  const focus = state.focusedMapRange;
   if (!focus?.rawRange) return true;
   if (feature.properties?.datasetId !== focus.datasetId) return false;
   const rawRange = rawRangeFromText(feature.properties?.rawRange);
@@ -3351,11 +3102,10 @@ function selectCleanedLineSegment(feature, lngLat) {
     const trackEnd = Math.max(startTrackPointId, endTrackPointId);
     state.scenarioReviewRangeText = `${trackStart}-${trackEnd}`;
     state.rawReviewContext = null;
-    state.reviewFocusMode = true;
     state.focusedMapRange = focusedMapRangeFromTrackRange(dataset, trackStart, trackEnd);
     elements.scenarioRangeInput.value = state.scenarioReviewRangeText;
     renderScenarioRangeReview();
-    renderReviewFocusMode();
+    renderFocusedMap();
   }
   if (!state.popup || !lngLat) return;
   state.popup

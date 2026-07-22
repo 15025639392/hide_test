@@ -187,11 +187,6 @@ button:disabled {
   border-left: 1px solid var(--line);
 }
 
-.focus-mode #reviewOverviewPanel,
-.focus-mode .details-panel {
-  display: none;
-}
-
 .map-area {
   position: relative;
   min-width: 0;
@@ -250,10 +245,6 @@ button:disabled {
   background: rgba(16, 35, 39, 0.92);
 }
 
-.map-filter-panel .toggle.focus-hidden-map-control {
-  opacity: 0.46;
-}
-
 .map-filter-group-title {
   margin-top: 2px;
   padding: 2px 2px 0;
@@ -285,11 +276,6 @@ button:disabled {
 
 .problem-active .current-problem-panel {
   display: block;
-}
-
-.focus-mode .current-problem-panel {
-  border-color: rgba(250, 204, 21, 0.62);
-  box-shadow: 0 26px 70px rgba(0, 0, 0, 0.5), inset 4px 0 0 rgba(250, 204, 21, 0.92);
 }
 
 .current-problem-panel .panel-title {
@@ -464,15 +450,6 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.panel-icon-button {
-  height: 28px;
-  border-color: rgba(45, 212, 191, 0.35);
-  padding: 0 8px;
-  background: rgba(45, 212, 191, 0.1);
-  color: #cffcf6;
-  font-size: 11px;
 }
 
 .manual-range-control {
@@ -651,14 +628,6 @@ button:disabled {
   text-transform: uppercase;
 }
 
-.review-queue-summary {
-  border-color: rgba(250, 204, 21, 0.22);
-}
-
-.review-queue-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
 .current-review-summary {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -690,42 +659,6 @@ button:disabled {
   line-height: 1.45;
 }
 
-.review-queue-toolbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: center;
-}
-
-.review-filter-buttons {
-  display: flex;
-  min-width: 0;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-button.review-filter-button,
-button.review-export-button {
-  height: 28px;
-  border-radius: 999px;
-  padding: 0 9px;
-  background: rgba(15, 23, 42, 0.34);
-  color: var(--muted);
-  font-size: 11px;
-}
-
-button.review-filter-button.selected {
-  border-color: rgba(45, 212, 191, 0.58);
-  background: rgba(45, 212, 191, 0.14);
-  color: #cffcf6;
-}
-
-button.review-export-button {
-  border-color: rgba(147, 197, 253, 0.34);
-  background: rgba(147, 197, 253, 0.11);
-  color: #bfdbfe;
-}
-
 .review-task {
   position: relative;
   display: grid;
@@ -742,18 +675,6 @@ button.review-export-button {
 .review-task:hover {
   border-color: rgba(45, 212, 191, 0.34);
   background: rgba(45, 212, 191, 0.06);
-}
-
-.review-task[data-review-status-state="approved"] {
-  border-color: rgba(52, 211, 153, 0.34);
-}
-
-.review-task[data-review-status-state="question"] {
-  border-color: rgba(244, 114, 182, 0.42);
-}
-
-.review-task[data-review-status-state="skipped"] {
-  opacity: 0.72;
 }
 
 .review-task-order {
@@ -836,42 +757,6 @@ button.review-export-button {
 }
 
 .review-task-action {
-  color: #d5e2e5;
-}
-
-.review-task-status-label {
-  grid-column: 2;
-  margin-top: 3px;
-  color: #d5e2e5;
-  font-size: 11px;
-  font-weight: 900;
-}
-
-button.review-status-button {
-  height: 28px;
-  border-radius: 999px;
-  padding: 0 9px;
-  background: rgba(15, 23, 42, 0.34);
-  color: var(--muted);
-  font-size: 11px;
-  margin-top: 3px;
-}
-
-button.review-status-button.selected {
-  border-color: rgba(45, 212, 191, 0.58);
-  background: rgba(45, 212, 191, 0.14);
-  color: #cffcf6;
-}
-
-button.review-status-button[data-review-task-status="question"].selected {
-  border-color: rgba(244, 114, 182, 0.54);
-  background: rgba(244, 114, 182, 0.14);
-  color: #fbcfe8;
-}
-
-button.review-status-button[data-review-task-status="skipped"].selected {
-  border-color: rgba(148, 163, 184, 0.42);
-  background: rgba(148, 163, 184, 0.14);
   color: #d5e2e5;
 }
 
