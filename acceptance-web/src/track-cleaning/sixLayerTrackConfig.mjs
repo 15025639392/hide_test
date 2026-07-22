@@ -8,6 +8,10 @@
 // 纯原始值 + 纯函数,无外部依赖,任何语言可直译。
 export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   maxIntakeAccuracyMeters: 80,
+  // 灾难性精度硬拒:精度 >200m 的定位其位置不确定度已达数百米~公里级,坐标毫无意义(隧道/
+  // 失锁/重捕获期的垃圾 fix)。这类点即使距离/速度特征像"交通工具"也必须在 intake 层直接拒,
+  // 否则会被 transport 分支放行、污染轨迹并触发 inTransportMode 级联误判。
+  catastrophicAccuracyMeters: 200,
   weakCloudAccuracyMeters: 30,
   firstFixGoodAccuracyMeters: 20,
   firstFixRelaxedAccuracyMeters: 30,
@@ -24,6 +28,37 @@ export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   stationarySessionMinSpeedSampleRatio: 0.8,
   stationarySessionMinZeroSpeedRatio: 0.95,
   stationarySessionMaxAverageReportedSpeedMetersPerSecond: 0.3,
+  // IMU 驱动大位移重锚:committed 轨迹被 GPS 尖峰劈成"主驻留簇 + 远离群簇"时,用 IMU 融合
+  // 结果(每个 track 点的 activityState)判定离群簇是漂移而非真实行程,塌回主驻留代表点。
+  // 判据:①按 bbox 分组后 >=2 组;②主驻留 = track 点最多的组,自身紧凑(bbox<=120m);
+  // ③离群组小(<=3 点)、远离主驻留(>200m)、且 IMU 全程无 walking(加速度计/步数从未记录
+  // 走到那里)。真实两地往返会在离群组留下 walking 点 → 不满足 ③ → 天然免疫。
+  // 运行在 recognizer 层:只读 committed 点的 activityState(IMU 融合已 stamp),不需原始
+  // motion 窗,兼容 device 有界内存;settlement 阶段回溯塌缩,消除 800m 伪锚点。
+  largeExcursionReanchorEnabled: true,
+  largeExcursionReanchorMinGroups: 2,
+  largeExcursionReanchorMinRawPoints: 15,
+  largeExcursionReanchorMinDurationSeconds: 60,
+  largeExcursionReanchorMinSeparationMeters: 200,
+  largeExcursionReanchorMaxDwellBboxMeters: 120,
+  largeExcursionReanchorMinDwellTrackPoints: 4,
+  largeExcursionReanchorMaxExcursionTrackPoints: 3,
+  largeExcursionReanchorMaxExcursionWalkingPoints: 0,
+  // 原地高频抖动塌缩:腕表等 GNSS 在小范围内高频振荡(相邻样本在中心两侧几十米来回横跳,
+  // 隐含速度物理不可能),committed 轨迹形成"小 bbox + 超长折线"的锯齿。不同于大位移重锚
+  // (远离群簇),这里是单簇内对称振荡,分离尺度落在 stationary_session(bbox<=80)与
+  // large_excursion(>200m)之间的盲区。判据:①小 bbox(<=150m);②振荡比 path/bbox 高
+  // (>=3,总游走远超空间跨度=抖动而非行进);③IMU 非 walking 主导(walking 占比<=0.2);
+  // ④上报速度低。真实小范围步行有 walking IMU + 持续速度 → 不满足 ③④,天然免疫。
+  // 整段塌回代表点,顺带吸收被误判为 transport_suspected_kept 的高频跳点。
+  stationaryJitterCollapseEnabled: true,
+  stationaryJitterMinTrackPoints: 8,
+  stationaryJitterMinRawPoints: 15,
+  stationaryJitterMinDurationSeconds: 60,
+  stationaryJitterMaxBboxMeters: 150,
+  stationaryJitterMinOscillationRatio: 7,
+  stationaryJitterMaxWalkingRatio: 0.2,
+  stationaryJitterMaxAverageReportedSpeedMetersPerSecond: 1.0,
   zeroSpeedThresholdMetersPerSecond: 0.1,
   stillMotionMaxAccelRms: 0.08,
   stillMotionMaxGyroRms: 0.03,
@@ -183,6 +218,14 @@ export const DEFAULT_SIX_LAYER_TRACK_CONFIG = Object.freeze({
   lowAccuracyRescueMinDistanceMeters: 2.5,
   continuityRescueMaxSpeedMetersPerSecond: 6,
   impossibleSpeedMetersPerSecond: 12,
+  // IMU 运动仲裁:GPS 隐含速度对 IMU 观测到的活动物理不可能时,把「隐含高速但上报速度不确认」
+  // 的跳变从 weak 升级为 reject。判据:单相邻样本位移 >=150m(行人/骑行每秒最多 ~10m,单步
+  // >=150m 只可能是缺中间点的 GNSS 瞬移)+ 隐含速度 >=12m/s + IMU 活动为 pedestrian(still/
+  // walking,加速度计未记录到该位移所需的运动)。三重证据(上报速度=分支前提 + IMU + 单步幅度)
+  // 一致才 reject,避免误伤中等抖动的正常 weak 点。
+  motionContradictionRejectEnabled: true,
+  motionContradictionMinStepDistanceMeters: 150,
+  motionContradictionMinImpliedSpeedMetersPerSecond: 12,
   transportSpeedMetersPerSecond: 4.5,
   transportMinDistanceMeters: 20,
   locationAltitudeAscentMaxVerticalAccuracyMeters: 20,

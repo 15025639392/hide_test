@@ -24,7 +24,7 @@ function safeMax(values) {
   return result;
 }
 
-export const SIX_LAYER_TRACK_ALGORITHM_VERSION = 'six-layer-evidence-v17.10.2';
+export const SIX_LAYER_TRACK_ALGORITHM_VERSION = 'six-layer-evidence-v17.11.0';
 
 // 六层清洗配置(默认阈值 + 归一化)已抽到 sixLayerTrackConfig.mjs,使流式引擎不再依赖本模块。
 // 此处 import 并再导出,保持既有 importer(本模块 / index.mjs 再导出)向后兼容。

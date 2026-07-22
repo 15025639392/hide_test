@@ -111,6 +111,18 @@ function rebuildOwnershipRange(ownership, range, proposal, baseKernel, rawPoints
       unsupported: false
     };
   }
+  if (proposal.scenario === 'stationary_large_excursion_reanchor') {
+    return {
+      points: largeExcursionReanchorAnchorPoint(proposal, baseKernel.track),
+      unsupported: false
+    };
+  }
+  if (proposal.scenario === 'stationary_jitter_collapse') {
+    return {
+      points: stationaryJitterCollapseAnchorPoint(proposal, baseKernel.track),
+      unsupported: false
+    };
+  }
   if (proposal.scenario === 'rest_photo_micro_move') {
     return {
       points: restPhotoMicroMovePoints(proposal, baseKernel.track),
@@ -439,6 +451,109 @@ function stationarySessionAnchorPoint(proposal, baseTrack) {
     localRebuildApplied: true,
     localRebuildScenario: 'stationary_session_collapse',
     localRebuild: 'stationary_session_anchor'
+  }];
+}
+
+// stationary_large_excursion_reanchor 的 localRebuild:把跨度内(主驻留 + 远离群)全部 base
+// track 点塌成单个锚点,坐标取**主驻留簇代表点**(而非全跨度加权中心——那会被离群簇拉偏),
+// 从而丢弃 800m 外的 GPS 尖峰伪锚点,只保留真身位置。countsDistance/MovingTime=false。
+function largeExcursionReanchorAnchorPoint(proposal, baseTrack) {
+  const span = baseTrackPointsInRange(baseTrack, proposal.rawRange)
+    .filter((point) => hasValidLngLat(point));
+  if (span.length === 0) return [];
+  const representativeRawPointId = finiteNumber(proposal.evidence?.representativeRawPointId);
+  const representative = span.find((point) =>
+    finiteNumber(point.sourceRawPointId) === representativeRawPointId) || span[0];
+  const lat = finiteNumber(proposal.evidence?.dwellLat) ?? representative.lat;
+  const lng = finiteNumber(proposal.evidence?.dwellLng) ?? representative.lng;
+  const contributingRawPointIds = span
+    .map((point) => finiteNumber(point.sourceRawPointId))
+    .filter(Number.isFinite);
+  return [{
+    sourceRawPointId: representative.sourceRawPointId,
+    segmentId: null,
+    lat,
+    lng,
+    altitude: representative.altitude,
+    verticalAccuracy: representative.verticalAccuracy,
+    elapsedRealtimeNanos: representative.elapsedRealtimeNanos,
+    timeMillis: representative.timeMillis,
+    result: 'anchor',
+    reason: 'large_excursion_reanchor_anchor',
+    distanceDeltaMeters: 0,
+    movingTimeDeltaSeconds: 0,
+    startsNewSegment: false,
+    cloudType: 'STATIONARY_LARGE_EXCURSION',
+    cloudId: contributingRawPointIds[0] ?? representative.sourceRawPointId,
+    cloudSampleCount: finiteNumber(proposal.evidence?.rawPointCount) ?? contributingRawPointIds.length,
+    cloudWeightSum: contributingRawPointIds.length,
+    cloudWeightedRadiusMeters: 0,
+    representativeRawPointId: representative.sourceRawPointId,
+    contributingRawPointIds,
+    coordinateSource: 'dwell_representative',
+    virtualCoordinate: false,
+    routeLineVertex: false,
+    routeLineStrategy: 'bridge_previous_next',
+    activityState: 'stationary_large_excursion',
+    boundaryState: 'large_excursion_reanchored',
+    countsDistance: false,
+    countsMovingTime: false,
+    countsAscentWindow: false,
+    entersTrustedGpx: true,
+    localRebuildApplied: true,
+    localRebuildScenario: 'stationary_large_excursion_reanchor',
+    localRebuild: 'large_excursion_reanchor_anchor'
+  }];
+}
+
+// stationary_jitter_collapse 的 localRebuild:把整段高频抖动的 base track 点塌成单个锚点,
+// 坐标取振荡簇中心最近的真实点;吸收段内被误判为 transport_suspected_kept 的高频跳点。
+function stationaryJitterCollapseAnchorPoint(proposal, baseTrack) {
+  const span = baseTrackPointsInRange(baseTrack, proposal.rawRange)
+    .filter((point) => hasValidLngLat(point));
+  if (span.length === 0) return [];
+  const representativeRawPointId = finiteNumber(proposal.evidence?.representativeRawPointId);
+  const representative = span.find((point) =>
+    finiteNumber(point.sourceRawPointId) === representativeRawPointId) || span[0];
+  const lat = finiteNumber(proposal.evidence?.jitterLat) ?? representative.lat;
+  const lng = finiteNumber(proposal.evidence?.jitterLng) ?? representative.lng;
+  const contributingRawPointIds = span
+    .map((point) => finiteNumber(point.sourceRawPointId))
+    .filter(Number.isFinite);
+  return [{
+    sourceRawPointId: representative.sourceRawPointId,
+    segmentId: null,
+    lat,
+    lng,
+    altitude: representative.altitude,
+    verticalAccuracy: representative.verticalAccuracy,
+    elapsedRealtimeNanos: representative.elapsedRealtimeNanos,
+    timeMillis: representative.timeMillis,
+    result: 'anchor',
+    reason: 'stationary_jitter_anchor',
+    distanceDeltaMeters: 0,
+    movingTimeDeltaSeconds: 0,
+    startsNewSegment: false,
+    cloudType: 'STATIONARY_JITTER',
+    cloudId: contributingRawPointIds[0] ?? representative.sourceRawPointId,
+    cloudSampleCount: finiteNumber(proposal.evidence?.rawPointCount) ?? contributingRawPointIds.length,
+    cloudWeightSum: contributingRawPointIds.length,
+    cloudWeightedRadiusMeters: (finiteNumber(proposal.evidence?.bboxDiagonalMeters) ?? 0) / 2,
+    representativeRawPointId: representative.sourceRawPointId,
+    contributingRawPointIds,
+    coordinateSource: 'jitter_center',
+    virtualCoordinate: true,
+    routeLineVertex: false,
+    routeLineStrategy: 'bridge_previous_next',
+    activityState: 'stationary_jitter',
+    boundaryState: 'stationary_jitter_collapsed',
+    countsDistance: false,
+    countsMovingTime: false,
+    countsAscentWindow: false,
+    entersTrustedGpx: true,
+    localRebuildApplied: true,
+    localRebuildScenario: 'stationary_jitter_collapse',
+    localRebuild: 'stationary_jitter_collapse_anchor'
   }];
 }
 

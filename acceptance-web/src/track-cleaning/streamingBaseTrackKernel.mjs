@@ -271,6 +271,11 @@ function intakeRawPoint(rawPoint, epoch, state) {
   if (!Number.isFinite(rawPoint.accuracy) || rawPoint.accuracy < 0) {
     return rejected('invalid_accuracy');
   }
+  // 灾难性精度:位置不确定度过大(数百米~公里级),坐标无意义 → intake 层硬拒,
+  // 避免其被 transport 分支放行并触发 inTransportMode 级联。
+  if (rawPoint.accuracy > config.catastrophicAccuracyMeters) {
+    return rejected('catastrophic_accuracy');
+  }
   if (state.legalFixKeys.includes(fixKey(rawPoint))) return rejected('duplicate_fix');
   if (Number.isFinite(state.lastLegalElapsedRealtimeNanos)
       && rawPoint.elapsedRealtimeNanos <= state.lastLegalElapsedRealtimeNanos) {
@@ -348,7 +353,8 @@ function decideHorizontal(rawPoint, epoch, motion, state, config) {
   }
 
   if (isTransportRiskDistance(distance, impliedSpeed, reportedSpeed, config,
-    stationaryThreshold(rawPoint, config))) {
+    stationaryThreshold(rawPoint, config))
+    && !isMotionContradictedTransport(impliedSpeed, motion, config)) {
     return trustedDecision(rawPoint, 'accept', 'transport_suspected_kept', motion, {
       boundaryState: 'transport_risk',
       cloudType: 'TRANSPORT_RISK_CLOUD',
@@ -359,6 +365,12 @@ function decideHorizontal(rawPoint, epoch, motion, state, config) {
 
   if (isImpliedTransportUnconfirmedByReportedSpeed(distance, impliedSpeed, reportedSpeed,
     config)) {
+    // IMU 仲裁:单步瞬移且 IMU 观测到的活动无法产生该位移 → GPS 尖峰,直接 reject。
+    if (isMotionContradictedSpike(distance, impliedSpeed, motion, config)) {
+      return diagnosticDecision(rawPoint, 'reject', 'gps_spike_contradicted_by_motion', motion, {
+        cloudType: 'WEAK_CLOUD'
+      });
+    }
     return diagnosticDecision(rawPoint, 'weak', 'implied_speed_unconfirmed_by_reported_speed',
       motion, {
         cloudType: 'WEAK_CLOUD'
@@ -884,7 +896,8 @@ function decideTransportRecovery(rawPoint, motion, state, config) {
   const impliedSpeed = dtSeconds > 0 ? distance / dtSeconds : Infinity;
   const reportedSpeed = Number.isFinite(rawPoint.speed) ? rawPoint.speed : null;
   const stillTransport = isTransportRiskDistance(distance, impliedSpeed, reportedSpeed, config,
-    stationaryThreshold(rawPoint, config));
+    stationaryThreshold(rawPoint, config))
+    && !isMotionContradictedTransport(impliedSpeed, motion, config);
 
   if (stillTransport) {
     return trustedDecision(rawPoint, 'accept', 'transport_suspected_kept', motion, {
@@ -986,6 +999,28 @@ function isImpliedTransportUnconfirmedByReportedSpeed(distance, impliedSpeed, re
     && impliedSpeed >= config.transportSpeedMetersPerSecond
     && reportedSpeed !== null
     && reportedSpeed < config.transportSpeedMetersPerSecond;
+}
+
+// IMU 运动仲裁:相邻样本单步瞬移(>=150m)且隐含速度 >=12m/s,同时 IMU 活动为 pedestrian
+// (still/walking——加速度计/步数未记录到该位移所需的运动)时,判为运动矛盾的 GPS 尖峰。
+// motion.state === 'unknown'(lookback 内无运动窗)时不判 → 保持保守 weak,不凭空 reject。
+function isMotionContradictedSpike(distance, impliedSpeed, motion, config) {
+  if (!config.motionContradictionRejectEnabled) return false;
+  if (distance < config.motionContradictionMinStepDistanceMeters) return false;
+  if (impliedSpeed < config.motionContradictionMinImpliedSpeedMetersPerSecond) return false;
+  const state = motion?.state;
+  return state === 'still' || state === 'walking';
+}
+
+// IMU 仲裁 transport 分支:隐含速度达"疑似交通工具"量级、但 IMU 正面观测到 pedestrian
+// (walking/still)时,这是行人身上的 GPS 跳变(常见于上报速度缺失的腕表突发采样),不是
+// 真交通工具 → 不归为 transport,交由后续隐含速度/精度分支正常处理(消除 transport 误判 +
+// 避免 inTransportMode 级联)。motion.state === 'unknown' 时无正面证据,保守维持原判。
+function isMotionContradictedTransport(impliedSpeed, motion, config) {
+  if (!config.motionContradictionRejectEnabled) return false;
+  if (impliedSpeed < config.transportSpeedMetersPerSecond) return false;
+  const state = motion?.state;
+  return state === 'still' || state === 'walking';
 }
 
 function stationaryThreshold(rawPoint, config) {

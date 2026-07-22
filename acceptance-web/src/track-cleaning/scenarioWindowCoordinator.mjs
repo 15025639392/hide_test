@@ -1,4 +1,8 @@
 export const DEFAULT_SCENARIO_PROPOSAL_PRIORITIES = Object.freeze({
+  // 大位移重锚是整段静止伪迹判定:段内的 gap/recovery 边界其实是 GPS 瞬移而非真实间断,
+  // 故它必须凌驾于边界提案之上(最高优先 + hardBoundary),整段塌回主驻留锚,吸收这些伪边界。
+  stationary_large_excursion_reanchor: 5,
+  stationary_jitter_collapse: 5,
   gap_recovery_boundary: 10,
   pause_resume_boundary: 10,
   transport_contamination: 10,

@@ -220,6 +220,22 @@ export function advanceStreamingScenarioRecognizer(previousState = {}, baseKerne
     emittedProposalIds.push(proposal.id);
   }
 
+  for (const candidate of largeExcursionReanchorCandidates(track,
+    baseKernel.lastProcessedRawPointId, config, options.finish === true)) {
+    const proposal = largeExcursionReanchorProposal(candidate);
+    if (emittedProposalIds.includes(proposal.id)) continue;
+    proposals.push(proposal);
+    emittedProposalIds.push(proposal.id);
+  }
+
+  for (const candidate of stationaryJitterCollapseCandidates(track,
+    baseKernel.lastProcessedRawPointId, config, options.finish === true)) {
+    const proposal = stationaryJitterCollapseProposal(candidate);
+    if (emittedProposalIds.includes(proposal.id)) continue;
+    proposals.push(proposal);
+    emittedProposalIds.push(proposal.id);
+  }
+
   for (const candidate of restPhotoMicroMoveClosedCandidates(
     track,
     config,
@@ -1269,6 +1285,213 @@ function stationarySessionProposal(candidate) {
       bboxDiagonalMeters: rounded(candidate.bboxMeters),
       netDistanceMeters: rounded(candidate.netDistanceMeters),
       averageSpeedMetersPerSecond: rounded(candidate.averageSpeed)
+    }
+  };
+}
+
+// IMU 驱动大位移重锚:GPS 尖峰把 committed 轨迹劈成"主驻留簇 + 远离群簇"时,用 track 点上
+// 已 stamp 的 activityState(IMU 融合结果)判定离群簇是漂移,塌回主驻留代表点。
+// 复用 stationarySessionGroups(按 bbox 贪心分组);只读 committed track,不需原始 motion 窗。
+function largeExcursionReanchorCandidates(track, lastProcessedRawPointId, config, finish = false) {
+  if (!config.largeExcursionReanchorEnabled) return [];
+  const groups = stationarySessionGroups(track, config);
+  if (groups.length < config.largeExcursionReanchorMinGroups) return [];
+
+  const stats = groups.map((group) => largeExcursionGroupStats(group));
+  let dwell = stats[0];
+  for (const s of stats) if (s.trackPointCount > dwell.trackPointCount) dwell = s;
+  if (dwell.trackPointCount < config.largeExcursionReanchorMinDwellTrackPoints) return [];
+  if (dwell.bboxMeters > config.largeExcursionReanchorMaxDwellBboxMeters) return [];
+
+  const excursions = stats.filter((s) => s !== dwell);
+  if (excursions.length === 0) return [];
+  let maxSeparationMeters = 0;
+  for (const ex of excursions) {
+    const separation = distanceMeters(ex.center.lat, ex.center.lng, dwell.center.lat, dwell.center.lng);
+    if (separation < config.largeExcursionReanchorMinSeparationMeters) return [];
+    if (ex.trackPointCount > config.largeExcursionReanchorMaxExcursionTrackPoints) return [];
+    // IMU 关键门:离群组内若有 walking 点(加速度计/步数记录了移动)→ 可能是真实行程,放行。
+    if (ex.walkingPointCount > config.largeExcursionReanchorMaxExcursionWalkingPoints) return [];
+    maxSeparationMeters = Math.max(maxSeparationMeters, separation);
+  }
+
+  const allPoints = groups.flat();
+  const rawIds = allPoints.map((point) => point.rawPointId).filter(Number.isFinite);
+  if (rawIds.length === 0) return [];
+  const startRawPointId = Math.min(...rawIds);
+  const endRawPointId = Math.max(...rawIds);
+  if (!finish) {
+    const cursor = finiteNumber(lastProcessedRawPointId);
+    if (!(Number.isFinite(cursor) && endRawPointId < cursor)) return [];
+  }
+  const elapsedValues = allPoints
+    .map((point) => point.elapsedRealtimeNanos)
+    .filter(Number.isFinite);
+  const durationSeconds = elapsedValues.length >= 2
+    ? elapsedSeconds(Math.min(...elapsedValues), Math.max(...elapsedValues))
+    : 0;
+  if (durationSeconds < config.largeExcursionReanchorMinDurationSeconds) return [];
+  const rawPointCount = allPoints.reduce((sum, point) => sum + (point.sampleCount ?? 1), 0);
+  if (rawPointCount < config.largeExcursionReanchorMinRawPoints) return [];
+
+  return [{
+    rawRange: range(startRawPointId, endRawPointId),
+    startRawPointId,
+    endRawPointId,
+    dwellCenter: dwell.center,
+    representativeRawPointId: dwell.representativeRawPointId,
+    dwellTrackPointCount: dwell.trackPointCount,
+    dwellBboxMeters: dwell.bboxMeters,
+    excursionGroupCount: excursions.length,
+    maxSeparationMeters,
+    durationSeconds,
+    rawPointCount
+  }];
+}
+
+function largeExcursionGroupStats(group) {
+  const center = averageLatLng(group);
+  const representative = nearestPoint(center, group);
+  const walkingPointCount = group
+    .filter((point) => point.activityState === 'walking').length;
+  return {
+    center,
+    representativeRawPointId: representative?.rawPointId ?? group[0].rawPointId,
+    trackPointCount: group.length,
+    bboxMeters: bboxDiagonalMeters(group),
+    walkingPointCount
+  };
+}
+
+function largeExcursionReanchorProposal(candidate) {
+  const separationScore = Math.min(1, candidate.maxSeparationMeters / 800);
+  const dwellScore = Math.min(1, candidate.dwellTrackPointCount / 10);
+  return {
+    id: `large-excursion-reanchor:${candidate.startRawPointId}-${candidate.endRawPointId}`,
+    scenario: 'stationary_large_excursion_reanchor',
+    confidence: rounded(clamp01(0.6 + separationScore * 0.25 + dwellScore * 0.1)),
+    rawRange: candidate.rawRange,
+    influenceRange: candidate.rawRange,
+    metricRange: candidate.rawRange,
+    metricOwner: true,
+    // hardBoundary + 最高优先:整段先占有,段内的 gap/recovery 伪边界被吸收,不再劈裂本提案。
+    hardBoundary: true,
+    affectedMetricGates: ['route', 'distance', 'moving_time'],
+    action: 'collapse_large_excursion_to_dwell_anchor',
+    localRebuild: 'large_excursion_reanchor_anchor',
+    evidence: {
+      dwellLat: candidate.dwellCenter.lat,
+      dwellLng: candidate.dwellCenter.lng,
+      representativeRawPointId: candidate.representativeRawPointId,
+      dwellTrackPointCount: candidate.dwellTrackPointCount,
+      dwellBboxDiagonalMeters: rounded(candidate.dwellBboxMeters),
+      excursionGroupCount: candidate.excursionGroupCount,
+      maxSeparationMeters: rounded(candidate.maxSeparationMeters),
+      durationSeconds: rounded(candidate.durationSeconds),
+      rawPointCount: candidate.rawPointCount
+    }
+  };
+}
+
+// 原地高频抖动塌缩:committed 轨迹在小 bbox 内高频振荡(path/bbox 比很高),IMU 非 walking
+// 主导、上报速度低 → 整段塌回代表点。只读 committed track,不需原始 motion 窗(兼容有界内存)。
+function stationaryJitterCollapseCandidates(track, lastProcessedRawPointId, config, finish = false) {
+  if (!config.stationaryJitterCollapseEnabled) return [];
+  const points = track
+    .filter((point) => hasValidLngLat(point))
+    .map((point) => ({
+      rawPointId: finiteNumber(point.sourceRawPointId),
+      elapsedRealtimeNanos: finiteNumber(point.elapsedRealtimeNanos),
+      reportedSpeed: finiteNumber(point.reportedSpeedMetersPerSecond),
+      sampleCount: finiteNumber(point.cloudSampleCount) ?? 1,
+      activityState: point.activityState,
+      lat: point.lat,
+      lng: point.lng
+    }))
+    .filter((point) => Number.isFinite(point.rawPointId)
+      && Number.isFinite(point.elapsedRealtimeNanos))
+    .sort((a, b) => a.rawPointId - b.rawPointId);
+  if (points.length < config.stationaryJitterMinTrackPoints) return [];
+
+  const endRawPointId = points.at(-1).rawPointId;
+  if (!finish) {
+    const cursor = finiteNumber(lastProcessedRawPointId);
+    if (!(Number.isFinite(cursor) && endRawPointId < cursor)) return [];
+  }
+
+  const durationSeconds = elapsedSeconds(
+    points[0].elapsedRealtimeNanos, points.at(-1).elapsedRealtimeNanos);
+  if (durationSeconds < config.stationaryJitterMinDurationSeconds) return [];
+  const rawPointCount = points.reduce((sum, point) => sum + (point.sampleCount ?? 1), 0);
+  if (rawPointCount < config.stationaryJitterMinRawPoints) return [];
+
+  const bboxMeters = bboxDiagonalMeters(points);
+  if (bboxMeters > config.stationaryJitterMaxBboxMeters) return [];
+  // 振荡比:committed 折线总长 / 空间跨度。高 = 原地来回抖动而非行进。
+  let pathMeters = 0;
+  for (let index = 1; index < points.length; index++) {
+    pathMeters += distanceMeters(points[index - 1].lat, points[index - 1].lng,
+      points[index].lat, points[index].lng);
+  }
+  if (bboxMeters <= 0) return [];
+  const oscillationRatio = pathMeters / bboxMeters;
+  if (oscillationRatio < config.stationaryJitterMinOscillationRatio) return [];
+
+  // IMU 门:walking 占比过高 → 可能是真实小范围步行,放行。
+  const walkingCount = points.filter((point) => point.activityState === 'walking').length;
+  if (walkingCount / points.length > config.stationaryJitterMaxWalkingRatio) return [];
+
+  const finiteSpeeds = points.map((point) => point.reportedSpeed).filter(Number.isFinite);
+  const averageSpeed = finiteSpeeds.length === 0
+    ? 0
+    : finiteSpeeds.reduce((sum, speed) => sum + speed, 0) / finiteSpeeds.length;
+  if (averageSpeed > config.stationaryJitterMaxAverageReportedSpeedMetersPerSecond) return [];
+
+  const center = averageLatLng(points);
+  const representative = nearestPoint(center, points);
+  return [{
+    rawRange: range(points[0].rawPointId, endRawPointId),
+    startRawPointId: points[0].rawPointId,
+    endRawPointId,
+    center,
+    representativeRawPointId: representative?.rawPointId ?? points[0].rawPointId,
+    trackPointCount: points.length,
+    bboxMeters,
+    pathMeters,
+    oscillationRatio,
+    durationSeconds,
+    averageSpeed,
+    rawPointCount
+  }];
+}
+
+function stationaryJitterCollapseProposal(candidate) {
+  const oscScore = Math.min(1, candidate.oscillationRatio / 10);
+  const bboxScore = 1 - Math.min(1, candidate.bboxMeters / 150);
+  return {
+    id: `stationary-jitter-collapse:${candidate.startRawPointId}-${candidate.endRawPointId}`,
+    scenario: 'stationary_jitter_collapse',
+    confidence: rounded(clamp01(0.6 + oscScore * 0.25 + bboxScore * 0.1)),
+    rawRange: candidate.rawRange,
+    influenceRange: candidate.rawRange,
+    metricRange: candidate.rawRange,
+    metricOwner: true,
+    // hardBoundary + 最高优先:整段先占有,吸收段内 gap/recovery/transport 伪边界与误判点。
+    hardBoundary: true,
+    affectedMetricGates: ['route', 'distance', 'moving_time'],
+    action: 'collapse_stationary_jitter_to_anchor',
+    localRebuild: 'stationary_jitter_collapse_anchor',
+    evidence: {
+      jitterLat: candidate.center.lat,
+      jitterLng: candidate.center.lng,
+      representativeRawPointId: candidate.representativeRawPointId,
+      trackPointCount: candidate.trackPointCount,
+      bboxDiagonalMeters: rounded(candidate.bboxMeters),
+      pathMeters: rounded(candidate.pathMeters),
+      oscillationRatio: rounded(candidate.oscillationRatio),
+      durationSeconds: rounded(candidate.durationSeconds),
+      averageSpeedMetersPerSecond: rounded(candidate.averageSpeed),
+      rawPointCount: candidate.rawPointCount
     }
   };
 }
