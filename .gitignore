@@ -15,3 +15,6 @@ local.properties
 
 test_artifacts/
 data/
+
+# Claude Code 本机产物（worktrees/ 是完整工作副本，launch.json 含本机绝对路径）
+.claude/
