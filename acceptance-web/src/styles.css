@@ -553,9 +553,10 @@ button:disabled {
 }
 
 /* 原生引擎线的成品指标行 —— 边条颜色与地图上对应的线呼应,和上方 JS 成品同屏对拍。
-   Dart 品红(#d946ef)、C++ core 绿(#22c55e)。 */
+   Dart 品红(#d946ef)、C++ core 绿(#22c55e)、C++ 几何精修 天蓝(#38bdf8)。 */
 .dart-stats-row,
-.cpp-stats-row {
+.cpp-stats-row,
+.cpp-refine-stats-row {
   display: grid;
   gap: 6px;
   margin-top: 9px;
@@ -573,8 +574,14 @@ button:disabled {
   background: rgba(34, 197, 94, 0.06);
 }
 
+.cpp-refine-stats-row {
+  border-left: 3px solid #38bdf8;
+  background: rgba(56, 189, 248, 0.06);
+}
+
 .dart-stats-title,
-.cpp-stats-title {
+.cpp-stats-title,
+.cpp-refine-stats-title {
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.04em;
@@ -588,7 +595,11 @@ button:disabled {
   color: #22c55e;
 }
 
-/* 形态徽标 —— 三条线形态不全相同(JS/Dart 单发、C++ 分块),指标对不上时先看这里。 */
+.cpp-refine-stats-title {
+  color: #38bdf8;
+}
+
+/* 形态徽标 —— 各线形态不全相同(JS/Dart 单发、两条 C++ 分块),指标对不上时先看这里。 */
 .engine-form-badge {
   margin-left: 5px;
   padding: 1px 5px;

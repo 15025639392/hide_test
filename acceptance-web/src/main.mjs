@@ -75,6 +75,7 @@ const elements = {
   showStreaming: document.querySelector('#showStreaming'),
   showDart: document.querySelector('#showDart'),
   showCpp: document.querySelector('#showCpp'),
+  showCppRefine: document.querySelector('#showCppRefine'),
   showScenarios: document.querySelector('#showScenarios'),
   showTerrain: document.querySelector('#showTerrain'),
   showContours: document.querySelector('#showContours'),
@@ -156,6 +157,24 @@ const NATIVE_ENGINE_LINES = [
     statsField: 'cppStats',
     derivedField: 'cppDerived',
     unavailableNote: '未获取(服务未启动,或 core 未构建:bash core/build.sh)'
+  },
+  {
+    // 几何精修线 —— 与上一条同引擎同形态,唯一差别是 geometryRefineEnabled=true。
+    // 两条并排勾选就是精修前后的直接对照(点数相同,坐标被局部平均拉直)。
+    key: 'cppRefine',
+    toggle: 'showCppRefine',
+    title: 'C++ core 线(几何精修)',
+    shortLabel: '精修',
+    form: '分块',
+    query: '?engine=cpp&refine=1',
+    sourceId: 'cpp-refine-lines',
+    color: '#38bdf8',
+    rowClass: 'cpp-refine-stats-row',
+    titleClass: 'cpp-refine-stats-title',
+    lineField: 'cppRefineLine',
+    statsField: 'cppRefineStats',
+    derivedField: 'cppRefineDerived',
+    unavailableNote: '未获取(服务未启动,或服务端 serve.dart 无 refine 参数:需更新 track_cleaning)'
   }
 ];
 
@@ -170,6 +189,7 @@ for (const input of [
   elements.showStreaming,
   elements.showDart,
   elements.showCpp,
+  elements.showCppRefine,
   elements.showScenarios,
   elements.showDirection,
   elements.showCleanedPoints,
@@ -309,13 +329,16 @@ function finalizeDataset(result, index) {
     targetProduct: result.targetProduct,
     targetOutput: result.targetOutput,
     streamingLine: null, // lazily computed on first 流式线 render (see streamingFeatureCollection)
-    // 两条原生引擎线(Dart / C++ core)均由本地服务现算,懒取——见 NATIVE_ENGINE_LINES。
+    // 三条原生引擎线(Dart / C++ core / C++ 精修)均由本地服务现算,懒取——见 NATIVE_ENGINE_LINES。
     dartLine: null, // lazily fetched from local engine server on first Dart 引擎线 render
     dartStats: null, // Dart 引擎自算的成品指标(里程/耗时/爬升),与 dartLine 同一次 fetch 取回
     dartDerived: null, // Dart 派生展示指标(配速/平均速度/最高最低海拔),同一次 fetch 取回
     cppLine: null, // 同上,C++ core 线(?engine=cpp)
     cppStats: null,
     cppDerived: null,
+    cppRefineLine: null, // 同上,C++ core 几何精修线(?engine=cpp&refine=1)
+    cppRefineStats: null,
+    cppRefineDerived: null,
     visible: true
   };
   attachDatasetIndexes(dataset);
@@ -601,7 +624,7 @@ function nativeStatsRowMarkup(dataset, spec) {
   } else {
     body = '<span class="metric-note">获取中…</span>';
   }
-  // 标题带形态:三条线形态并不相同(JS/Dart 单发、C++ 分块),指标对不上时先看这里。
+  // 标题带形态:各线形态并不相同(JS/Dart 单发、两条 C++ 分块),指标对不上时先看这里。
   return `<div class="${spec.rowClass}"><small class="${spec.titleClass}">`
     + `${escapeHtml(spec.title)}<span class="engine-form-badge">${escapeHtml(spec.form)}</span>`
     + `</small>${body}</div>`;
