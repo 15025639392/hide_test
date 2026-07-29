@@ -74,6 +74,7 @@ const elements = {
   showCleaned: document.querySelector('#showCleaned'),
   showStreaming: document.querySelector('#showStreaming'),
   showDart: document.querySelector('#showDart'),
+  showCpp: document.querySelector('#showCpp'),
   showScenarios: document.querySelector('#showScenarios'),
   showTerrain: document.querySelector('#showTerrain'),
   showContours: document.querySelector('#showContours'),
@@ -112,6 +113,52 @@ elements.scenarioRangeInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') applyScenarioRangeReview();
 });
 elements.reviewDatasetOverview.addEventListener('click', handleReviewDatasetClick);
+// 两条原生引擎清洗线 —— 都由本地服务(packages/track_cleaning/bin/serve.dart)现算的对比图层。
+// Dart/C++ 都没法在浏览器原生跑,故走 HTTP:fetch 是异步的,而图层渲染是同步的,所以用
+// 「懒取 + 取回后重绘」:首次需要时发一次 fetch(用 'pending' 哨兵防重复),拿到点后写回
+// dataset 并重新触发高亮层渲染。与 JS 流式线共用 lineFeature 渲染。
+//
+// **形态不同,别误读**:JS 流式线与 Dart 线走单发形态,C++ 线只能走分块形态(C ABI 唯一
+// 形态)。契约 §9 chunk-invariance 不稳定——48 条金样本里 4 条两形态产物不同。所以
+// C++ 线与另两条不重合时,先看是不是这 4 类轨迹,再怀疑移植。同形态下二者逐点一致
+// (track_cleaning 仓 tool/dart_vs_cpp_diff.dart 全字段对拍 48/48)。
+const NATIVE_ENGINE_ENDPOINT = 'http://localhost:8787/clean';
+
+const NATIVE_ENGINE_LINES = [
+  {
+    key: 'dart',
+    toggle: 'showDart',
+    title: 'Dart 引擎线',
+    shortLabel: 'Dart',
+    form: '单发',
+    query: '',
+    sourceId: 'dart-lines',
+    color: '#d946ef',
+    rowClass: 'dart-stats-row',
+    titleClass: 'dart-stats-title',
+    lineField: 'dartLine',
+    statsField: 'dartStats',
+    derivedField: 'dartDerived',
+    unavailableNote: '未获取(本地 Dart 服务未启动?)'
+  },
+  {
+    key: 'cpp',
+    toggle: 'showCpp',
+    title: 'C++ core 线',
+    shortLabel: 'C++',
+    form: '分块',
+    query: '?engine=cpp',
+    sourceId: 'cpp-lines',
+    color: '#22c55e',
+    rowClass: 'cpp-stats-row',
+    titleClass: 'cpp-stats-title',
+    lineField: 'cppLine',
+    statsField: 'cppStats',
+    derivedField: 'cppDerived',
+    unavailableNote: '未获取(服务未启动,或 core 未构建:bash core/build.sh)'
+  }
+];
+
 elements.scenarioRangeReview.addEventListener('click', handleScenarioRangeReviewClick);
 elements.cleaningAlgorithm.addEventListener('click', handleScenarioRangeReviewClick);
 elements.showTerrain.addEventListener('change', renderTerrain);
@@ -122,12 +169,17 @@ for (const input of [
   elements.showCleaned,
   elements.showStreaming,
   elements.showDart,
+  elements.showCpp,
   elements.showScenarios,
   elements.showDirection,
   elements.showCleanedPoints,
   elements.showPoints
 ]) {
   input.addEventListener('change', renderMap);
+}
+// 原生引擎线的成品指标显示在概览面板,勾选/取消时同步刷新那一行(renderMap 只重绘地图层)。
+for (const spec of NATIVE_ENGINE_LINES) {
+  elements[spec.toggle].addEventListener('change', renderReviewDatasetOverview);
 }
 
 initMap();
@@ -257,7 +309,13 @@ function finalizeDataset(result, index) {
     targetProduct: result.targetProduct,
     targetOutput: result.targetOutput,
     streamingLine: null, // lazily computed on first 流式线 render (see streamingFeatureCollection)
-    dartLine: null, // lazily fetched from local Dart engine server on first Dart 引擎线 render (see dartFeatureCollection)
+    // 两条原生引擎线(Dart / C++ core)均由本地服务现算,懒取——见 NATIVE_ENGINE_LINES。
+    dartLine: null, // lazily fetched from local engine server on first Dart 引擎线 render
+    dartStats: null, // Dart 引擎自算的成品指标(里程/耗时/爬升),与 dartLine 同一次 fetch 取回
+    dartDerived: null, // Dart 派生展示指标(配速/平均速度/最高最低海拔),同一次 fetch 取回
+    cppLine: null, // 同上,C++ core 线(?engine=cpp)
+    cppStats: null,
+    cppDerived: null,
     visible: true
   };
   attachDatasetIndexes(dataset);
@@ -508,9 +566,49 @@ function datasetSummaryMarkup(dataset) {
         ${metricCellMarkup('疑似交通均速',
           formatTransportSpeed(stats.suspectedTransportAverageSpeedMetersPerSecond))}
       </div>
+      ${nativeStatsRowsMarkup(dataset)}
       <span>${escapeHtml(dataset?.filePath || '-')}</span>
     </section>
   `;
+}
+
+// 原生引擎线的成品指标行 —— 仅在勾选对应图层时显示,与上方 JS 成品指标同屏对拍。
+// 数据随该线懒取:未取(null)、获取中('pending')、失败('error')、取回后为 stats 对象。
+function nativeStatsRowMarkup(dataset, spec) {
+  if (!mapElementVisible(elements[spec.toggle])) return '';
+  const line = dataset?.[spec.lineField];
+  const stats = dataset?.[spec.statsField];
+  let body;
+  if (line === 'pending') {
+    body = '<span class="metric-note">获取中…</span>';
+  } else if (stats === 'error' || (line !== null && stats == null)) {
+    body = `<span class="metric-note">${escapeHtml(spec.unavailableNote)}</span>`;
+  } else if (stats) {
+    const derived = dataset[spec.derivedField] || {};
+    const n = spec.shortLabel;
+    body = `
+      <div class="metric-grid">
+        ${metricCellMarkup(`${n} 里程`, formatMeters(stats.totalDistanceMeters))}
+        ${metricCellMarkup(`${n} 耗时`, formatDuration(stats.movingTimeSeconds))}
+        ${metricCellMarkup(`${n} 活动时长`, formatDuration(derived.activeDurationSeconds))}
+        ${metricCellMarkup(`${n} 爬升`, formatAscent(stats.selectedTotalAscentMeters))}
+        ${metricCellMarkup(`${n} 配速`, formatPace(derived.paceSecondsPerKilometer))}
+        ${metricCellMarkup(`${n} 均速`, formatTransportSpeed(derived.averageSpeedMetersPerSecond))}
+        ${metricCellMarkup(`${n} 最高海拔`, formatAltitude(derived.maxAltitudeMeters))}
+        ${metricCellMarkup(`${n} 最低海拔`, formatAltitude(derived.minAltitudeMeters))}
+      </div>
+    `;
+  } else {
+    body = '<span class="metric-note">获取中…</span>';
+  }
+  // 标题带形态:三条线形态并不相同(JS/Dart 单发、C++ 分块),指标对不上时先看这里。
+  return `<div class="${spec.rowClass}"><small class="${spec.titleClass}">`
+    + `${escapeHtml(spec.title)}<span class="engine-form-badge">${escapeHtml(spec.form)}</span>`
+    + `</small>${body}</div>`;
+}
+
+function nativeStatsRowsMarkup(dataset) {
+  return NATIVE_ENGINE_LINES.map((spec) => nativeStatsRowMarkup(dataset, spec)).join('');
 }
 
 function metricCellMarkup(label, value) {
@@ -2212,7 +2310,9 @@ function addMapLayers() {
   state.map.addSource('trusted-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('cleaned-lines', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('streaming-lines', { type: 'geojson', data: emptyFeatureCollection() });
-  state.map.addSource('dart-lines', { type: 'geojson', data: emptyFeatureCollection() });
+  for (const spec of NATIVE_ENGINE_LINES) {
+    state.map.addSource(spec.sourceId, { type: 'geojson', data: emptyFeatureCollection() });
+  }
   state.map.addSource('dense-intent-conflicts', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('forward-spine-conflicts', { type: 'geojson', data: emptyFeatureCollection() });
   state.map.addSource('direction-arrows', { type: 'geojson', data: emptyFeatureCollection() });
@@ -2292,18 +2392,21 @@ function addMapLayers() {
       'line-dasharray': [2, 1.4]
     }
   });
-  // 设备同款原生 Dart 流式引擎清洗线 —— 由本地 Dart 服务(bin/serve.dart)现算的对比图层。
-  // 品红实线,与 JS 流式线(青虚线)区分:两线重合即证明 Dart 移植与 JS 权威源逐点一致。
-  state.map.addLayer({
-    id: 'dart-lines',
-    type: 'line',
-    source: 'dart-lines',
-    paint: {
-      'line-color': '#d946ef',
-      'line-width': ['interpolate', ['linear'], ['zoom'], 10, 2, 15, 3.2, 20, 5],
-      'line-opacity': 0.85
-    }
-  });
+  // 两条原生引擎清洗线 —— 由本地服务(bin/serve.dart)现算的对比图层,均为实线,与 JS
+  // 流式线(青虚线)区分。Dart 品红、C++ core 绿。三线重合即证明两级移植都逐点保真;
+  // 只有 C++ 线偏开时先看形态(见 NATIVE_ENGINE_LINES 上方注释),不要直接判为移植错。
+  for (const spec of NATIVE_ENGINE_LINES) {
+    state.map.addLayer({
+      id: spec.sourceId,
+      type: 'line',
+      source: spec.sourceId,
+      paint: {
+        'line-color': spec.color,
+        'line-width': ['interpolate', ['linear'], ['zoom'], 10, 2, 15, 3.2, 20, 5],
+        'line-opacity': 0.85
+      }
+    });
+  }
   state.map.addLayer({
     id: 'dense-intent-conflicts',
     type: 'line',
@@ -2592,9 +2695,11 @@ function renderMapHighlightLayers(visibleDatasets = null) {
   state.map.getSource('streaming-lines').setData(mapElementVisible(elements.showStreaming)
     ? streamingFeatureCollection(visible)
     : emptyFeatureCollection());
-  state.map.getSource('dart-lines').setData(mapElementVisible(elements.showDart)
-    ? dartFeatureCollection(visible)
-    : emptyFeatureCollection());
+  for (const spec of NATIVE_ENGINE_LINES) {
+    state.map.getSource(spec.sourceId).setData(mapElementVisible(elements[spec.toggle])
+      ? nativeFeatureCollection(visible, spec)
+      : emptyFeatureCollection());
+  }
 }
 
 function renderDirectionArrows(visibleDatasets = null) {
@@ -2659,46 +2764,51 @@ function streamingFeatureCollection(datasets) {
   };
 }
 
-// 设备同款原生 Dart 流式引擎清洗线 —— 由本地 Dart 服务(packages/track_cleaning/bin/serve.dart)
-// 现算的对比图层。Dart 无法在浏览器原生跑,故走 HTTP:fetch 是异步的,而图层渲染是同步的,
-// 所以这里用「懒取 + 取回后重绘」模式:首次需要时发一次 fetch(用 'pending' 哨兵防重复),
-// 拿到点后写回 dataset.dartLine 并重新触发高亮层渲染。与 JS 流式线共用 lineFeature 渲染。
-const DART_ENGINE_ENDPOINT = 'http://localhost:8787/clean';
-
-function dartFeatureCollection(datasets) {
+function nativeFeatureCollection(datasets, spec) {
   const features = [];
   for (const dataset of datasets) {
-    if (dataset.dartLine === null) {
-      dataset.dartLine = 'pending';
-      fetchDartLine(dataset.model)
-        .then((points) => {
-          dataset.dartLine = points;
+    if (dataset[spec.lineField] === null) {
+      dataset[spec.lineField] = 'pending';
+      fetchNativeLine(spec, dataset.model)
+        .then(({ points, stats, derived }) => {
+          dataset[spec.lineField] = points;
+          dataset[spec.statsField] = stats;
+          dataset[spec.derivedField] = derived;
           renderMapHighlightLayers();
+          renderReviewDatasetOverview(); // 成品指标随线一同刷进概览面板
         })
         .catch((error) => {
-          dataset.dartLine = [];
-          console.warn('Dart 引擎线获取失败(本地 Dart 服务未启动?):', error);
+          dataset[spec.lineField] = [];
+          dataset[spec.statsField] = 'error';
+          console.warn(`${spec.title}获取失败:`, error);
+          renderReviewDatasetOverview(); // 让概览面板从「获取中…」切到失败提示
         });
     }
-    const points = Array.isArray(dataset.dartLine) ? dataset.dartLine : [];
+    const points = Array.isArray(dataset[spec.lineField]) ? dataset[spec.lineField] : [];
     if (points.length > 1) {
-      features.push(lineFeature(dataset, points, 'dart', null, { engine: 'dart' }));
+      features.push(lineFeature(dataset, points, spec.key, null, { engine: spec.key }));
     }
   }
   return { type: 'FeatureCollection', features };
 }
 
-async function fetchDartLine(model) {
-  const response = await fetch(DART_ENGINE_ENDPOINT, {
+async function fetchNativeLine(spec, model) {
+  const response = await fetch(`${NATIVE_ENGINE_ENDPOINT}${spec.query}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ events: model.events || [] })
   });
   if (!response.ok) {
-    throw new Error(`Dart 引擎服务返回 HTTP ${response.status}`);
+    // 503 = core 动态库没构建(dart 线不受影响);服务端会附 hint,带出来省一次排查。
+    let hint = '';
+    try {
+      const body = await response.json();
+      hint = body?.hint ? ` — ${body.hint}` : (body?.error ? ` — ${body.error}` : '');
+    } catch (_) { /* 非 JSON 响应,忽略 */ }
+    throw new Error(`${spec.title}服务返回 HTTP ${response.status}${hint}`);
   }
   const data = await response.json();
-  return (data.track || [])
+  const points = (data.track || [])
     .filter((point) => Number.isFinite(point?.lat) && Number.isFinite(point?.lng))
     .map((point) => ({
       lat: point.lat,
@@ -2706,6 +2816,9 @@ async function fetchDartLine(model) {
       trackPointId: point.trackPointId,
       sourceRawPointId: point.sourceRawPointId
     }));
+  // 服务返回的成品 stats 与 JS 成品同字段(同一套算法),原样透传给概览面板对拍。
+  // derivedMetrics 是展示层派生指标(配速/平均速度/最高最低海拔),独立命名空间一并带回。
+  return { points, stats: data.stats || null, derived: data.derivedMetrics || null };
 }
 
 function scenarioPolygonFeatureCollection(datasets) {
@@ -3269,6 +3382,11 @@ function paceSecondsPerKm(distanceMeters, movingTimeSeconds) {
 
 function formatSpeed(value) {
   return Number.isFinite(value) ? `${value.toFixed(2)} m/s` : '-';
+}
+
+// 海拔单位始终用米(不像 formatMeters 那样 >1000 转 km),可为负(低于海平面);无样本 → '证据不足'。
+function formatAltitude(value) {
+  return Number.isFinite(value) ? `${value.toFixed(1)} m` : '证据不足';
 }
 
 function formatTransportSpeed(value) {

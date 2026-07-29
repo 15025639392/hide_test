@@ -42,7 +42,8 @@
             <div class="map-filter-group-title">主对照</div>
             <label class="toggle"><input id="showCleaned" type="checkbox" checked /> 清洗成品线</label>
             <label class="toggle" title="流式引擎(设备参考)清洗线。WIP:目前与批处理成品线有分歧(距离偏低),仅供对比诊断。"><input id="showStreaming" type="checkbox" /> 流式线(WIP)</label>
-            <label class="toggle" title="设备同款原生 Dart 流式引擎清洗线,由本地 Dart 服务(cd packages/track_cleaning &amp;&amp; dart run bin/serve.dart,默认 :8787)现算。用 Dart 默认 config,与 JS 流式线对拍验证移植保真。"><input id="showDart" type="checkbox" /> Dart 引擎线</label>
+            <label class="toggle" title="原生 Dart 流式引擎清洗线,由本地服务(cd packages/track_cleaning &amp;&amp; dart run bin/serve.dart,默认 :8787)现算。用默认 config。【单发形态】与 JS 流式线同形态,两线重合即证明 Dart 移植与 JS 权威源逐点一致。"><input id="showDart" type="checkbox" /> Dart 引擎线(单发)</label>
+            <label class="toggle" title="C++ core 清洗线 —— 迁移后的真源,四端(手机/手表/watchOS)最终跑的就是它。同一个本地服务的 ?engine=cpp,需先构建 core:bash core/build.sh。【分块形态】C ABI 只有这一种形态,与另两条线的单发形态语义不同:48 条金样本里 4 条产物不同,那是形态差异不是实现差异,勿据此判断 C++ 移植有问题。"><input id="showCpp" type="checkbox" /> C++ core 线(分块)</label>
             <label class="toggle"><input id="showRaw" type="checkbox" checked /> 原始轨迹线</label>
             <label class="toggle"><input id="showScenarios" type="checkbox" checked /> 情景范围面</label>
             <div class="map-filter-group-title">复核叠加</div>

@@ -552,6 +552,59 @@ button:disabled {
   font-weight: 800;
 }
 
+/* 原生引擎线的成品指标行 —— 边条颜色与地图上对应的线呼应,和上方 JS 成品同屏对拍。
+   Dart 品红(#d946ef)、C++ core 绿(#22c55e)。 */
+.dart-stats-row,
+.cpp-stats-row {
+  display: grid;
+  gap: 6px;
+  margin-top: 9px;
+  padding: 8px 9px;
+  border-radius: 7px;
+}
+
+.dart-stats-row {
+  border-left: 3px solid #d946ef;
+  background: rgba(217, 70, 239, 0.06);
+}
+
+.cpp-stats-row {
+  border-left: 3px solid #22c55e;
+  background: rgba(34, 197, 94, 0.06);
+}
+
+.dart-stats-title,
+.cpp-stats-title {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.dart-stats-title {
+  color: #d946ef;
+}
+
+.cpp-stats-title {
+  color: #22c55e;
+}
+
+/* 形态徽标 —— 三条线形态不全相同(JS/Dart 单发、C++ 分块),指标对不上时先看这里。 */
+.engine-form-badge {
+  margin-left: 5px;
+  padding: 1px 5px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0;
+  opacity: 0.75;
+}
+
+.metric-note {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .dataset-switcher-list {
   display: grid;
   gap: 7px;
