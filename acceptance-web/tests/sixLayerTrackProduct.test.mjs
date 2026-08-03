@@ -1384,8 +1384,9 @@ test('buildSixLayerTrackProduct preserves transport route outside hiking metrics
   assert.equal(product.excluded.rejected.length, 0);
   assert.equal(product.track[1].reason, 'transport_suspected_kept');
   assert.equal(product.track[1].entersTrustedGpx, true);
-  assert.equal(product.track[1].countsDistance, false);
-  assert.equal(product.track[1].countsMovingTime, false);
+  // 里程口径变更（2026-08-01）：kept 的 transport 点计入总里程/移动时长。
+  assert.equal(product.track[1].countsDistance, true);
+  assert.equal(product.track[1].countsMovingTime, true);
   assert.equal(product.stats.transportCount, 1);
   assert.equal(product.stats.suspectedTransportPointCount, 1);
   assert.ok(product.stats.suspectedDistanceMeters > 100);
@@ -1395,8 +1396,9 @@ test('buildSixLayerTrackProduct preserves transport route outside hiking metrics
   assert.equal(product.stats.suspectedTransportSegmentCount, 1);
   assert.equal(product.stats.suspectedTransportAverageSpeedMetersPerSecond,
     product.stats.suspectedTransportDistanceMeters / 3);
-  assert.equal(product.stats.totalDistanceMeters, 0);
-  assert.equal(product.stats.movingTimeSeconds, 0);
+  assert.equal(product.stats.totalDistanceMeters,
+    product.stats.suspectedTransportDistanceMeters);
+  assert.equal(product.stats.movingTimeSeconds, 3);
   const transportScenario = scenarioByName(product, 'transport_contamination');
   assert.ok(transportScenario);
   assert.equal(product.track[1].primaryExplanation.scenario,
@@ -1414,8 +1416,8 @@ test('buildSixLayerTrackProduct preserves transport route outside hiking metrics
   assert.equal(transportScenario.evidence.suspectedDurationSeconds, 3);
   assert.equal(transportScenario.evidence.suspectedAverageSpeedMetersPerSecond,
     Math.round(product.stats.suspectedTransportAverageSpeedMetersPerSecond * 1000) / 1000);
-  assert.equal(transportScenario.evidence.countsDistance, false);
-  assert.equal(transportScenario.evidence.countsMovingTime, false);
+  assert.equal(transportScenario.evidence.countsDistance, true);
+  assert.equal(transportScenario.evidence.countsMovingTime, true);
 });
 
 test('buildSixLayerTrackProduct does not label low reported speed jumps as transport', () => {
@@ -1535,8 +1537,10 @@ test('buildSixLayerTrackProduct keeps recovery transport continuity without hiki
   assert.equal(product.track[2].reason, 'transport_suspected_kept');
   assert.equal(product.track[1].entersTrustedGpx, true);
   assert.equal(product.track[2].entersTrustedGpx, true);
-  assert.equal(product.stats.totalDistanceMeters, 0);
-  assert.equal(product.stats.movingTimeSeconds, 0);
+  // 里程口径变更（2026-08-01）：kept 的 transport 点计入总里程/移动时长
+  // （recovery 锚点 delta=0 不贡献，raw 4 的 ~22.24m/1s 计入）。
+  assert.ok(product.stats.totalDistanceMeters > 20);
+  assert.equal(product.stats.movingTimeSeconds, 1);
   assert.equal(product.stats.transportCount, 2);
   assert.equal(product.stats.suspectedTransportPointCount, 2);
   assert.ok(product.stats.suspectedDistanceMeters > 20);
@@ -1548,7 +1552,7 @@ test('buildSixLayerTrackProduct keeps recovery transport continuity without hiki
   assert.deepEqual(transportScenario.anchorRawPointIds, [3, 4]);
   assert.deepEqual(transportScenario.evidence.keptRawPointIds, [3, 4]);
   assert.deepEqual(transportScenario.evidence.pendingRawPointIds, []);
-  assert.equal(transportScenario.evidence.countsDistance, false);
+  assert.equal(transportScenario.evidence.countsDistance, true);
 });
 
 test('buildSixLayerTrackProduct rescues continuous low-accuracy hiking points', () => {

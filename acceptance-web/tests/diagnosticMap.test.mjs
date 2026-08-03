@@ -120,8 +120,9 @@ test('buildTargetOutput exposes suspected transport diagnostics separately from 
     const product = buildSixLayerTrackProduct(model);
     const output = buildTargetOutput(model, product);
 
-    assert.equal(output.totalDistanceMeters, 0);
-    assert.equal(output.movingTimeSeconds, 0);
+    // 里程口径变更（2026-08-01）：kept 的 transport 点计入总里程/移动时长。
+    assert.equal(output.totalDistanceMeters, output.suspectedTransportDistanceMeters);
+    assert.equal(output.movingTimeSeconds, 3);
     assert.equal(output.suspectedTransportPointCount, 1);
     assert.equal(output.suspectedTransportSegmentCount, 1);
     assert.equal(output.suspectedTransportDurationSeconds, 3);

@@ -1263,7 +1263,10 @@ function denseAreaIntentCandidate(span, startIndex, endIndex, config) {
   const stationaryAnchorCount = span.filter((point) =>
     point.reason === 'stationary_anchor'
     || point.reason === 'stationary_drift_anchor').length;
-  const movingCount = span.filter((point) => point.countsDistance === true).length;
+  // countsDistance 现含 transport 段（里程口径变更），密集区意图分类的"移动点"
+  // 语义保持原样：transport 点仍按零距离点统计（对齐 C++ scenario_recognizer）。
+  const movingCount = span.filter((point) => point.countsDistance === true
+    && !isTransportTrackReason(point.reason)).length;
   const zeroDistanceCount = span.length - movingCount;
   const rawRange = trackSpanRawPointRange(span);
   const intent = denseAreaIntentName({
@@ -4788,17 +4791,19 @@ function applyBarometerAscent(product, evidence, config) {
 function settleDecision(decision, gnssAltitude) {
   const trusted = decision.result === 'anchor' || decision.result === 'accept';
   const transport = isTransportTrackReason(decision.reason);
+  // transport 段计入总里程/移动时长（2026-08-01 起，产品口径变更，对齐 C++ 真源
+  // safety_kernel settleDecision）；爬升窗口仍排除 transport——开车上山的海拔差
+  // 不是徒步爬升，anchor 重置行为保持不变。
   const countsDistance = trusted && decision.distanceDeltaMeters > 0
     && decision.reason !== 'gap_recovery'
     && decision.reason !== 'stationary_anchor'
-    && decision.reason !== 'stationary_drift_anchor'
-    && !transport;
+    && decision.reason !== 'stationary_drift_anchor';
   const countsMovingTime = countsDistance && decision.movingTimeDeltaSeconds > 0;
   return {
     entersTrustedGpx: trusted,
     countsDistance,
     countsMovingTime,
-    countsAscentWindow: countsDistance && gnssAltitude.result === 'accepted'
+    countsAscentWindow: countsDistance && !transport && gnssAltitude.result === 'accepted'
   };
 }
 
@@ -5065,8 +5070,10 @@ function addTransportContaminationScenario(product) {
       suspectedAverageSpeedMetersPerSecond:
         scenarioNumber(product.stats.suspectedTransportAverageSpeedMetersPerSecond),
       routePreserved: true,
-      countsDistance: false,
-      countsMovingTime: false
+      // 里程口径变更：kept 的 transport 点计入总里程/移动时长；此聚合场景含 kept/
+      // rejected/pending 三类，有 kept 即如实标 true（rejected/pending 仍不计）。
+      countsDistance: keptTransport.length > 0,
+      countsMovingTime: keptTransport.length > 0
     }
   });
 }

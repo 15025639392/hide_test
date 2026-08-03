@@ -46,7 +46,21 @@ export function createStreamingBaseTrackKernelState(overrides = {}) {
     // bridge 距离/时长。与端上"用户手动暂停"语义对齐（见 pause_resume_boundary 场景）。
     userPauseEpisodeSeq: finiteNumber(overrides.userPauseEpisodeSeq) ?? 0,
     activeUserPauseEpisodeId: finiteNumber(overrides.activeUserPauseEpisodeId),
-    pendingSegmentBreakAfterPause: overrides.pendingSegmentBreakAfterPause === true
+    pendingSegmentBreakAfterPause: overrides.pendingSegmentBreakAfterPause === true,
+    // 跨 L3 裁剪沉淀（对齐 C++ base_kernel 的 carried* 字段）：finalize 从
+    // excluded/track/rawPointDecisions 全量重算统计，而 L3 裁剪会就地删掉已提交的
+    // 条目——被裁条目的贡献在 prune 时累入这些字段，finalize 叠加，否则长会话结算
+    // 游标越过后统计塌缩归零。无 prune 时恒 0，与旧口径逐位一致。
+    carriedTransportPointCount: finiteNumber(overrides.carriedTransportPointCount) ?? 0,
+    carriedTransportDistanceMeters: finiteNumber(overrides.carriedTransportDistanceMeters) ?? 0,
+    carriedTransportDurationSeconds:
+      finiteNumber(overrides.carriedTransportDurationSeconds) ?? 0,
+    carriedTransportSegmentCount: finiteNumber(overrides.carriedTransportSegmentCount) ?? 0,
+    carriedTransportTailInSegment: overrides.carriedTransportTailInSegment === true,
+    carriedWeakPointCount: finiteNumber(overrides.carriedWeakPointCount) ?? 0,
+    carriedRejectedPointCount: finiteNumber(overrides.carriedRejectedPointCount) ?? 0,
+    carriedIntakeRejectedPointCount:
+      finiteNumber(overrides.carriedIntakeRejectedPointCount) ?? 0
   };
 }
 
@@ -143,18 +157,62 @@ export function pruneStreamingBaseTrackKernelForSettlement(previousState = {}, s
     const id = finiteNumber(point?.sourceRawPointId ?? point?.rawPointId);
     return !Number.isFinite(id) || id >= floor;
   };
+  const keepDecision = (decision) => {
+    const id = finiteNumber(decision?.rawPointId);
+    return !Number.isFinite(id) || id >= floor;
+  };
+  // 跨裁剪沉淀（对齐 C++ base_kernel prune）：被裁 transport 点的计数/距离/时长与
+  // 分段前缀、三个排除桶的被裁条数，在删除前累入 carried* 字段，finalize 叠加——
+  // 否则结算游标越过 128 点后 suspectedTransport*/weak/rejected/intakeRejected
+  // 计数塌缩归零。分段用「已裁尾部是否在段内」标志跨裁剪边界拼接（不双计、不漏计）。
+  const nextWeak = pruned.excluded.weak.filter(keepBySource);
+  const nextRejected = pruned.excluded.rejected.filter(keepBySource);
+  const nextIntakeRejected = pruned.excluded.intakeRejected.filter(keepBySource);
+  let carriedTransportPointCount = pruned.carriedTransportPointCount;
+  let carriedTransportDistanceMeters = pruned.carriedTransportDistanceMeters;
+  let carriedTransportDurationSeconds = pruned.carriedTransportDurationSeconds;
+  const sedimentTransport = (point) => {
+    carriedTransportPointCount++;
+    carriedTransportDistanceMeters += Math.max(0, Number(point.distanceDeltaMeters) || 0);
+    carriedTransportDurationSeconds += Math.max(0, Number(point.movingTimeDeltaSeconds) || 0);
+  };
+  pruned.excluded.rejected
+    .filter((point) => !keepBySource(point) && point.reason === 'transport_risk')
+    .forEach(sedimentTransport);
+  pruned.track
+    .filter((point) => !keepBySource(point) && isTransportTrackReason(point.reason))
+    .forEach(sedimentTransport);
+  let carriedTransportSegmentCount = pruned.carriedTransportSegmentCount;
+  let inSegment = pruned.carriedTransportTailInSegment;
+  const droppedDecisions = pruned.rawPointDecisions
+    .filter((decision) => !keepDecision(decision))
+    .sort((left, right) => left.rawPointId - right.rawPointId);
+  for (const decision of droppedDecisions) {
+    const suspected = isSuspectedTransportReason(decision.horizontalReason);
+    if (suspected && !inSegment) carriedTransportSegmentCount++;
+    inSegment = suspected;
+  }
   return {
     ...pruned,
     track: pruned.track.filter(keepBySource),
-    rawPointDecisions: pruned.rawPointDecisions.filter((decision) => {
-      const id = finiteNumber(decision?.rawPointId);
-      return !Number.isFinite(id) || id >= floor;
-    }),
+    rawPointDecisions: pruned.rawPointDecisions.filter(keepDecision),
     excluded: {
-      weak: pruned.excluded.weak.filter(keepBySource),
-      rejected: pruned.excluded.rejected.filter(keepBySource),
-      intakeRejected: pruned.excluded.intakeRejected.filter(keepBySource)
-    }
+      weak: nextWeak,
+      rejected: nextRejected,
+      intakeRejected: nextIntakeRejected
+    },
+    carriedTransportPointCount,
+    carriedTransportDistanceMeters,
+    carriedTransportDurationSeconds,
+    carriedTransportSegmentCount,
+    carriedTransportTailInSegment: inSegment,
+    carriedWeakPointCount:
+      pruned.carriedWeakPointCount + (pruned.excluded.weak.length - nextWeak.length),
+    carriedRejectedPointCount:
+      pruned.carriedRejectedPointCount + (pruned.excluded.rejected.length - nextRejected.length),
+    carriedIntakeRejectedPointCount:
+      pruned.carriedIntakeRejectedPointCount
+      + (pruned.excluded.intakeRejected.length - nextIntakeRejected.length)
   };
 }
 
@@ -615,13 +673,13 @@ function diagnosticDecision(rawPoint, result, reason, motion, overrides = {}) {
 
 function settleDecision(decision) {
   const trusted = decision.result === 'anchor' || decision.result === 'accept';
-  const transport = decision.reason === 'transport_suspected_kept'
-    || decision.reason === 'recovery_transport_suspected_kept';
+  // transport 段计入总里程/移动时长（2026-08-01 起，产品口径变更，对齐 C++ 真源
+  // safety_kernel settleDecision）；爬升窗口仍排除 transport（内核层恒 false，
+  // 爬升门在 metric accumulator 的 GNSS moving 门处排除）。
   const countsDistance = trusted && decision.distanceDeltaMeters > 0
     && decision.reason !== 'gap_recovery'
     && decision.reason !== 'stationary_anchor'
-    && decision.reason !== 'stationary_drift_anchor'
-    && !transport;
+    && decision.reason !== 'stationary_drift_anchor';
   return {
     entersTrustedGpx: trusted,
     countsDistance,
@@ -676,9 +734,13 @@ function excludedPoint(rawPoint, result, reason, epoch, decision, extras = {}) {
 
 function finalizeStreamingStats(state) {
   state.stats.trustedPointCount = state.track.length;
-  state.stats.weakPointCount = state.excluded.weak.length;
-  state.stats.rejectedPointCount = state.excluded.rejected.length;
-  state.stats.intakeRejectedPointCount = state.excluded.intakeRejected.length;
+  // 从跨裁剪沉淀值起算（对齐 C++ base_kernel finalizeStreamingStats）：无 prune 时
+  // carried 恒 0，与旧口径逐位一致；有 prune 时补回被裁条目，计数不随会话长度塌缩。
+  state.stats.weakPointCount = (state.carriedWeakPointCount ?? 0) + state.excluded.weak.length;
+  state.stats.rejectedPointCount =
+    (state.carriedRejectedPointCount ?? 0) + state.excluded.rejected.length;
+  state.stats.intakeRejectedPointCount =
+    (state.carriedIntakeRejectedPointCount ?? 0) + state.excluded.intakeRejected.length;
   const transportSummary = suspectedTransportSummary(state);
   state.stats.transportCount = transportSummary.pointCount;
   state.stats.suspectedTransportPointCount = transportSummary.pointCount;
@@ -954,13 +1016,18 @@ function suspectedTransportSummary(state) {
     .filter((point) => point.reason === 'transport_risk');
   const kept = state.track.filter((point) => isTransportTrackReason(point.reason));
   const countedPoints = [...rejected, ...kept];
+  // 从跨裁剪沉淀值起算：无 prune 时 carried 恒 0，与旧口径逐位一致。
   const distanceMeters = countedPoints.reduce((sum, point) =>
-    sum + Math.max(0, Number(point.distanceDeltaMeters) || 0), 0);
+    sum + Math.max(0, Number(point.distanceDeltaMeters) || 0),
+  state.carriedTransportDistanceMeters ?? 0);
   const durationSeconds = countedPoints.reduce((sum, point) =>
-    sum + Math.max(0, Number(point.movingTimeDeltaSeconds) || 0), 0);
+    sum + Math.max(0, Number(point.movingTimeDeltaSeconds) || 0),
+  state.carriedTransportDurationSeconds ?? 0);
   return {
-    pointCount: countedPoints.length,
-    segmentCount: countSuspectedTransportSegments(state.rawPointDecisions),
+    pointCount: (state.carriedTransportPointCount ?? 0) + countedPoints.length,
+    segmentCount: (state.carriedTransportSegmentCount ?? 0)
+      + countSuspectedTransportSegments(state.rawPointDecisions,
+        state.carriedTransportTailInSegment === true),
     distanceMeters,
     durationSeconds,
     averageSpeedMetersPerSecond: durationSeconds > 0
@@ -969,9 +1036,9 @@ function suspectedTransportSummary(state) {
   };
 }
 
-function countSuspectedTransportSegments(rawPointDecisions) {
+function countSuspectedTransportSegments(rawPointDecisions, carriedTailInSegment = false) {
   let segmentCount = 0;
-  let inTransportSegment = false;
+  let inTransportSegment = carriedTailInSegment;
   const decisions = [...(rawPointDecisions || [])]
     .sort((left, right) => left.rawPointId - right.rawPointId);
   for (const decision of decisions) {

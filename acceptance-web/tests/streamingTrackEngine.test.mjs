@@ -770,8 +770,10 @@ test('streaming track engine keeps recovery transport route outside hiking metri
       sourceRawPointId: 4,
       reason: 'transport_suspected_kept',
       entersTrustedGpx: true,
-      countsDistance: false,
-      countsMovingTime: false
+      // 里程口径变更（2026-08-01）：kept 的 transport 点计入总里程/移动时长
+      // （recovery 锚点 raw 3 delta=0，故仍 false）。
+      countsDistance: true,
+      countsMovingTime: true
     }
   ]);
   assert.equal(state.baseKernel.excluded.weak[0].rawPointId, 2);
@@ -783,8 +785,10 @@ test('streaming track engine keeps recovery transport route outside hiking metri
   assert.equal(state.lastAdvanceSummary.suspectedTransport.durationSeconds, 1);
   assert.ok(state.lastAdvanceSummary.suspectedTransport.averageSpeedMetersPerSecond > 20);
   assert.equal(state.lastAdvanceSummary.suspectedTransport.diagnosticOnly, true);
-  assert.equal(state.baseKernel.stats.totalDistanceMeters, 0);
-  assert.equal(state.baseKernel.stats.movingTimeSeconds, 0);
+  // 里程口径变更（2026-08-01）：kept 的 transport 点计入总里程/移动时长
+  // （recovery 锚点 raw 3 delta=0 不贡献，raw 4 的 ~22.24m/1s 计入）。
+  assert.ok(state.baseKernel.stats.totalDistanceMeters > 20);
+  assert.equal(state.baseKernel.stats.movingTimeSeconds, 1);
   assert.ok(state.baseKernel.track.find((point) =>
     point.sourceRawPointId === 4).distanceDeltaMeters > 20);
 
@@ -803,16 +807,17 @@ test('streaming track engine keeps recovery transport route outside hiking metri
       keptRawPointIds: [3],
       rejectedRawPointIds: [],
       pendingRawPointIds: [],
-      countsDistance: false,
-      countsMovingTime: false
+      // 里程口径变更：kept 的 transport 点证据如实标 true。
+      countsDistance: true,
+      countsMovingTime: true
     },
     {
       range: range(4, 4),
       keptRawPointIds: [4],
       rejectedRawPointIds: [],
       pendingRawPointIds: [],
-      countsDistance: false,
-      countsMovingTime: false
+      countsDistance: true,
+      countsMovingTime: true
     }
   ]);
   assert.deepEqual(state.scenarioSettlementSession.settlementState
@@ -859,8 +864,9 @@ test('streaming track engine keeps recovery transport route outside hiking metri
       reason: 'transport_suspected_kept'
     }
   ]);
-  assert.equal(state.localRebuild.stats.totalDistanceMeters, 0);
-  assert.equal(state.localRebuild.stats.movingTimeSeconds, 0);
+  // 里程口径变更（2026-08-01）：kept 的 transport 点计入产物总里程/移动时长。
+  assert.ok(state.localRebuild.stats.totalDistanceMeters > 20);
+  assert.equal(state.localRebuild.stats.movingTimeSeconds, 1);
   assert.equal(state.localRebuild.unsupportedScenarioCount, 0);
 });
 

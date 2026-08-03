@@ -79,8 +79,9 @@ test('android replay transport fixture preserves route outside hiking metrics', 
   assert.ok(transport);
   assert.equal(transport.reason, 'transport_suspected_kept');
   assert.equal(transport.entersTrustedGpx, true);
-  assert.equal(transport.countsDistance, false);
-  assert.equal(transport.countsMovingTime, false);
+  // 里程口径变更（2026-08-01）：kept 的 transport 点计入总里程/移动时长。
+  assert.equal(transport.countsDistance, true);
+  assert.equal(transport.countsMovingTime, true);
   assert.equal(product.stats.transportCount, 1);
   assert.equal(product.stats.suspectedTransportSegmentCount, 1);
   assert.ok(product.stats.suspectedTransportDistanceMeters > 0);
@@ -92,8 +93,8 @@ test('android replay transport fixture preserves route outside hiking metrics', 
   assert.deepEqual(transportScenario.evidence.rejectedRawPointIds, []);
   assert.deepEqual(transportScenario.evidence.keptRawPointIds, [3]);
   assert.equal(transportScenario.evidence.routePreserved, true);
-  assert.equal(transportScenario.evidence.countsDistance, false);
-  assert.equal(transportScenario.evidence.countsMovingTime, false);
+  assert.equal(transportScenario.evidence.countsDistance, true);
+  assert.equal(transportScenario.evidence.countsMovingTime, true);
   assert.ok(transportScenario.evidence.suspectedDistanceMeters > 0);
   assert.ok(transportScenario.evidence.suspectedDurationSeconds > 0);
 });
@@ -106,8 +107,9 @@ test('android replay high-frequency transport stays continuous below the 20m ste
   assert.deepEqual(product.track.map((point) => point.sourceRawPointId), [1, 2, 3, 4]);
   assert.equal(transportPoints.length, 3);
   assert.ok(transportPoints.every((point) => point.entersTrustedGpx));
-  assert.ok(transportPoints.every((point) => !point.countsDistance));
-  assert.ok(transportPoints.every((point) => !point.countsMovingTime));
+  // 里程口径变更（2026-08-01）：kept 的 transport 点计入总里程/移动时长。
+  assert.ok(transportPoints.every((point) => point.countsDistance));
+  assert.ok(transportPoints.every((point) => point.countsMovingTime));
   assert.equal(product.excluded.rejected.length, 0);
   assert.equal(product.excluded.weak.length, 0);
   assert.equal(product.stats.suspectedTransportSegmentCount, 1);

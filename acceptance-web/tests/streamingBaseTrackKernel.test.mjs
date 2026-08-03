@@ -207,8 +207,10 @@ test('streaming base kernel preserves recovery transport continuity', () => {
     true
   ]);
   assert.equal(streamed.excluded.weak[0].reason, 'gap_recovery_pending');
-  assert.equal(streamed.stats.totalDistanceMeters, 0);
-  assert.equal(streamed.stats.movingTimeSeconds, 0);
+  // 里程口径变更（2026-08-01）：kept 的 transport 点计入总里程/移动时长
+  // （recovery 锚点 delta=0 不贡献，raw 4 的 ~22.24m/1s 计入）。
+  assert.ok(streamed.stats.totalDistanceMeters > 20);
+  assert.equal(streamed.stats.movingTimeSeconds, 1);
   assert.equal(streamed.stats.transportCount, 2);
   assert.equal(streamed.stats.suspectedTransportPointCount, 2);
   assert.equal(streamed.stats.suspectedTransportSegmentCount, 1);

@@ -68,12 +68,13 @@ test('watch evidence keeps Raw 661-688 vehicle movement in the route', (t) => {
     .map((point) => point.sourceRawPointId);
 
   assert.equal(decisions.length, 28);
+  // 里程口径变更（2026-08-01）：kept 的 transport 点计入总里程/移动时长。
   assert.ok(decisions.every((decision) =>
     decision.horizontalResult === 'accept'
       && decision.horizontalReason === 'transport_suspected_kept'
       && decision.entersTrustedGpx
-      && !decision.countsDistance
-      && !decision.countsMovingTime));
+      && decision.countsDistance
+      && decision.countsMovingTime));
   assert.deepEqual(trackRawPointIds, Array.from({ length: 28 }, (_, index) => index + 661));
   assert.equal(new Set(decisions.map((decision) => decision.segmentId)).size, 1);
 });

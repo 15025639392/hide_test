@@ -485,8 +485,9 @@ function transportContaminationProposals(baseKernel = {}) {
           suspectedDistanceMeters: rounded(finiteNumber(point.distanceDeltaMeters) ?? 0),
           suspectedMovingTimeSeconds: rounded(finiteNumber(point.movingTimeDeltaSeconds) ?? 0),
           routePreserved: true,
-          countsDistance: false,
-          countsMovingTime: false
+          // 里程口径变更：kept 的 transport 点计入总里程/移动时长；rejected/pending 仍不计。
+          countsDistance: point.transportSource === 'kept',
+          countsMovingTime: point.transportSource === 'kept'
         }
       };
     })
@@ -2233,7 +2234,10 @@ function denseAreaIntentCandidate(span, startIndex, endIndex, config) {
   const stationaryAnchorCount = span.filter((point) =>
     point.reason === 'stationary_anchor'
     || point.reason === 'stationary_drift_anchor').length;
-  const movingCount = span.filter((point) => point.countsDistance === true).length;
+  // countsDistance 现含 transport 段（里程口径变更），密集区意图分类的"移动点"
+  // 语义保持原样：transport 点仍按零距离点统计（对齐 C++ scenario_recognizer）。
+  const movingCount = span.filter((point) => point.countsDistance === true
+    && !isTransportTrackReason(point.reason)).length;
   const zeroDistanceCount = span.length - movingCount;
   const metrics = {
     span,
