@@ -170,11 +170,11 @@ export function isEvidenceJsonlPath(path) {
   return /(^|\/)evidence\.jsonl(?:\.json)?$/i.test(String(path || ''));
 }
 
+// 不对文件名做「必须含 evidence」的要求：任何 .jsonl / .jsonl.json 都当候选，
+// 能不能用交给 parseEvidenceJsonl 判定（解析失败会逐文件计入导入错误）。
 export function isEvidenceCandidatePath(path) {
-  const normalizedPath = String(path || '');
-  if (isEvidenceJsonlPath(normalizedPath)) return true;
-  const fileName = normalizedPath.split('/').pop() || '';
-  return /evidence[^/]*\.jsonl(?:\.json)?$/i.test(fileName);
+  const fileName = String(path || '').split('/').pop() || '';
+  return /\.jsonl(?:\.json)?$/i.test(fileName);
 }
 
 export function rawDecisionDisplayState(decision = {}) {

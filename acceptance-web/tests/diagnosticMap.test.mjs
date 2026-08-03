@@ -11,12 +11,17 @@ import {
 } from '../src/diagnosticMap.mjs';
 import { buildSixLayerTrackProduct } from '../src/track-cleaning/sixLayerTrackProduct.mjs';
 
-test('evidence path detection accepts exported evidence jsonl', () => {
+test('evidence path detection accepts any jsonl regardless of file name', () => {
   assert.equal(isEvidenceCandidatePath('/tmp/evidence.jsonl'), true);
   assert.equal(isEvidenceCandidatePath('/tmp/evidence.jsonl.json'), true);
   assert.equal(isEvidenceCandidatePath('/tmp/location_evidence_session-1.jsonl'), true);
   assert.equal(isEvidenceCandidatePath('/tmp/gnss_evidence_5ccf3a9f-1d85-4c2b-8b24-61839d459845.jsonl'), true);
-  assert.equal(isEvidenceCandidatePath('/tmp/diagnostic.jsonl'), false);
+  // 文件名不含 evidence 也收：设备导出的会话文件常按日期/sessionId 命名。
+  assert.equal(isEvidenceCandidatePath('/tmp/diagnostic.jsonl'), true);
+  assert.equal(isEvidenceCandidatePath('/tmp/20260802-1618_8e9f023f_active.jsonl'), true);
+  // 非 jsonl 仍然排除，避免选文件夹时把产物 JSON 一并吞进来。
+  assert.equal(isEvidenceCandidatePath('/tmp/8e9f023f.cppproduct.json'), false);
+  assert.equal(isEvidenceCandidatePath('/tmp/annotations_v1.json'), false);
 });
 
 test('raw decision display uses final scenario cleanup instead of base accept', () => {
