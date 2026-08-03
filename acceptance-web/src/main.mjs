@@ -73,7 +73,6 @@ const elements = {
   showTrusted: document.querySelector('#showTrusted'),
   showCleaned: document.querySelector('#showCleaned'),
   showStreaming: document.querySelector('#showStreaming'),
-  showDart: document.querySelector('#showDart'),
   showCpp: document.querySelector('#showCpp'),
   showCppRefine: document.querySelector('#showCppRefine'),
   showScenarios: document.querySelector('#showScenarios'),
@@ -114,8 +113,8 @@ elements.scenarioRangeInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') applyScenarioRangeReview();
 });
 elements.reviewDatasetOverview.addEventListener('click', handleReviewDatasetClick);
-// 两条原生引擎清洗线 —— 都由本地服务(packages/track_cleaning/bin/serve.dart)现算的对比图层。
-// Dart/C++ 都没法在浏览器原生跑,故走 HTTP:fetch 是异步的,而图层渲染是同步的,所以用
+// 两条原生引擎清洗线 —— 都由本地服务(track_cleaning 的 core/tools/serve.cpp,构建见其头注释)
+// 现算的对比图层。C++ 没法在浏览器原生跑,故走 HTTP:fetch 是异步的,而图层渲染是同步的,所以用
 // 「懒取 + 取回后重绘」:首次需要时发一次 fetch(用 'pending' 哨兵防重复),拿到点后写回
 // dataset 并重新触发高亮层渲染。与 JS 流式线共用 lineFeature 渲染。
 //
@@ -126,22 +125,6 @@ elements.reviewDatasetOverview.addEventListener('click', handleReviewDatasetClic
 const NATIVE_ENGINE_ENDPOINT = 'http://localhost:8787/clean';
 
 const NATIVE_ENGINE_LINES = [
-  {
-    key: 'dart',
-    toggle: 'showDart',
-    title: 'Dart 引擎线',
-    shortLabel: 'Dart',
-    form: '单发',
-    query: '',
-    sourceId: 'dart-lines',
-    color: '#d946ef',
-    rowClass: 'dart-stats-row',
-    titleClass: 'dart-stats-title',
-    lineField: 'dartLine',
-    statsField: 'dartStats',
-    derivedField: 'dartDerived',
-    unavailableNote: '未获取(本地 Dart 服务未启动?)'
-  },
   {
     key: 'cpp',
     toggle: 'showCpp',
@@ -156,7 +139,7 @@ const NATIVE_ENGINE_LINES = [
     lineField: 'cppLine',
     statsField: 'cppStats',
     derivedField: 'cppDerived',
-    unavailableNote: '未获取(服务未启动,或 core 未构建:bash core/build.sh)'
+    unavailableNote: '未获取(服务未启动:先构建并运行 track_cleaning 的 core/tools/serve.cpp)'
   },
   {
     // 几何精修线 —— 与上一条同引擎同形态,唯一差别是 geometryRefineEnabled=true。
@@ -174,7 +157,7 @@ const NATIVE_ENGINE_LINES = [
     lineField: 'cppRefineLine',
     statsField: 'cppRefineStats',
     derivedField: 'cppRefineDerived',
-    unavailableNote: '未获取(服务未启动,或服务端 serve.dart 无 refine 参数:需更新 track_cleaning)'
+    unavailableNote: '未获取(服务未启动:先构建并运行 track_cleaning 的 core/tools/serve.cpp)'
   }
 ];
 
@@ -187,7 +170,6 @@ for (const input of [
   elements.showTrusted,
   elements.showCleaned,
   elements.showStreaming,
-  elements.showDart,
   elements.showCpp,
   elements.showCppRefine,
   elements.showScenarios,
@@ -329,10 +311,7 @@ function finalizeDataset(result, index) {
     targetProduct: result.targetProduct,
     targetOutput: result.targetOutput,
     streamingLine: null, // lazily computed on first 流式线 render (see streamingFeatureCollection)
-    // 三条原生引擎线(Dart / C++ core / C++ 精修)均由本地服务现算,懒取——见 NATIVE_ENGINE_LINES。
-    dartLine: null, // lazily fetched from local engine server on first Dart 引擎线 render
-    dartStats: null, // Dart 引擎自算的成品指标(里程/耗时/爬升),与 dartLine 同一次 fetch 取回
-    dartDerived: null, // Dart 派生展示指标(配速/平均速度/最高最低海拔),同一次 fetch 取回
+    // 两条原生引擎线(C++ core / C++ 精修)均由本地服务现算,懒取——见 NATIVE_ENGINE_LINES。
     cppLine: null, // 同上,C++ core 线(?engine=cpp)
     cppStats: null,
     cppDerived: null,
@@ -2415,9 +2394,9 @@ function addMapLayers() {
       'line-dasharray': [2, 1.4]
     }
   });
-  // 两条原生引擎清洗线 —— 由本地服务(bin/serve.dart)现算的对比图层,均为实线,与 JS
-  // 流式线(青虚线)区分。Dart 品红、C++ core 绿。三线重合即证明两级移植都逐点保真;
-  // 只有 C++ 线偏开时先看形态(见 NATIVE_ENGINE_LINES 上方注释),不要直接判为移植错。
+  // 两条原生引擎清洗线 —— 由本地服务(core/tools/serve.cpp)现算的对比图层,均为实线,
+  // 与 JS 流式线(青虚线)区分。C++ core 绿、几何精修 天蓝。前者与 JS 流式线重合即证明
+  // 移植逐点保真;偏开时先看形态(见 NATIVE_ENGINE_LINES 上方注释),不要直接判为移植错。
   for (const spec of NATIVE_ENGINE_LINES) {
     state.map.addLayer({
       id: spec.sourceId,
