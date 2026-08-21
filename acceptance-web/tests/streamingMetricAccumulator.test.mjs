@@ -324,6 +324,48 @@ test('streaming metric settlement applies new ownership incrementally and prunes
   assert.equal(snapshot.settlement.committedSelectedAscentResult.totalDescentMeters, 7);
 });
 
+test('gappy barometer with GNSS switches selected ascent to GNSS', () => {
+  const gappy = [
+    barometerWindow(1, 0, 10_000_000_000, 100),
+    barometerWindow(2, 10_000_000_000, 20_000_000_000, 140),
+    barometerWindow(3, 80_000_000_000, 90_000_000_000, 250),
+    barometerWindow(4, 90_000_000_000, 100_000_000_000, 260)
+  ];
+  const advanced = advanceStreamingMetricAccumulator(
+    createStreamingMetricAccumulatorState(),
+    gappy
+  );
+  assert.equal(advanced.stats.selectedAscentSource, 'BAROMETER');
+  const settled = applyStreamingMetricSettlement(advanced, {
+    committedCursorRawPointId: 3,
+    lastAppliedMetricOwnershipRanges: [ownership('base_kernel', 1, 3)]
+  }, rawTimeline(), gnssBaseTrack([100, 140, 260]));
+  assert.equal(settled.stats.selectedAscentSource, 'GNSS');
+  assert.ok(settled.stats.barometerTotalAscentMeters >= 0);
+  assert.ok(
+    settled.stats.barometerTotalAscentMeters
+      < 0.6 * (settled.barometerMaxAltitudeMeters - settled.barometerMinAltitudeMeters)
+  );
+});
+
+test('dense barometer keeps BAROMETER even when GNSS exists', () => {
+  const dense = [
+    barometerWindow(1, 0, 10_000_000_000, 100),
+    barometerWindow(2, 10_000_000_000, 20_000_000_000, 110),
+    barometerWindow(3, 20_000_000_000, 30_000_000_000, 120),
+    barometerWindow(4, 30_000_000_000, 40_000_000_000, 130)
+  ];
+  const advanced = advanceStreamingMetricAccumulator(
+    createStreamingMetricAccumulatorState(),
+    dense
+  );
+  const settled = applyStreamingMetricSettlement(advanced, {
+    committedCursorRawPointId: 3,
+    lastAppliedMetricOwnershipRanges: [ownership('base_kernel', 1, 3)]
+  }, rawTimeline(), gnssBaseTrack([100, 140, 260]));
+  assert.equal(settled.stats.selectedAscentSource, 'BAROMETER');
+});
+
 function metricProjection(productOrState) {
   return {
     decisions: productOrState.barometerWindowDecisions.map((decision) => ({

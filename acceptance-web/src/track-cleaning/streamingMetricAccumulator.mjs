@@ -7,7 +7,7 @@ export const STREAMING_METRIC_ACCUMULATOR_VERSION = 'streaming-metric-accumulato
 export function createStreamingMetricAccumulatorState(overrides = {}) {
   const config = normalizeSixLayerTrackConfig(overrides.config);
   const stats = createStats(overrides.stats);
-  return {
+  const state = {
     version: STREAMING_METRIC_ACCUMULATOR_VERSION,
     config,
     anchorBarometerAltitudeMeters: finiteNumber(overrides.anchorBarometerAltitudeMeters),
@@ -20,6 +20,9 @@ export function createStreamingMetricAccumulatorState(overrides = {}) {
     lastBarometerWindowEndElapsedRealtimeNanos: finiteNumber(
       overrides.lastBarometerWindowEndElapsedRealtimeNanos
     ),
+    barometerMaxAltitudeMeters: finiteNumber(overrides.barometerMaxAltitudeMeters),
+    barometerMinAltitudeMeters: finiteNumber(overrides.barometerMinAltitudeMeters),
+    barometerHadSampleGapReset: overrides.barometerHadSampleGapReset === true,
     barometerWindowDecisions: cloneArray(overrides.barometerWindowDecisions),
     committedMetricSettlementApplied: overrides.committedMetricSettlementApplied === true,
     committedBarometerAscentMeters:
@@ -56,9 +59,12 @@ export function createStreamingMetricAccumulatorState(overrides = {}) {
       || barometerResultFromStats(stats),
     gnssAltitudeResult: cloneObject(overrides.gnssAltitudeResult)
       || gnssAltitudeResultFromStats(stats),
-    selectedAscentResult: cloneObject(overrides.selectedAscentResult)
-      || selectedAscentFromStats(stats)
+    selectedAscentResult: cloneObject(overrides.selectedAscentResult) || null
   };
+  if (!state.selectedAscentResult) {
+    state.selectedAscentResult = selectedAscentFromStats(state);
+  }
+  return state;
 }
 
 export function advanceStreamingMetricAccumulator(previousState = {}, eventsOrBatch = []) {
@@ -237,6 +243,7 @@ function processBarometerWindow(state, window) {
     state.anchorBarometerAltitudeMeters = altitude;
     state.anchorBarometerElapsedRealtimeNanos = time;
     state.stats.barometerAscentSampleCount++;
+    observeBarometerAltitude(state, altitude);
     state.lastBarometerWindowEndElapsedRealtimeNanos = time;
   } else {
     const dt = Math.max(0, time - state.anchorBarometerElapsedRealtimeNanos);
@@ -245,9 +252,11 @@ function processBarometerWindow(state, window) {
     if (dt > state.config.barometerAscentMaxSampleGapNanos) {
       result = 'reset';
       reason = 'pressure_sample_gap';
+      state.barometerHadSampleGapReset = true;
       state.anchorBarometerAltitudeMeters = altitude;
       state.anchorBarometerElapsedRealtimeNanos = time;
       state.stats.barometerAscentSampleCount++;
+      observeBarometerAltitude(state, altitude);
       state.lastBarometerWindowEndElapsedRealtimeNanos = time;
     } else if (Math.abs(rawDelta) >= state.config.barometerPressureJumpMeters
         || verticalSpeed > state.config.barometerAscentMaxVerticalSpeedMetersPerSecond) {
@@ -275,6 +284,7 @@ function processBarometerWindow(state, window) {
       state.anchorBarometerAltitudeMeters = altitude;
       state.anchorBarometerElapsedRealtimeNanos = time;
       state.stats.barometerAscentSampleCount++;
+      observeBarometerAltitude(state, altitude);
       state.lastBarometerWindowEndElapsedRealtimeNanos = time;
     }
   }
@@ -680,7 +690,7 @@ function finalizeMetricStats(state) {
     : gnssAccepted >= 2
       ? 'medium'
       : 'none';
-  const selected = selectedAscentFromStats(state.stats);
+  const selected = selectedAscentFromStats(state);
   state.stats.selectedAscentSource = selected.source;
   state.stats.selectedTotalAscentMeters = selected.totalAscentMeters;
   state.stats.selectedTotalDescentMeters = selected.totalDescentMeters;
@@ -821,8 +831,36 @@ function committedSelectedAscentResult(
   };
 }
 
-function selectedAscentFromStats(stats) {
-  if (stats.barometerTotalAscentMeters >= 0 && stats.barometerAscentConfidence !== 'none') {
+const BAROMETER_ASCENT_MIN_FRACTION_OF_SPAN = 0.6;
+
+function observeBarometerAltitude(state, altitude) {
+  if (!Number.isFinite(altitude)) return;
+  state.barometerMaxAltitudeMeters = Number.isFinite(state.barometerMaxAltitudeMeters)
+    ? Math.max(state.barometerMaxAltitudeMeters, altitude)
+    : altitude;
+  state.barometerMinAltitudeMeters = Number.isFinite(state.barometerMinAltitudeMeters)
+    ? Math.min(state.barometerMinAltitudeMeters, altitude)
+    : altitude;
+}
+
+function barometerAscentUnusableAsPrimary(state) {
+  if (!state.barometerHadSampleGapReset) return false;
+  const max = state.barometerMaxAltitudeMeters;
+  const min = state.barometerMinAltitudeMeters;
+  if (!Number.isFinite(max) || !Number.isFinite(min)) return false;
+  const span = max - min;
+  if (!(span > 0)) return false;
+  const ascent = state.stats?.barometerTotalAscentMeters;
+  if (!(ascent >= 0)) return false;
+  return ascent < BAROMETER_ASCENT_MIN_FRACTION_OF_SPAN * span;
+}
+
+function selectedAscentFromStats(state) {
+  const stats = state.stats;
+  const baroOk = stats.barometerTotalAscentMeters >= 0 && stats.barometerAscentConfidence !== 'none';
+  const gnssOk = stats.locationAltitudeTotalAscentMeters >= 0
+    && stats.locationAltitudeAscentConfidence !== 'none';
+  if (baroOk && !(barometerAscentUnusableAsPrimary(state) && gnssOk)) {
     return {
       source: 'BAROMETER',
       totalAscentMeters: stats.barometerTotalAscentMeters,
@@ -833,8 +871,7 @@ function selectedAscentFromStats(stats) {
       reason: 'barometer_primary'
     };
   }
-  if (stats.locationAltitudeTotalAscentMeters >= 0
-      && stats.locationAltitudeAscentConfidence !== 'none') {
+  if (gnssOk) {
     return {
       source: 'GNSS',
       totalAscentMeters: stats.locationAltitudeTotalAscentMeters,
