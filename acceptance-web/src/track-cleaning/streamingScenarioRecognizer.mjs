@@ -475,7 +475,9 @@ function transportContaminationProposals(baseKernel = {}) {
         metricRange: rawRange,
         metricOwner: true,
         hardBoundary: true,
-        affectedMetricGates: ['distance', 'moving_time', 'elevation'],
+        // 爬升口径变更（2026-08-21 起，对齐 C++ scenario_recognizer）：elevation 不再
+        // 被 transport 门关闭——开车上山的海拔差计入累计爬升。
+        affectedMetricGates: ['distance', 'moving_time'],
         action: 'preserve_route_exclude_hiking_metrics',
         localRebuild: 'transport_route_passthrough',
         evidence: {

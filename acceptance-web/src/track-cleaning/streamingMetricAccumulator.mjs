@@ -423,10 +423,9 @@ function applyGnssAltitudePoint(state, pointSlice) {
     };
   }
 
-  // countsDistance 已含 transport 段（里程口径变更），GNSS 爬升的"移动中"语义须继续
-  // 排除 transport——开车段走 anchor 重置分支（对齐 C++ metric_accumulator）。
-  const moving = point?.result === 'accept' && point?.countsDistance === true
-    && !metricIsTransportTrackReason(point?.reason);
+  // countsDistance 已含 transport 段（里程口径变更），GNSS 爬升同步放开
+  // （2026-08-21 起，对齐 C++ metric_accumulator）——开车上山的海拔差计入累计爬升。
+  const moving = point?.result === 'accept' && point?.countsDistance === true;
   if (!moving) {
     state.gnssAltitudeAnchorMeters = altitude;
     addGnssSampleRawPointId(state, rawPointId);
@@ -528,13 +527,6 @@ function addGnssRejectedRawPointId(state, rawPointId) {
   if (!state.committedGnssAltitudeRejectedRawPointIds.includes(rawPointId)) {
     state.committedGnssAltitudeRejectedRawPointIds.push(rawPointId);
   }
-}
-
-// 局部 transport 判据（对齐 C++ metric_accumulator 的 metricIsTransportTrackReason，
-// 不引 streamingBaseTrackKernel——分层上 settlement 依赖 metric，反向不成立）。
-function metricIsTransportTrackReason(reason) {
-  return reason === 'recovery_transport_suspected_kept'
-    || reason === 'transport_suspected_kept';
 }
 
 function altitudeResetReason(horizontalReason) {

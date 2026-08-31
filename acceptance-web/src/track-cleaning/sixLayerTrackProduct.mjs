@@ -4614,10 +4614,10 @@ function applyGnssAltitude(rawPoint, decision, state, product, config) {
   // 语义标志（与 settleDecision 的 countsAscentWindow、流式 streamingMetricAccumulator
   // 口径一致），而非 reason 白名单——否则结算管线新增的 distanceDeltaMeters=0 锚点
   // （rest_photo_micro_move_anchor、position_snap_recovery_anchor 等）会被误当移动点累计。
+  // 2026-08-21 起 transport 段同口径计入（对齐 C++ core）：开车上山的海拔差算爬升。
   const moving = decision.result === 'accept'
     && decision.reason !== 'gap_recovery'
     && decision.reason !== 'transport_risk'
-    && !isTransportTrackReason(decision.reason)
     && Number(decision.distanceDeltaMeters) > 0;
 
   if (!Number.isFinite(rawPoint.altitude)) {
@@ -4790,10 +4790,9 @@ function applyBarometerAscent(product, evidence, config) {
 
 function settleDecision(decision, gnssAltitude) {
   const trusted = decision.result === 'anchor' || decision.result === 'accept';
-  const transport = isTransportTrackReason(decision.reason);
   // transport 段计入总里程/移动时长（2026-08-01 起，产品口径变更，对齐 C++ 真源
-  // safety_kernel settleDecision）；爬升窗口仍排除 transport——开车上山的海拔差
-  // 不是徒步爬升，anchor 重置行为保持不变。
+  // safety_kernel settleDecision）；爬升窗口同步放开（2026-08-21 起）——开车上山
+  // 的海拔差计入累计爬升。
   const countsDistance = trusted && decision.distanceDeltaMeters > 0
     && decision.reason !== 'gap_recovery'
     && decision.reason !== 'stationary_anchor'
@@ -4803,7 +4802,7 @@ function settleDecision(decision, gnssAltitude) {
     entersTrustedGpx: trusted,
     countsDistance,
     countsMovingTime,
-    countsAscentWindow: countsDistance && !transport && gnssAltitude.result === 'accepted'
+    countsAscentWindow: countsDistance && gnssAltitude.result === 'accepted'
   };
 }
 
@@ -4949,7 +4948,8 @@ function scenarioAffectedMetricGates(scenario) {
     case 'position_snap_recovery':
       return ['route', 'distance', 'moving_time', 'elevation'];
     case 'transport_contamination':
-      return ['distance', 'moving_time', 'elevation'];
+      // 爬升口径变更（2026-08-21 起，对齐 C++ 真源）：elevation 不再被 transport 门关闭。
+      return ['distance', 'moving_time'];
     case 'moving_spike_cleanup':
     case 'stationary_session_collapse':
     case 'stationary_drift_collapse':
